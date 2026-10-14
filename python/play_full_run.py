@@ -217,11 +217,12 @@ def play_run(seed: str, character: str = "Ironclad", verbose: bool = True, log: 
                              "args": {"bundle_index": 0}})
 
             elif decision == "card_select":
-                # Auto-select first card
+                # Auto-select the first card(s): as many as the prompt requires, at least one
                 cards = state.get("cards", [])
                 if cards:
+                    k = min(max(state.get("min_select", 1), 1), len(cards))
                     state = send({"cmd": "action", "action": "select_cards",
-                                 "args": {"indices": "0"}})
+                                 "args": {"indices": ",".join(str(i) for i in range(k))}})
                 else:
                     state = send({"cmd": "action", "action": "skip_select"})
 

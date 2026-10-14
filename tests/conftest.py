@@ -83,6 +83,11 @@ class Game:
 
     # --- Auto-play helpers ---
 
+    def select_first(self, state):
+        """Resolve a card_select with the first min_select cards (at least one)."""
+        k = min(max(state.get("min_select", 1), 1), len(state.get("cards", [])))
+        return self.act("select_cards", indices=",".join(str(i) for i in range(k)))
+
     def auto_combat(self, state):
         """Play one card or end turn."""
         hand = state.get("hand", [])
@@ -123,7 +128,7 @@ class Game:
                 if state.get("min_select", 0) == 0:
                     state = self.act("skip_select")
                 else:
-                    state = self.act("select_cards", indices="0")
+                    state = self.select_first(state)
             else:
                 state = self.act("proceed")
         return state

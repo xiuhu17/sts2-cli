@@ -229,17 +229,19 @@ public class RunSimulator
     private IReadOnlyList<IReadOnlyList<CardModel>>? _pendingBundles;
     private TaskCompletionSource<IEnumerable<CardModel>>? _pendingBundleTcs;
 
-    public Dictionary<string, object?> StartRun(string character, int ascension = 0, string? seed = null, string lang = "en")
+    public Dictionary<string, object?> StartRun(string character, int ascension = 0, string? seed = null, string lang = "en",
+        bool manualRewards = false)
     {
         try
         {
             // Validate before tearing down the current run, so a bad request leaves it intact.
             if (!KnownCharacters.Contains(character.ToLowerInvariant()))
                 return Error($"Unknown character: {character}");
-            _loc.Lang = lang;
             EnsureModelDbInitialized();
             if (!ResetForNewRun())
                 return RestartRequired();
+            _loc.Lang = lang;
+            ManualRewards = manualRewards;
 
             var player = CreatePlayer(character);
             if (player == null)
@@ -494,11 +496,10 @@ public class RunSimulator
     }
 
     // ─── Game actions ───
-    public Dictionary<string, object?> LoadSave(string saveJson, string lang = "en")
+    public Dictionary<string, object?> LoadSave(string saveJson, string lang = "en", bool manualRewards = false)
     {
         try
         {
-            _loc.Lang = lang;
             EnsureModelDbInitialized();
 
             Log("Loading save file...");
@@ -516,6 +517,8 @@ public class RunSimulator
             // Only tear down the current run once the save is known to be usable.
             if (!ResetForNewRun())
                 return RestartRequired();
+            _loc.Lang = lang;
+            ManualRewards = manualRewards;
 
             _runState = RunState.FromSerializable(save);
             if (_runState == null)
@@ -867,6 +870,8 @@ public class RunSimulator
     {
         try
         {
+            if (_poisoned)
+                return RestartRequired();
             if (_runState == null)
                 return Error("No run in progress");
             if (_stuckReason != null)
@@ -931,7 +936,18 @@ public class RunSimulator
         if (args == null || !args.ContainsKey("col") || !args.ContainsKey("row"))
             return Error("select_map_node requires 'col' and 'row'");
 
+        // Only nodes offered by map_select are reachable; EnterMapCoord would happily
+        // teleport anywhere on the map.
+        if (_runState?.CurrentRoom is MapRoom
+            && MapSelectState().GetValueOrDefault("choices") is List<Dictionary<string, object?>> offered
+            && !offered.Any(c => Equals(c["col"], Convert.ToInt32(args["col"])) && Equals(c["row"], Convert.ToInt32(args["row"]))))
+        {
+            var list = string.Join(", ", offered.Select(c => $"({c["col"]},{c["row"]})"));
+            return Error($"Map node ({args["col"]},{args["row"]}) is not reachable; choices: {list}");
+        }
+
         // Reset tracking for new room
+        _treasureFinishPending = null;
         _rewardsProcessed = false;
         _pendingCardReward = null;
         _eventOptionChosen = false;
@@ -1405,6 +1421,8 @@ public class RunSimulator
             return Error("select_bundle requires 'bundle_index'");
 
         var idx = Convert.ToInt32(args["bundle_index"]);
+        if (idx < 0 || idx >= _pendingBundles.Count)
+            return Error($"Invalid bundle index {idx}, {_pendingBundles.Count} bundles available");
         Log($"Bundle selection: pack {idx}");
         var bundles = _pendingBundles;
         var tcs = _pendingBundleTcs;
@@ -1427,14 +1445,27 @@ public class RunSimulator
         if (args == null || !args.ContainsKey("indices"))
             return Error("select_cards requires 'indices' (comma-separated card indices)");
 
+        // Accept "0,2" or [0, 2] (Program flattens arrays to "0,2"). Invalid entries used to be
+        // dropped silently, which could resolve the prompt with nothing selected.
         var indicesStr = args["indices"]?.ToString() ?? "";
-        var indices = indicesStr.Split(',')
-            .Select(s => int.TryParse(s.Trim(), out var v) ? v : -1)
-            .Where(i => i >= 0)
-            .ToArray();
+        var tokens = indicesStr.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var optionCount = _cardSelector.PendingOptions?.Count ?? 0;
+        var indices = new List<int>();
+        foreach (var tok in tokens)
+        {
+            if (!int.TryParse(tok, out var v) || v < 0 || v >= optionCount)
+                return Error($"Invalid card index '{tok}' (valid: 0-{optionCount - 1})");
+            if (indices.Contains(v))
+                return Error($"Card index {v} given twice");
+            indices.Add(v);
+        }
+        var minSelect = Math.Min(_cardSelector.PendingMinSelect, optionCount);
+        var maxSelect = _cardSelector.PendingMaxSelect;
+        if (indices.Count < minSelect || indices.Count > maxSelect)
+            return Error($"Select between {minSelect} and {maxSelect} cards (got {indices.Count})");
 
         Log($"Card selection: indices [{string.Join(",", indices)}]");
-        _cardSelector.ResolvePendingByIndices(indices);
+        _cardSelector.ResolvePendingByIndices(indices.ToArray());
         // The flow that asked for the selection (event option, rest site SMITH, shop
         // removal, relic pickup) continues on its background task; let it finish so the
         // returned state is current and the next command can't race it.
@@ -1572,6 +1603,13 @@ public class RunSimulator
         // Dispatch based on ROOM TYPE (not event state) to avoid cross-contamination
         if (_runState?.CurrentRoom is RestSiteRoom restSiteRoom)
         {
+            // An out-of-range index used to make ChooseLocalOption fail silently and the
+            // whole rest site get skipped.
+            var restOptions = restSiteRoom.Options;
+            if (restOptions == null || optionIndex < 0 || optionIndex >= restOptions.Count)
+                return Error($"Invalid option index {optionIndex}, {restOptions?.Count ?? 0} options available");
+            if (!restOptions[optionIndex].IsEnabled)
+                return Error($"Rest site option {optionIndex} is not available");
             Log($"Rest site: choosing option {optionIndex}");
             try
             {
@@ -1610,7 +1648,10 @@ public class RunSimulator
             {
                 var options = localEvent.CurrentOptions;
                 var optCountBefore = options?.Count ?? 0;
-                if (options != null && optionIndex >= 0 && optionIndex < options.Count)
+                if (options == null || optionIndex < 0 || optionIndex >= options.Count)
+                    return Error($"Invalid option index {optionIndex}, {optCountBefore} options available");
+                if (options[optionIndex].IsLocked)
+                    return Error($"Option {optionIndex} is locked");
                 {
                     try
                     {
@@ -1707,6 +1748,9 @@ public class RunSimulator
                     Log($"Final boss defeated via Proceed (Act {_runState.CurrentActIndex + 1}), reporting victory");
                     return GameOverState(true);
                 }
+                // Rewards left on the boss screen don't follow the player into the next act.
+                _pendingCardReward = null;
+                _pendingRewards = null;
                 RunManager.Instance.EnterNextAct().GetAwaiter().GetResult();
                 WaitForActionExecutor();
                 HealBetweenActs();
@@ -2505,7 +2549,7 @@ public class RunSimulator
 
     /// <summary>When true, post-combat rewards and treasure relics are offered as decisions
     /// instead of being collected automatically.</summary>
-    public bool ManualRewards { get; set; }
+    public bool ManualRewards { get; private set; }
 
     // Indices into _pendingRewards already claimed, skipped, or handed to the card reward screen.
     private readonly HashSet<int> _rewardDone = new();
@@ -2669,6 +2713,14 @@ public class RunSimulator
                 default: return Error($"'{action}' is not available while choosing a treasure relic: use select_treasure_relic or skip_treasure_relic");
             }
         }
+        // A card reward (or a prompt) opened from the rewards screen is showing: leaving now
+        // would drop the remaining rewards, so resolve it first.
+        if (ManualRewards && _pendingRewards != null && _runState?.CurrentRoom is CombatRoom
+            && !CombatManager.Instance.IsInProgress
+            && (_pendingCardReward != null || HasPendingPrompt)
+            && action is "proceed" or "leave_room" or "select_map_node")
+            return Error($"'{action}' is not available yet: finish the current reward choice first");
+
         return action switch
         {
             "claim_reward" or "skip_rewards" => Error("No rewards to claim"),
@@ -2984,6 +3036,13 @@ public class RunSimulator
 
     private Dictionary<string, object?> TreasureState(TreasureRoom treasureRoom)
     {
+        if (ReferenceEquals(_treasureFinishPending, treasureRoom))
+        {
+            if (AwaitBackground())
+                return DetectDecisionPoint();
+            WaitForActionExecutor();
+            return CompleteTreasureRoom(treasureRoom);
+        }
         if (TreasureChoicePending(out var offered))
         {
             return new Dictionary<string, object?>
@@ -3004,6 +3063,7 @@ public class RunSimulator
     {
         offered = null;
         if (!ManualRewards || _runState?.CurrentRoom is not TreasureRoom) return false;
+        if (_treasureFinishPending != null || HasPendingPrompt) return false;  // already chosen
         try { offered = RunManager.Instance.TreasureRoomRelicSynchronizer?.CurrentRelics; }
         catch { return false; }
         return offered != null && offered.Count > 0;
@@ -3060,12 +3120,18 @@ public class RunSimulator
 
                 if (awarded != null)
                 {
-                    foreach (var res in awarded)
+                    // On a background flow: a relic whose pickup opens a prompt (e.g. choose
+                    // cards) would otherwise block the only thread that can answer it.
+                    var grants = awarded.Where(res => res.relic != null && res.player != null).ToList();
+                    if (RunInBackground(async () =>
+                        {
+                            foreach (var res in grants)
+                                await RelicCmd.Obtain(res.relic!.ToMutable(), res.player!);
+                        }))
                     {
-                        if (res.relic != null && res.player != null)
-                            RelicCmd.Obtain(res.relic.ToMutable(), res.player).GetAwaiter().GetResult();
+                        _treasureFinishPending = treasureRoom;
+                        return DetectDecisionPoint();
                     }
-                    _syncCtx.Pump();
                     WaitForActionExecutor();
                     _syncCtx.Pump();
                 }
@@ -3073,6 +3139,15 @@ public class RunSimulator
         }
         catch (Exception ex) { Log($"Treasure relic pick: {ex.Message}"); }
 
+        return CompleteTreasureRoom(treasureRoom);
+    }
+
+    // Treasure room whose relic grant paused on a prompt; finished once the prompt resolves.
+    private TreasureRoom? _treasureFinishPending;
+
+    private Dictionary<string, object?> CompleteTreasureRoom(TreasureRoom treasureRoom)
+    {
+        _treasureFinishPending = null;
         try
         {
             treasureRoom.DoNormalRewards().GetAwaiter().GetResult();
@@ -3129,6 +3204,8 @@ public class RunSimulator
     // while the prompt is surfaced, so the follow-up command can wait for it to finish
     // instead of sleeping a fixed amount of time.
     private Task? _backgroundTask;
+    // A background flow that outlived AwaitBackground's timeout (no prompt, still running).
+    private Task? _detachedTask;
 
     private bool HasPendingPrompt =>
         _cardSelector.HasPending || _cardSelector.HasPendingReward || _pendingBundles != null;
@@ -3144,6 +3221,13 @@ public class RunSimulator
         {
             Log("Previous background flow is waiting on a prompt; not starting a new one");
             return true;
+        }
+        if (_detachedTask != null)
+        {
+            if (((IAsyncResult)_detachedTask).AsyncWaitHandle.WaitOne(timeoutMs))
+                _detachedTask = null;
+            else
+                Log("A timed-out background flow is still running; starting a new one anyway");
         }
         _backgroundTask = Task.Run(work);
         return AwaitBackground(timeoutMs);
@@ -3164,9 +3248,14 @@ public class RunSimulator
             if (task == null || task.IsCompleted) break;
             if (sw.ElapsedMilliseconds >= timeoutMs)
             {
-                // Stop tracking it so later commands don't each wait the full timeout.
+                // Stop waiting on it in every command, but keep a reference so a new flow
+                // or a run reset can still tell it is alive.
                 Log($"Background task still running after {timeoutMs}ms; no longer waiting on it");
-                if (ReferenceEquals(_backgroundTask, task)) _backgroundTask = null;
+                if (ReferenceEquals(_backgroundTask, task))
+                {
+                    _detachedTask = task;
+                    _backgroundTask = null;
+                }
                 return HasPendingPrompt;
             }
             // Wakes as soon as the task completes; never throws on a faulted task.
@@ -3277,6 +3366,7 @@ public class RunSimulator
             ["max_hp"] = player.Creature?.MaxHp ?? 0,
             ["block"] = player.Creature?.Block ?? 0,
             ["gold"] = player.Gold,
+            ["potion_slots"] = player.MaxPotionCount,
             ["relics"] = player.Relics?.Select(r =>
             {
                 var vars = new Dictionary<string, object?>();
@@ -3706,19 +3796,26 @@ public class RunSimulator
 
             // Store pending and block until main loop resolves
             var wait = new ManualResetEventSlim(false);
-            _rewardChoice = -1;
-            PendingRewardCards = options.ToList();
-            _rewardWait = wait;
+            lock (_rewardLock)
+            {
+                _rewardChoice = -1;
+                PendingRewardCards = options.ToList();
+                _rewardWait = wait;
+            }
 
             Console.Error.WriteLine($"[SIM] Card reward pending: {options.Count} cards (blocking)");
             wait.Wait(TimeSpan.FromSeconds(300)); // Wait up to 5 min
 
-            var choice = _rewardChoice;
-            // Normally already cleared by ResolveReward/SkipReward; also covers the timeout.
-            if (ReferenceEquals(_rewardWait, wait))
+            int choice;
+            lock (_rewardLock)
             {
-                PendingRewardCards = null;
-                _rewardWait = null;
+                choice = _rewardChoice;
+                // Normally already cleared by ResolveReward/SkipReward; also covers the timeout.
+                if (ReferenceEquals(_rewardWait, wait))
+                {
+                    PendingRewardCards = null;
+                    _rewardWait = null;
+                }
             }
 
             if (choice >= 0 && choice < options.Count)
@@ -3744,12 +3841,21 @@ public class RunSimulator
         // whenever the background thread gets scheduled.
         private void CompleteReward(int choice)
         {
-            var wait = _rewardWait;
-            _rewardChoice = choice;
-            PendingRewardCards = null;
-            _rewardWait = null;
-            wait?.Set();
+            // Locked with GetSelectedCardReward's publish so a reward published concurrently
+            // (game thread) is never half-cleared here.
+            ManualResetEventSlim? wait;
+            lock (_rewardLock)
+            {
+                wait = _rewardWait;
+                if (wait == null) return;
+                _rewardChoice = choice;
+                PendingRewardCards = null;
+                _rewardWait = null;
+            }
+            wait.Set();
         }
+
+        private readonly object _rewardLock = new();
     }
 
     internal static class YieldPatches
@@ -4337,18 +4443,20 @@ public class RunSimulator
         {
             CancelAllPrompts();
             _syncCtx.Pump();
-            var task = _backgroundTask;
-            if ((task == null || task.IsCompleted) && !HasPendingPrompt) break;
+            var task = _backgroundTask is { IsCompleted: false } ? _backgroundTask
+                : _detachedTask is { IsCompleted: false } ? _detachedTask : null;
+            if (task == null && !HasPendingPrompt) break;
             if (sw.ElapsedMilliseconds > 5000)
             {
                 Log("Previous run's background flow did not stop; process must be restarted");
                 _poisoned = true;
                 return false;
             }
-            if (task != null && !task.IsCompleted)
+            if (task != null)
                 ((IAsyncResult)task).AsyncWaitHandle.WaitOne(1);
         }
         _backgroundTask = null;
+        _detachedTask = null;
 
         CleanUp();
         _syncCtx.Pump();
@@ -4365,6 +4473,7 @@ public class RunSimulator
         _pendingCardReward = null;
         _rewardsProcessed = false;
         _rewardDone.Clear();
+        _treasureFinishPending = null;
         _goldBeforeCombat = 0;
         _lastKnownHp = 0;
         _turnStarted.Reset();

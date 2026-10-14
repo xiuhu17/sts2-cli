@@ -19,7 +19,7 @@ def _play(game, state, steps):
         elif d == "card_reward":
             state = game.act("select_card_reward", card_index=0)
         elif d == "card_select":
-            state = game.act("select_cards", indices="0")
+            state = game.select_first(state)
         elif d == "bundle_select":
             state = game.act("select_bundle", bundle_index=0)
         elif d == "rest_site":

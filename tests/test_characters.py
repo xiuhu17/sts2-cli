@@ -56,7 +56,7 @@ class TestFullRun:
                 if state.get("min_select", 0) == 0:
                     state = game.act("skip_select")
                 else:
-                    state = game.act("select_cards", indices="0")
+                    state = game.select_first(state)
             elif dec == "rest_site":
                 opts = [o for o in state["options"] if o.get("is_enabled")]
                 state = game.act("choose_option", option_index=opts[0]["index"])
