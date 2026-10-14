@@ -51,7 +51,9 @@ class EngineError(RuntimeError):
 class Engine:
     """A running headless engine process speaking the line-delimited JSON protocol."""
 
-    def __init__(self, stderr_sink=None, timeout=30.0, env=None):
+    def __init__(self, stderr_sink=None, timeout=60.0, env=None):
+        # The engine answers engine_timeout itself after STS2_COMMAND_TIMEOUT (30s by
+        # default); this client-side timeout is only a backstop for a dead process.
         """stderr_sink: None to discard engine logs, or a callable(line) to receive them."""
         self.timeout = timeout
         self.proc = subprocess.Popen(
@@ -93,6 +95,9 @@ class Engine:
                 msg = json.loads(line)
                 if msg.get("type") == "fatal":
                     raise EngineError(f"Engine crashed: {msg.get('message')}")
+                if msg.get("code") in ("engine_timeout", "restart_required"):
+                    # The engine process is wedged and refuses further commands.
+                    raise EngineError(f"Engine needs a restart: {msg.get('message')}")
                 return msg
 
     def send(self, cmd, timeout=None):

@@ -94,8 +94,17 @@ class Program
             return null;
         };
 
-        var sim = new RunSimulator();
+        // All game logic runs on one dedicated engine thread; this thread only reads commands and
+        // waits for each result with a deadline. If the engine wedges (a game flow that never
+        // completes), the client gets an engine_timeout error instead of blocking forever, and
+        // the process refuses further commands so the client restarts it.
+        var engine = new EngineThread();
+        var sim = engine.Run(() => new RunSimulator(), TimeSpan.FromMinutes(5)).Result!;
         WriteLine(new Dictionary<string, object?> { ["type"] = "ready", ["version"] = "0.2.0" });
+
+        var timeout = TimeSpan.FromSeconds(
+            double.TryParse(Environment.GetEnvironmentVariable("STS2_COMMAND_TIMEOUT"), out var secs) && secs > 0 ? secs : 30);
+        var wedged = false;
 
         string? line;
         while ((line = Console.ReadLine()) != null)
@@ -104,19 +113,54 @@ class Program
             if (string.IsNullOrEmpty(line)) continue;
 
             Dictionary<string, object?>? result;
-            try
-            {
-                var cmd = JsonSerializer.Deserialize<JsonElement>(line);
-                result = HandleCommand(sim, cmd);
-                if (result != null) LegalActions.Attach(result);
-            }
+            JsonElement cmd;
+            try { cmd = JsonSerializer.Deserialize<JsonElement>(line); }
             catch (JsonException ex)
             {
-                result = new Dictionary<string, object?> { ["type"] = "error", ["message"] = $"Invalid JSON: {ex.Message}" };
+                WriteLine(new Dictionary<string, object?> { ["type"] = "error", ["message"] = $"Invalid JSON: {ex.Message}" });
+                continue;
             }
-            catch (Exception ex)
+
+            if (wedged)
             {
+                if (IsQuit(cmd))
+                {
+                    WriteLine(new Dictionary<string, object?> { ["type"] = "quit_result", ["success"] = true, ["save"] = null });
+                    Environment.Exit(0);  // the engine thread is stuck; don't wait for it
+                }
+                WriteLine(new Dictionary<string, object?>
+                {
+                    ["type"] = "error", ["code"] = "restart_required",
+                    ["message"] = "A previous command timed out and the engine is stuck; restart the process.",
+                });
+                continue;
+            }
+
+            var job = engine.Run(() =>
+            {
+                var r = HandleCommand(sim, cmd);
+                if (r != null) LegalActions.Attach(r);
+                return r;
+            }, timeout);
+
+            if (!job.Completed)
+            {
+                wedged = true;
+                Console.Error.WriteLine($"[ERROR] Command timed out after {timeout.TotalSeconds}s: {line}");
+                result = new Dictionary<string, object?>
+                {
+                    ["type"] = "error", ["code"] = "engine_timeout",
+                    ["message"] = $"Command did not finish within {timeout.TotalSeconds}s; the engine is stuck. Restart the process.",
+                };
+            }
+            else if (job.Error != null)
+            {
+                var ex = job.Error;
                 result = new Dictionary<string, object?> { ["type"] = "error", ["message"] = $"{ex.GetType().Name}: {ex.Message}", ["stack_trace"] = ex.ToString() };
+            }
+            else
+            {
+                result = job.Result;
             }
 
             if (result != null)
@@ -128,6 +172,49 @@ class Program
                     break;
                 }
             }
+        }
+    }
+
+    static bool IsQuit(JsonElement cmd) =>
+        cmd.ValueKind == JsonValueKind.Object && cmd.TryGetProperty("cmd", out var c)
+        && c.ValueKind == JsonValueKind.String && c.GetString() == "quit";
+
+    /// <summary>A single thread that executes engine work items one at a time.</summary>
+    private sealed class EngineThread
+    {
+        private readonly System.Collections.Concurrent.BlockingCollection<Action> _work = new();
+
+        public EngineThread()
+        {
+            var t = new Thread(() => { foreach (var a in _work.GetConsumingEnumerable()) a(); })
+            {
+                IsBackground = true,  // never keeps the process alive
+                Name = "sts2-engine",
+            };
+            t.Start();
+        }
+
+        public sealed class Job<T>
+        {
+            public bool Completed;
+            public T? Result;
+            public Exception? Error;
+        }
+
+        /// <summary>Run <paramref name="f"/> on the engine thread; wait at most <paramref name="timeout"/>.</summary>
+        public Job<T> Run<T>(Func<T> f, TimeSpan timeout)
+        {
+            var job = new Job<T>();
+            using var done = new ManualResetEventSlim(false);
+            var signal = done;
+            _work.Add(() =>
+            {
+                try { job.Result = f(); }
+                catch (Exception ex) { job.Error = ex; }
+                finally { try { signal.Set(); } catch (ObjectDisposedException) { } }
+            });
+            job.Completed = done.Wait(timeout);
+            return job;
         }
     }
 
@@ -186,6 +273,11 @@ class Program
             }
             case "get_map":
                 return sim.GetFullMap();
+
+            case "__debug_sleep" when Environment.GetEnvironmentVariable("STS2_DEBUG_COMMANDS") == "1":
+                // Test hook for the command watchdog: blocks the engine thread.
+                Thread.Sleep(cmd.TryGetProperty("ms", out var ms) ? ms.GetInt32() : 60000);
+                return new Dictionary<string, object?> { ["type"] = "ok" };
 
             case "set_player":
             {
