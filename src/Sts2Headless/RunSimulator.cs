@@ -235,6 +235,7 @@ public class RunSimulator
         {
             _loc.Lang = lang;
             EnsureModelDbInitialized();
+            ResetForNewRun();
 
             var player = CreatePlayer(character);
             if (player == null)
@@ -267,8 +268,7 @@ public class RunSimulator
             Log("Run launched");
 
             // Register event handlers for combat turn transitions
-            CombatManager.Instance.TurnStarted += _ => _turnStarted.Set();
-            CombatManager.Instance.CombatEnded += _ => _combatEnded.Set();
+            AttachCombatHandlers();
 
             // Finalize starting relics
             RunManager.Instance.FinalizeStartingRelics().GetAwaiter().GetResult();
@@ -279,8 +279,7 @@ public class RunSimulator
             Log("Entered Act 0");
 
             // Register card selector for cards that need player choice
-            CardSelectCmd.UseSelector(_cardSelector);
-            LocPatches._bundleSimRef = this;
+            AttachCardSelector();
 
             // Now we should be at the map — detect decision point
             return DetectDecisionPoint();
@@ -497,6 +496,7 @@ public class RunSimulator
         {
             _loc.Lang = lang;
             EnsureModelDbInitialized();
+            ResetForNewRun();
 
             Log("Loading save file...");
 
@@ -520,10 +520,8 @@ public class RunSimulator
             RunManager.Instance.SetUpSavedSingleplayer(_runState, save).GetAwaiter().GetResult();
             LocalContext.NetId = netService.NetId;
 
-            CombatManager.Instance.TurnStarted += _ => _turnStarted.Set();
-            CombatManager.Instance.CombatEnded += _ => _combatEnded.Set();
-            CardSelectCmd.UseSelector(_cardSelector);
-            LocPatches._bundleSimRef = this;
+            AttachCombatHandlers();
+            AttachCardSelector();
 
             var savedRoom = _runState.CurrentRoom;
 
@@ -864,6 +862,8 @@ public class RunSimulator
         {
             if (_runState == null)
                 return Error("No run in progress");
+            if (_stuckReason != null)
+                return StuckError();
 
             var player = _runState.Players[0];
 
@@ -1186,10 +1186,14 @@ public class RunSimulator
 
                     if (IsPlayPhase())
                         Log("Nuclear fallback SUCCEEDED — play phase resumed");
+                    else if (!CombatManager.Instance.IsInProgress || player.Creature.IsDead)
+                        Log("Nuclear fallback: combat ended — reporting real outcome");
                     else
                     {
-                        Log("Nuclear fallback FAILED — forcing game_over to escape deadlock");
-                        return GameOverState(false);
+                        // Don't disguise a deadlock as a defeat: report it so callers can
+                        // tell engine failures apart from real losses.
+                        Log("Nuclear fallback FAILED — run is stuck");
+                        return MarkStuck("end_turn could not advance combat (engine deadlock)");
                     }
                 }
                 catch (Exception ex)
@@ -3423,6 +3427,13 @@ public class RunSimulator
 
         public bool HasPendingReward => PendingRewardCards != null && _rewardWait != null;
 
+        /// <summary>Drop any pending prompt, waking the game thread that is waiting on it.</summary>
+        public void Reset()
+        {
+            CancelPending();
+            CompleteReward(-1);
+        }
+
         public void ResolveReward(int index) => CompleteReward(index);
 
         public void SkipReward() => CompleteReward(-1);
@@ -3834,6 +3845,33 @@ public class RunSimulator
     private static Dictionary<string, object?> Error(string message) =>
         new() { ["type"] = "error", ["message"] = message };
 
+    // Set when the engine can no longer advance the current run. Every later action gets
+    // the same error until a new run is started or loaded.
+    private string? _stuckReason;
+
+    private Dictionary<string, object?> MarkStuck(string reason)
+    {
+        _stuckReason = reason;
+        return StuckError();
+    }
+
+    private Dictionary<string, object?> StuckError()
+    {
+        var ctx = _runState == null ? null : new Dictionary<string, object?>
+        {
+            ["act"] = _runState.CurrentActIndex + 1,
+            ["floor"] = _runState.ActFloor,
+            ["room_type"] = _runState.CurrentRoom?.GetType().Name,
+        };
+        return new()
+        {
+            ["type"] = "error",
+            ["code"] = "engine_stuck",
+            ["message"] = $"Run is stuck: {_stuckReason}. Start or load a new run.",
+            ["context"] = ctx,
+        };
+    }
+
     private static Dictionary<string, object?> ErrorWithTrace(string context, Exception ex)
     {
         var inner = ex;
@@ -3934,6 +3972,68 @@ public class RunSimulator
         {
             Log($"CleanUp exception: {ex.Message}");
         }
+    }
+
+    // ─── Run lifecycle (reusing one process for many runs) ───
+
+    private IDisposable? _selectorScope;
+    private CombatManager? _handlersAttachedTo;
+
+    private void AttachCombatHandlers()
+    {
+        // Don't stack a second pair of handlers on the same CombatManager across runs.
+        var combat = CombatManager.Instance;
+        if (ReferenceEquals(_handlersAttachedTo, combat)) return;
+        combat.TurnStarted += _ => _turnStarted.Set();
+        combat.CombatEnded += _ => _combatEnded.Set();
+        _handlersAttachedTo = combat;
+    }
+
+    private void AttachCardSelector()
+    {
+        _selectorScope?.Dispose();
+        _selectorScope = CardSelectCmd.UseSelector(_cardSelector);
+        LocPatches._bundleSimRef = this;
+    }
+
+    /// <summary>
+    /// Tear down the previous run, if any, so start_run / load_save can be called repeatedly
+    /// in one process without paying the one-time engine initialisation again.
+    /// </summary>
+    private void ResetForNewRun()
+    {
+        _stuckReason = null;
+        if (_runState == null && !RunManager.Instance.IsInProgress)
+            return;
+
+        Log("Resetting previous run");
+        // Unblock any game flow from the previous run that is still waiting on a prompt,
+        // and give it a moment to unwind before tearing the run down.
+        var bundleTcs = _pendingBundleTcs;
+        _pendingBundles = null;
+        _pendingBundleTcs = null;
+        _cardSelector.Reset();
+        bundleTcs?.TrySetResult(Array.Empty<CardModel>());
+        AwaitBackground(1000);
+        _backgroundTask = null;
+
+        CleanUp();
+        _syncCtx.Pump();
+
+        _selectorScope?.Dispose();
+        _selectorScope = null;
+        CardSelectCmd.Reset();
+        YieldPatches.SuppressYield = false;
+
+        _eventOptionChosen = false;
+        _lastEventOptionCount = 0;
+        _pendingRewards = null;
+        _pendingCardReward = null;
+        _rewardsProcessed = false;
+        _goldBeforeCombat = 0;
+        _lastKnownHp = 0;
+        _turnStarted.Reset();
+        _combatEnded.Reset();
     }
 
     #endregion

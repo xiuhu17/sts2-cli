@@ -10,7 +10,7 @@ regression check for performance work.
 
 Usage:
   python3 scripts/bench.py [--runs N] [--characters Ironclad,Silent] [--jobs J]
-                           [--out results.json] [--compare baseline.json]
+                           [--reuse] [--out results.json] [--compare baseline.json]
 """
 
 import argparse
@@ -72,8 +72,13 @@ class RecordingLogger:
         return self._hash.hexdigest()[:16]
 
 
+# Per-worker engine when --reuse is on (one process plays many runs).
+_ENGINE = None
+
+
 def run_one(job):
-    seed, character, dump_dir = job
+    global _ENGINE
+    seed, character, dump_dir, reuse = job
     holder = {}
 
     def make_logger(*a, **kw):
@@ -82,7 +87,16 @@ def run_one(job):
 
     play_full_run.GameLogger = make_logger
     t0 = time.perf_counter()
-    result = play_full_run.play_run(seed, character, verbose=False, log=True)
+    if reuse:
+        from engine import Engine
+        if _ENGINE is None:
+            _ENGINE = Engine()
+        result = play_full_run.play_run(seed, character, verbose=False, log=True, engine=_ENGINE)
+        if result.get("engine_broken") or result.get("error") == "engine_stuck":
+            _ENGINE.close()
+            _ENGINE = None
+    else:
+        result = play_full_run.play_run(seed, character, verbose=False, log=True)
     wall = time.perf_counter() - t0
     lg = holder["logger"]
     lat = sorted(lg.latencies)
@@ -118,11 +132,13 @@ def main():
     ap.add_argument("--out")
     ap.add_argument("--compare", help="previous results JSON to diff fingerprints against")
     ap.add_argument("--dump", help="directory to write per-run trajectories (JSONL)")
+    ap.add_argument("--reuse", action="store_true",
+                    help="reuse one engine process per worker across runs")
     args = ap.parse_args()
 
     if args.dump:
         os.makedirs(args.dump, exist_ok=True)
-    jobs = [(f"{args.seed_prefix}_{i}", c, args.dump)
+    jobs = [(f"{args.seed_prefix}_{i}", c, args.dump, args.reuse)
             for c in args.characters.split(",") for i in range(args.runs)]
     t0 = time.perf_counter()
     if args.jobs > 1:
@@ -150,7 +166,8 @@ def main():
     print(f"\n{len(results)} runs, {steps} steps, total wall {total:.1f}s, "
           f"{steps / total:.1f} steps/s overall")
 
-    summary = {"total_wall_s": round(total, 2), "jobs": args.jobs, "results": results}
+    summary = {"total_wall_s": round(total, 2), "jobs": args.jobs, "reuse": args.reuse,
+               "results": results}
     if args.out:
         with open(args.out, "w") as f:
             json.dump(summary, f, indent=2)
