@@ -30,7 +30,8 @@
 - **Fix**: After non-Smith rest options, force transition to map via ForceToMap().
 - **Relevant code**: Sts2Headless/RunSimulator.cs (DoChooseOption rest site handler)
 
-## [WONTFIX] BUG-003: EOF crash during Leaf Slime combat (2026-03-22)
+## [CANNOT_REPRODUCE] BUG-003: EOF crash during Leaf Slime combat (2026-03-22)
+- **Update 2026-10-14**: Not reproducible on build 24724944 (v0.111.0 beta): 60 Leaf Slime combats with no crash. The current Leaf Slime monsters have no split move.
 - **Decision type**: combat_play
 - **Description**: Simulator occasionally crashes (returns EOF) during combat with Leaf Slime groups, possibly related to slime splitting mechanics or card interactions during split.
 - **Repro**: Fight Leaf Slime group with seed=silent_run_3
@@ -59,7 +60,8 @@
 - **Reported by**: Ironclad agent (iteration 2)
 - **Relevant code**: Sts2Headless/RunSimulator.cs (GameOverState, CombatPlayState, DoMapSelect)
 
-## [NEEDS_VERIFY] BUG-006: Regent Particle Wall card can_play=true but fails to play (2026-03-22)
+## [FIXED] BUG-006: Regent Particle Wall card can_play=true but fails to play (2026-03-22)
+- **Update 2026-10-14**: Real bug in the headless host: Particle Wall returns itself to the same hand slot, which the old "still in hand" check read as a failed play. DoPlayCard now checks CombatHistory.CardPlaysStarted. Test: tests/test_combat.py TestCardFixes.
 - **Decision type**: combat_play
 - **Description**: Particle Wall (Regent card) reports can_play=true but when played returns "Card could not be played (still in hand after action)". May require special target or condition not captured by can_play.
 - **Reported by**: Regent agent (iteration 2)
@@ -97,7 +99,8 @@
 - **Fix**: Changed `_runState.Act?.BossId.Entry` to `_runState.Act?.BossEncounter?.Id?.Entry` in both RunContext and GetFullMap. Also restructured output to `{id, name}` dict.
 - **Relevant code**: Sts2Headless/RunSimulator.cs (lines ~1990, ~2670)
 
-## [CANNOT_REPRODUCE] BUG-017: Silent Slice card deals 0 damage (2026-03-22)
+## [NOT_REPRODUCIBLE] BUG-017: Silent Slice card deals 0 damage (2026-03-22)
+- **Update 2026-10-14**: Slice deals its listed damage on the current build.
 - **Decision type**: combat_play
 - **Description**: Slice card (0-cost Attack) deals 0 damage consistently. Multiple agents confirmed.
 - **Status**: Likely a game data issue — the card's DynamicVars may not have a "damage" entry, or the headless mode card model doesn't define damage correctly. Without a game log showing Slice in hand with its stats, cannot reproduce or diagnose further. The displayed stats come from DynamicVars.BaseValue which may differ from actual resolved damage.
@@ -109,19 +112,22 @@
 - **Resolution**: The displayed stats are DynamicVars.BaseValue (base stats before combat modifiers). Actual damage at play time is calculated with Strength, Vulnerable, and other modifiers. The discrepancy between displayed base stats and actual resolved damage is expected behavior — the simulator shows base values, not combat-resolved values. This is consistent with how all other cards work.
 - **Workaround**: Don't rely on displayed stats as exact damage values; they are base stats only.
 
-## [CANNOT_REPRODUCE] BUG-019: Phantom Blades unreliable auto-trigger (2026-03-22)
+## [NOT_REPRODUCIBLE] BUG-019: Phantom Blades unreliable auto-trigger (2026-03-22)
+- **Update 2026-10-14**: Phantom Blades behaves as its card text says on the current build.
 - **Decision type**: combat_play
 - **Description**: Phantom Blades power doesn't trigger reliably on enemy attack turns.
 - **Status**: Event-driven power triggers may not fire correctly in headless mode due to missing event subscriptions or timing issues with the InlineSynchronizationContext. Without a game log showing Phantom Blades active and failing to trigger, cannot diagnose further.
 - **Workaround**: Don't pick this card.
 
-## [CANNOT_REPRODUCE] BUG-020: Danse Macabre end-of-turn damage doesn't apply (2026-03-22)
+## [NOT_A_BUG] BUG-020: Danse Macabre end-of-turn damage doesn't apply (2026-03-22)
+- **Update 2026-10-14**: Danse Macabre grants Block when you play a card costing 2+ energy; it has no end-of-turn damage. The report misread the card text.
 - **Decision type**: combat_play
 - **Description**: Danse Macabre power supposed to deal end-of-turn damage but confirmed unreliable in simulator.
 - **Status**: Same class of issue as BUG-019 — event-driven end-of-turn effects may not process correctly in headless mode. Needs a game log with Danse Macabre active to diagnose.
 - **Workaround**: Don't rely on this for damage scaling.
 
-## [CANNOT_REPRODUCE] BUG-021: Doom Potion doesn't tick damage (2026-03-22)
+## [NOT_A_BUG] BUG-021: Doom Potion doesn't tick damage (2026-03-22)
+- **Update 2026-10-14**: Doom does no damage tick: the creature dies at the end of its turn if Doom >= its HP. Works on the current build.
 - **Decision type**: combat_play
 - **Description**: Doom Potion applies 33 Doom but damage never ticks during boss fight.
 - **Status**: Same class of issue as BUG-019/020 — Doom is a debuff whose damage tick is event-driven. May not fire in headless mode. Needs a game log with Doom applied to diagnose.

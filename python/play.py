@@ -1827,6 +1827,28 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0, log=True,
                 state = send({"cmd": "action", "action": "select_bundle",
                              "args": {"bundle_index": int(choice)}})
 
+            elif dec == "crystal_sphere":
+                print(f"\n{'─' * 60}")
+                print(f"  {c('Crystal Sphere', 'bold')}  "
+                      f"{t('Divinations left','剩余占卜次数')}: {c(str(state.get('divinations_left')), 'yellow')}")
+                print(f"  {c(t('? hidden  . empty  g gold  p potion  c card  r relic  x curse', '? 未揭开  . 空  g 金币  p 药水  c 卡牌  r 遗物  x 诅咒'), 'dim')}")
+                width = state.get("width", 0)
+                print("     " + " ".join(f"{x:>2}" for x in range(width)))
+                for y, row in enumerate(state.get("rows", [])):
+                    print(f"  {y:>2} " + " ".join(f" {ch}" for ch in row))
+                hidden = state.get("hidden_cells", [])
+                valid = {f"{x} {y}" for x, y in hidden} | {f"{x} {y} s" for x, y in hidden}
+                if auto:
+                    x, y = hidden[0]
+                    choice = f"{x} {y}"
+                else:
+                    choice = get_input(t("Reveal cell 'x y' (3x3), or 'x y s' for a single cell",
+                                         "揭开格子：输入 'x y'（3x3 范围），或 'x y s'（单格）"), valid, state=state)
+                parts = choice.split()
+                state = send({"cmd": "action", "action": "crystal_sphere_click",
+                              "args": {"x": int(parts[0]), "y": int(parts[1]),
+                                       "tool": "small" if len(parts) > 2 else "big"}})
+
             elif dec == "card_select":
                 print(f"\n{'─' * 60}")
                 ctx = state.get("context", {})

@@ -8,7 +8,8 @@ namespace Sts2Headless;
 ///   {"action": "play_card", "args": {"card_index": 0, "target_index": 1}}
 /// except multi-card selections, where enumerating every combination would explode; those get
 ///   {"action": "select_cards", "choose": {"from": [0, 1, 2], "min": 1, "max": 2}}
-/// and the client sends {"indices": "0,2"} built from that.
+/// and the client sends {"indices": "0,2"} built from that. The Crystal Sphere minigame gets
+///   {"action": "crystal_sphere_click", "choose_cell": {"cells": [[x, y], ...], "tools": ["big", "small"]}}
 /// </summary>
 internal static class LegalActions
 {
@@ -143,6 +144,20 @@ internal static class LegalActions
                 acts.Add(Act("proceed"));
                 break;
             }
+
+            case "crystal_sphere":
+                // One entry instead of cells x tools: send {"x":..,"y":..,"tool":"big"|"small"}.
+                if (r.GetValueOrDefault("hidden_cells") is System.Collections.IList { Count: > 0 } hidden)
+                    acts.Add(new Dictionary<string, object?>
+                    {
+                        ["action"] = "crystal_sphere_click",
+                        ["choose_cell"] = new Dictionary<string, object?>
+                        {
+                            ["cells"] = hidden,
+                            ["tools"] = r.GetValueOrDefault("tools"),
+                        },
+                    });
+                break;
 
             case "treasure_relic":
                 foreach (var t in Items(r, "relics"))

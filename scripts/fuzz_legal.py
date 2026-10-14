@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Fuzz legal_actions: play runs choosing uniformly at random among legal_actions and fail
-on any error response. Checks that everything listed as legal is actually accepted.
+on any error response, or when the same decision repeats 40 times without progress.
+Checks that everything listed as legal is actually accepted and actually does something.
 
 Usage:
   python3 scripts/fuzz_legal.py [--runs N] [--steps S] [--manual-rewards] [--immortal] [--seed-prefix P]
@@ -29,10 +30,23 @@ def to_command(entry, rng):
         k = rng.randint(ch["min"], ch["max"])
         picks = rng.sample(ch["from"], k)
         return {"cmd": "action", "action": entry["action"], "args": {"indices": ",".join(map(str, picks))}}
+    if "choose_cell" in entry:
+        x, y = rng.choice(entry["choose_cell"]["cells"])
+        tool = rng.choice(entry["choose_cell"]["tools"])
+        return {"cmd": "action", "action": entry["action"], "args": {"x": x, "y": y, "tool": tool}}
     cmd = {"cmd": "action", "action": entry["action"]}
     if entry.get("args"):
         cmd["args"] = entry["args"]
     return cmd
+
+
+def progress_key(state):
+    """Identity of a decision ignoring legal_actions; repeating it means no progress."""
+    p = state.get("player") or {}
+    return json.dumps([state.get("decision"), state.get("event_name"), state.get("description"),
+                       [o.get("title") for o in state.get("options") or []],
+                       p.get("hp"), p.get("gold"), p.get("deck_size"),
+                       state.get("round"), len(state.get("hand") or []), state.get("energy")])
 
 
 def main():
@@ -71,7 +85,15 @@ def main():
         state = engine.send(start)
         if args.immortal:
             engine.send({"cmd": "set_player", "hp": 99999, "max_hp": 99999})
+        last_key, repeats = None, 0
         for step in range(args.steps):
+            if state.get("type") == "decision":
+                key = progress_key(state)
+                repeats = repeats + 1 if key == last_key else 0
+                last_key = key
+                if repeats >= 40 and state["decision"] != "combat_play":
+                    failures.append((seed, step, "stalled", f"{state['decision']} {state.get('event_name') or ''}"))
+                    break
             if state.get("type") != "decision":
                 failures.append((seed, step, last, state.get("message")))
                 break

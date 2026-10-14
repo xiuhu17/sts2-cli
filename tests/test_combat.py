@@ -260,3 +260,26 @@ class TestPileContents:
         state = game.act("play_card", **args)
         if card["type"] != "Power":
             assert state["discard_pile_count"] + state["exhaust_pile_count"] >= 1
+
+
+class TestCardFixes:
+    def test_particle_wall_returning_to_hand_is_not_an_error(self, game):
+        """BUG-006: Particle Wall returns itself to the same hand slot after being played."""
+        game.skip_neow(game.start(character="Regent", seed="pw1"))
+        game.set_player(deck=["PARTICLE_WALL"])
+        state = game.enter_room("combat")
+        card = next(c for c in state["hand"] if "Particle" in c["name"])
+        state = game.act("play_card", card_index=card["index"])
+        assert state["type"] == "decision", state
+        assert state["player"]["block"] > 0
+
+    def test_neutralize_uses_real_card_logic(self, game):
+        game.skip_neow(game.start(character="Silent", seed="nz1"))
+        game.set_player(deck=["NEUTRALIZE"] * 5)
+        state = game.enter_room("combat")
+        enemy = state["enemies"][0]
+        state = game.act("play_card", card_index=0, target_index=0)
+        assert state["type"] == "decision", state
+        after = state["enemies"][0]
+        assert after["hp"] < enemy["hp"]
+        assert any("Weak" in p["name"] for p in after.get("powers") or [])
