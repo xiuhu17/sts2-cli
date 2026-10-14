@@ -42,18 +42,32 @@ def main():
     ap.add_argument("--manual-rewards", action="store_true")
     ap.add_argument("--immortal", action="store_true")
     ap.add_argument("--seed-prefix", default="fuzz")
+    ap.add_argument("--only", type=int, help="run only this run index (to reproduce a failure)")
+    ap.add_argument("--fresh", action="store_true", help="new engine process for every run")
+    ap.add_argument("--stderr", help="append engine stderr (logs) to this file")
+    ap.add_argument("--trace", help="write the action/response trace (JSONL) to this file")
     args = ap.parse_args()
 
     failures, used, decisions = [], Counter(), Counter()
     total_steps = 0
-    engine = Engine()
+    log = open(args.stderr, "a") if args.stderr else None
+    trace = open(args.trace, "w") if args.trace else None
+    sink = (lambda l: (log.write(l + "\n"), log.flush())) if log else None
+    engine = Engine(stderr_sink=sink)
     for i in range(args.runs):
+        if args.only is not None and i != args.only:
+            continue
+        if args.fresh and i > 0 and args.only is None:
+            engine.close()
+            engine = Engine(stderr_sink=sink)
         seed = f"{args.seed_prefix}_{i}"
         character = CHARACTERS[i % len(CHARACTERS)]
         rng = random.Random(seed)
         start = {"cmd": "start_run", "character": character, "seed": seed}
         if args.manual_rewards:
             start["manual_rewards"] = True
+        if log:
+            log.write(f"=== start {json.dumps(start)}\n")
         state = engine.send(start)
         if args.immortal:
             engine.send({"cmd": "set_player", "hp": 99999, "max_hp": 99999})
@@ -76,7 +90,11 @@ def main():
             entry = rng.choice(pool)
             last = to_command(entry, rng)
             used[entry["action"]] += 1
+            if log:
+                log.write(f"=== step {step} {json.dumps(last)}\n")
             state = engine.send(last)
+            if trace:
+                trace.write(json.dumps({"step": step, "action": last, "response": state}) + "\n")
             total_steps += 1
         print(f"{character:<12} {seed:<10} steps={step + 1:<5} end={state.get('decision') or state.get('type')} "
               f"floor={(state.get('context') or {}).get('floor')}")
