@@ -2,15 +2,14 @@
 
 import json
 import os
-import shutil
 import subprocess
+import sys
 import pytest
 
-DOTNET = os.path.expanduser("~/.dotnet-arm64/dotnet")
-if not os.path.isfile(DOTNET):
-    DOTNET = shutil.which("dotnet") or DOTNET
-PROJECT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                       "src", "Sts2Headless", "Sts2Headless.csproj")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "python"))
+from engine import PROJECT, engine_command, find_dotnet  # noqa: E402
+
+DOTNET = find_dotnet() or "dotnet"
 
 
 class Game:
@@ -21,9 +20,10 @@ class Game:
         # Match the interactive launcher's default: resolve dependencies from lib,
         # never silently borrow missing assemblies from the Steam installation.
         env["STS2_GAME_DIR"] = os.path.join(os.path.dirname(os.path.dirname(PROJECT)), "..", "lib")
+        # stderr is discarded: an undrained PIPE fills up and blocks the engine.
         self.proc = subprocess.Popen(
-            [DOTNET, "run", "--no-build", "--project", PROJECT],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            engine_command(DOTNET),
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             text=True, bufsize=1, env=env,
         )
         ready = self._read()

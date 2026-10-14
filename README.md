@@ -79,6 +79,11 @@ dotnet run --project src/Sts2Headless/Sts2Headless.csproj
 
 Each command returns a JSON decision point (`map_select` / `combat_play` / `card_reward` / `rest_site` / `event_choice` / `shop` / `game_over`). All names are in English.
 
+- **Many runs per process:** send `start_run` (or `load_save`) again to begin a new run; the previous one is torn down. This skips the ~0.6s engine start-up, so batch/RL workloads should keep one process per worker. `python/engine.py` has a small `Engine` wrapper (`dotnet bin/.../Sts2Headless.dll` directly, bounded reads, stderr drained).
+- **Errors:** `{"type":"error","message":...}`. If the engine deadlocks and can't advance combat, it returns `"code":"engine_stuck"` (and keeps returning it) instead of a fake defeat — abandon that run and start a new one.
+- **Crashes:** stdout carries only protocol JSON (library/log output goes to stderr). If the process is about to die from an unhandled exception it first writes `{"type":"fatal","message":...,"stack_trace":...}`.
+- `python3 scripts/bench.py [--reuse] [--jobs N]` benchmarks fixed seeds and prints a trajectory fingerprint per run, for checking that engine changes don't alter game behaviour.
+
 ## Game Logs
 
 Every run is automatically logged to `logs/` as a JSONL file (one JSON per line), recording each game state and action with timestamps. Logs older than 7 days are cleaned up automatically.
@@ -202,6 +207,11 @@ dotnet run --project src/Sts2Headless/Sts2Headless.csproj
 ```
 
 每个命令返回一个 JSON decision point（`map_select` / `combat_play` / `card_reward` / `rest_site` / `event_choice` / `shop` / `game_over`），所有名称为英文。
+
+- **一个进程跑多局：** 再发一次 `start_run`（或 `load_save`）就会结束上一局、开始新的一局，省掉约 0.6 秒的引擎启动。批量跑或 RL 建议每个 worker 只开一个进程。`python/engine.py` 里有一个简单的 `Engine` 封装：直接用 `dotnet` 运行编译好的 dll，读取有超时，stderr 会被读走。
+- **错误：** `{"type":"error","message":...}`。如果引擎死锁、战斗无法推进，会返回 `"code":"engine_stuck"`（之后一直返回它），不再伪装成判负。遇到时放弃这一局，重新开局。
+- **崩溃：** stdout 只输出协议 JSON（库和日志输出都走 stderr）。进程因未处理异常退出前，会先写一行 `{"type":"fatal","message":...,"stack_trace":...}`。
+- `python3 scripts/bench.py [--reuse] [--jobs N]` 用固定种子跑基准，并为每局输出一个轨迹指纹，用来检查引擎改动有没有改变游戏行为。
 
 ## 游戏日志
 

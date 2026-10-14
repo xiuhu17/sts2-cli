@@ -15,6 +15,9 @@ Examples:
 import json, subprocess, os, sys, threading, re, time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "python"))
+from engine import engine_command  # noqa: E402
+
 # --- Arg parsing ---
 COMPACT = "--compact" in sys.argv
 REPLAY_MODE = len(sys.argv) > 1 and sys.argv[1] == "replay"
@@ -73,12 +76,13 @@ class Game:
     def __init__(self):
         self.lock = threading.Lock()
         self.step = 0
-        os.environ["STS2_GAME_DIR"] = os.path.expanduser(
+        # The engine finds the game DLLs in ./lib (copied by setup.sh); STS2_GAME_DIR is
+        # only an extra fallback, so don't override one the user already set.
+        os.environ.setdefault("STS2_GAME_DIR", os.path.expanduser(
             "~/Library/Application Support/Steam/steamapps/common/"
-            "Slay the Spire 2/SlayTheSpire2.app/Contents/Resources/data_sts2_macos_arm64")
+            "Slay the Spire 2/SlayTheSpire2.app/Contents/Resources/data_sts2_macos_arm64"))
         self.proc = subprocess.Popen(
-            [os.path.expanduser("~/.dotnet-arm64/dotnet"), "run", "--no-build",
-             "--project", "Sts2Headless/Sts2Headless.csproj"],
+            engine_command(),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, bufsize=1, cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         def _forward_stderr():

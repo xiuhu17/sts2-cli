@@ -16,6 +16,7 @@ import os
 import argparse
 import random
 from game_log import GameLogger
+from engine import engine_command, find_dotnet
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROJECT = os.path.join(ROOT, "src", "Sts2Headless", "Sts2Headless.csproj")
@@ -37,7 +38,7 @@ def _find_dotnet():
                 return p
         except (FileNotFoundError, subprocess.TimeoutExpired):
             continue
-    return None
+    return find_dotnet()
 
 DOTNET = _find_dotnet()
 
@@ -1499,10 +1500,12 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0, log=True,
 
     logger = GameLogger(character, actual_seed, enabled=log)
     action_log = []
+    # stderr is never read here, so discard it: a PIPE nobody drains fills up and
+    # blocks the engine mid-run.
     proc = subprocess.Popen(
-        [DOTNET, "run", "--no-build", "--project", PROJECT],
+        engine_command(DOTNET),
         stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE, text=True, bufsize=1,
+        stderr=subprocess.DEVNULL, text=True, bufsize=1,
     )
 
     def read():

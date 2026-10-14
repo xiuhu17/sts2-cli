@@ -90,7 +90,10 @@ class Engine:
             if line is None:
                 raise EngineError("Engine exited (EOF on stdout)")
             if line.startswith("{"):
-                return json.loads(line)
+                msg = json.loads(line)
+                if msg.get("type") == "fatal":
+                    raise EngineError(f"Engine crashed: {msg.get('message')}")
+                return msg
 
     def send(self, cmd, timeout=None):
         self.proc.stdin.write(json.dumps(cmd) + "\n")

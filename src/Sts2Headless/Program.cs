@@ -39,12 +39,34 @@ class Program
         return Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "lib"));
     }
 
+    // stdout carries only protocol JSON. Console.Out is pointed at stderr so that output
+    // from game/library code (e.g. Sentry's startup notice) can't interleave with it.
+    private static TextWriter ProtocolOut = Console.Out;
+    private static readonly object ProtocolLock = new();
+
     static void Main(string[] args)
     {
-        // Prevent unhandled exceptions from crashing the process
+        // Assigned here, not only in the initializer: static field initializers may run
+        // lazily (beforefieldinit), i.e. after SetOut below.
+        ProtocolOut = Console.Out;
+        Console.SetOut(Console.Error);
+
+        // An unhandled exception on a non-main thread terminates the process. Tell the
+        // client why before that happens instead of leaving it with a bare EOF.
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
         {
             Console.Error.WriteLine($"[FATAL] Unhandled: {e.ExceptionObject}");
+            try
+            {
+                var ex = e.ExceptionObject as Exception;
+                WriteLine(new Dictionary<string, object?>
+                {
+                    ["type"] = "fatal",
+                    ["message"] = ex != null ? $"{ex.GetType().Name}: {ex.Message}" : e.ExceptionObject?.ToString(),
+                    ["stack_trace"] = e.ExceptionObject?.ToString(),
+                });
+            }
+            catch { }
         };
         TaskScheduler.UnobservedTaskException += (_, e) =>
         {
@@ -232,7 +254,11 @@ class Program
 
     static void WriteLine(Dictionary<string, object?> data)
     {
-        Console.Out.WriteLine(JsonSerializer.Serialize(data, JsonOpts));
-        Console.Out.Flush();
+        var json = JsonSerializer.Serialize(data, JsonOpts);
+        lock (ProtocolLock)
+        {
+            ProtocolOut.WriteLine(json);
+            ProtocolOut.Flush();
+        }
     }
 }
