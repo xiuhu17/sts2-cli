@@ -40,8 +40,16 @@ else:
 
 # --- JSON helpers ---
 _STRIP_KEYS = {"description", "after_upgrade", "enchantment", "enchantment_amount",
-               "affliction", "affliction_amount", "id", "draw_pile_count",
-               "discard_pile_count", "upgraded", "act_name"}
+               "affliction", "affliction_amount", "id", "upgraded", "act_name"}
+_PILE_KEYS = {"draw_pile", "discard_pile", "exhaust_pile"}
+# Per-turn player fields kept in combat (the rest of `player` — deck, relics — is noise there).
+_COMBAT_PLAYER_KEYS = ("hp", "max_hp", "block", "potions")
+
+
+def compact_pile(pile):
+    """[{name:"Strike+", count:2, ...}] -> ["Strike+ x2"] (upgrades are already in the name)."""
+    return [f"{c.get('name')} x{c['count']}" if c.get("count", 1) > 1 else c.get("name")
+            for c in pile if isinstance(c, dict)]
 
 
 def compact_json(obj, depth=0):
@@ -52,8 +60,12 @@ def compact_json(obj, depth=0):
             if k == "context" and obj.get("decision") == "combat_play": continue
             if k == "player" and obj.get("decision") == "combat_play":
                 if isinstance(v, dict):
-                    potions = v.get("potions")
-                    if potions: result["potions"] = compact_json(potions, depth + 1)
+                    for pk in _COMBAT_PLAYER_KEYS:
+                        if v.get(pk) is not None:
+                            result[pk] = compact_json(v[pk], depth + 1)
+                continue
+            if k in _PILE_KEYS and isinstance(v, list):
+                result[k] = compact_pile(v)
                 continue
             if k == "relics" and isinstance(v, list) and depth > 0:
                 result[k] = [compact_json(r, depth + 1) if isinstance(r, dict) else r for r in v]

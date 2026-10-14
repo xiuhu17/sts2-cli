@@ -2017,6 +2017,60 @@ public class RunSimulator
         };
     }
 
+    /// <summary>
+    /// Contents of a combat pile, grouped into {name, count, ...} and sorted by name.
+    /// Order is deliberately not exposed: the real game doesn't reveal draw order either.
+    /// Upgraded cards are named "Strike+" so the information survives clients (like the
+    /// HTTP bridge's --compact mode) that strip the "upgraded" field.
+    /// </summary>
+    private List<Dictionary<string, object?>> PileSummary(CardPile? pile)
+    {
+        var result = new List<Dictionary<string, object?>>();
+        CardModel[] cards;
+        try { cards = pile?.Cards?.ToArray() ?? Array.Empty<CardModel>(); }
+        catch (Exception ex)
+        {
+            Log($"PileSummary snapshot failed: {ex.Message}");
+            return result;
+        }
+
+        var groups = new Dictionary<string, Dictionary<string, object?>>();
+        foreach (var c in cards)
+        {
+            if (c == null) continue;
+            try
+            {
+                var name = _loc.Card(c.Id.Entry) + (c.IsUpgraded ? "+" : "");
+                var cost = c.EnergyCost?.GetResolved() ?? 0;
+                var enchant = c.Enchantment != null
+                    ? _loc.Bilingual("enchantments", c.Enchantment.Id.Entry + ".title") : null;
+                var key = $"{c.Id}|{c.CurrentUpgradeLevel}|{cost}|{c.Enchantment?.Id}|{c.Affliction?.Id}";
+                if (groups.TryGetValue(key, out var g))
+                {
+                    g["count"] = (int)g["count"]! + 1;
+                    continue;
+                }
+                g = new Dictionary<string, object?>
+                {
+                    ["name"] = name,
+                    ["count"] = 1,
+                    ["id"] = c.Id.ToString(),
+                    ["cost"] = cost,
+                    ["type"] = c.Type.ToString(),
+                    ["upgraded"] = c.IsUpgraded,
+                };
+                if (enchant != null) g["enchantment"] = enchant;
+                if (c.Affliction != null)
+                    g["affliction"] = _loc.Bilingual("afflictions", c.Affliction.Id.Entry + ".title");
+                groups[key] = g;
+                result.Add(g);
+            }
+            catch (Exception ex) { Log($"PileSummary card failed: {ex.Message}"); }
+        }
+        result.Sort((a, b) => string.CompareOrdinal(a["name"] as string, b["name"] as string));
+        return result;
+    }
+
     private Dictionary<string, object?> CombatPlayState(Player player)
     {
         var pcs = player.PlayerCombatState;
@@ -2244,6 +2298,10 @@ public class RunSimulator
             ["player_powers"] = playerPowers?.Count > 0 ? playerPowers : null,
             ["draw_pile_count"] = pcs?.DrawPile?.Cards?.Count ?? 0,
             ["discard_pile_count"] = pcs?.DiscardPile?.Cards?.Count ?? 0,
+            ["exhaust_pile_count"] = pcs?.ExhaustPile?.Cards?.Count ?? 0,
+            ["draw_pile"] = PileSummary(pcs?.DrawPile),
+            ["discard_pile"] = PileSummary(pcs?.DiscardPile),
+            ["exhaust_pile"] = PileSummary(pcs?.ExhaustPile),
         };
 
         // Character-specific mechanics

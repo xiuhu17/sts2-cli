@@ -1267,6 +1267,7 @@ def get_input(prompt, valid_options=None, state=None, multi_select=False, multi_
     {c('deck', 'cyan')}     — 查看牌组
     {c('potions', 'cyan')}  — 查看药水
     {c('relics', 'cyan')}   — 查看遗物
+    {c('piles', 'cyan')}    — 查看抽牌堆/弃牌堆/消耗堆（战斗中）
     {c('quit', 'cyan')}     — 退出
     {c('save', 'cyan')}     — 存档
     {c('saves', 'cyan')}    — 查看存档列表
@@ -1288,6 +1289,7 @@ def get_input(prompt, valid_options=None, state=None, multi_select=False, multi_
     {c('deck', 'cyan')}     — show deck
     {c('potions', 'cyan')}  — show potions
     {c('relics', 'cyan')}   — show relics
+    {c('piles', 'cyan')}    — show draw / discard / exhaust piles (in combat)
     {c('quit', 'cyan')}     — quit
     {c('abandon', 'cyan')}  — abandon run (forfeit)
     {c('save', 'cyan')}     — save game
@@ -1320,6 +1322,19 @@ def get_input(prompt, valid_options=None, state=None, multi_select=False, multi_
             p = state.get("player", {})
             for r in p.get("relics", []):
                 print(f"  🔶 {relic_str(r)}")
+            continue
+        if raw == "piles" and state:
+            if state.get("decision") != "combat_play":
+                print(f"  {t('Piles are only shown in combat.','只有战斗中才能查看牌堆。')}")
+                continue
+            for key, label in (("draw_pile", t("Draw pile", "抽牌堆")),
+                               ("discard_pile", t("Discard pile", "弃牌堆")),
+                               ("exhaust_pile", t("Exhaust pile", "消耗堆"))):
+                pile = state.get(key) or []
+                total = sum(cd.get("count", 1) for cd in pile)
+                names = ", ".join(f"{n(cd.get('name', '?'))}" + (f" x{cd['count']}" if cd.get("count", 1) > 1 else "")
+                                  for cd in pile)
+                print(f"  {c(label, 'bold')} ({total}): {names or t('empty', '空')}")
             continue
         if raw == "map":
             # Fetch full map from CLI

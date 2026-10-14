@@ -228,3 +228,35 @@ class TestCombatEdgeCases:
                 break
         assert state["decision"] == "game_over"
         assert state["victory"] is False
+
+
+class TestPileContents:
+    def test_piles_listed_and_consistent_with_counts(self, game):
+        state = game.start(seed="piles1")
+        state = game.enter_room("combat")
+        assert state["decision"] == "combat_play"
+        for key in ("draw_pile", "discard_pile", "exhaust_pile"):
+            assert isinstance(state[key], list)
+        assert sum(c["count"] for c in state["draw_pile"]) == state["draw_pile_count"]
+        assert sum(c["count"] for c in state["discard_pile"]) == state["discard_pile_count"]
+        assert state["exhaust_pile_count"] == sum(c["count"] for c in state["exhaust_pile"])
+        # Hand + draw pile = whole deck at the start of combat.
+        deck = state["player"]["deck_size"]
+        assert len(state["hand"]) + state["draw_pile_count"] == deck
+
+    def test_draw_pile_is_sorted_not_in_draw_order(self, game):
+        state = game.start(seed="piles2")
+        state = game.enter_room("combat")
+        names = [c["name"] for c in state["draw_pile"]]
+        assert names == sorted(names)
+
+    def test_discard_pile_after_playing_a_card(self, game):
+        state = game.start(seed="piles3")
+        state = game.enter_room("combat")
+        card = next(c for c in state["hand"] if c["can_play"] and c["cost"] <= state["energy"])
+        args = {"card_index": card["index"]}
+        if card["target_type"] == "AnyEnemy":
+            args["target_index"] = 0
+        state = game.act("play_card", **args)
+        if card["type"] != "Power":
+            assert state["discard_pile_count"] + state["exhaust_pile_count"] >= 1

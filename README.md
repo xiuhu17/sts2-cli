@@ -50,6 +50,7 @@ Type `help` in-game:
   deck     — show deck
   potions  — show potions
   relics   — show relics
+  piles    — show draw / discard / exhaust piles (in combat)
   quit     — quit
 
   Map:     enter path number (0, 1, 2)
@@ -169,6 +170,7 @@ python3 python/play.py --character Silent      # 选择静默猎手
   deck     — 查看牌组
   potions  — 查看药水
   relics   — 查看遗物
+  piles    — 查看抽牌堆/弃牌堆/消耗堆（战斗中）
   quit     — 退出
 
   地图:    输入编号 (0, 1, 2)
