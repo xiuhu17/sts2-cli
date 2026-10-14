@@ -1213,8 +1213,7 @@ public class RunSimulator
             var idx = Convert.ToInt32(args["card_index"]);
             Log($"Resolving event card reward: index {idx}");
             _cardSelector.ResolveReward(idx);
-            Thread.Sleep(50);
-            _syncCtx.Pump();
+            AwaitBackground();
             WaitForActionExecutor();
             return DetectDecisionPoint();
         }
@@ -1254,8 +1253,7 @@ public class RunSimulator
         {
             Log("Skipping event card reward");
             _cardSelector.SkipReward();
-            Thread.Sleep(50);
-            _syncCtx.Pump();
+            AwaitBackground();
             WaitForActionExecutor();
             return DetectDecisionPoint();
         }
@@ -1318,22 +1316,11 @@ public class RunSimulator
             // pending selection appears so the caller can resolve it; the background task
             // continues once the selector's TCS is fed by select_cards.
             var inv = merchantRoom.GetLocalInventory();
-            var task = Task.Run(() => entry.OnTryPurchaseWrapper(inv));
-            for (int i = 0; i < 100; i++)
-            {
-                _syncCtx.Pump();
-                if (_cardSelector.HasPending || _cardSelector.HasPendingReward) break;
-                if (_pendingBundles != null) break;
-                if (task.IsCompleted) break;
-                Thread.Sleep(10);
-            }
-            if (_cardSelector.HasPending || _cardSelector.HasPendingReward || _pendingBundles != null)
+            if (RunInBackground(() => entry.OnTryPurchaseWrapper(inv)))
             {
                 Log($"Buy relic {entry.Model.GetType().Name}: yielded for pending selection");
                 return DetectDecisionPoint();
             }
-            if (!task.IsCompleted) task.Wait(2000);
-            _syncCtx.Pump();
             Log($"Bought relic: {entry.Model.GetType().Name} for {entry.Cost}g");
         }
         catch (Exception ex) { return Error($"Buy relic failed: {ex.Message}"); }
@@ -1383,21 +1370,11 @@ public class RunSimulator
         try
         {
             // Run on background thread so card selection can pause (same pattern as event options)
-            var task = Task.Run(() => removal.OnTryPurchaseWrapper(merchantRoom.GetLocalInventory()));
-            for (int i = 0; i < 100; i++)
-            {
-                _syncCtx.Pump();
-                if (_cardSelector.HasPending) break;
-                if (task.IsCompleted) break;
-                Thread.Sleep(10);
-            }
-            if (_cardSelector.HasPending)
+            if (RunInBackground(() => removal.OnTryPurchaseWrapper(merchantRoom.GetLocalInventory())))
             {
                 WaitForActionExecutor();
                 return DetectDecisionPoint();
             }
-            if (!task.IsCompleted) task.Wait(2000);
-            _syncCtx.Pump();
             Log($"Removed card for {removal.Cost}g");
         }
         catch (Exception ex) { return Error($"Remove card failed: {ex.Message}"); }
@@ -1423,7 +1400,7 @@ public class RunSimulator
         var selected = (idx >= 0 && idx < bundles.Count) ? bundles[idx] : bundles[0];
         tcs.TrySetResult(selected);
 
-        _syncCtx.Pump();
+        AwaitBackground();
         WaitForActionExecutor();
         return DetectDecisionPoint();
     }
@@ -1443,29 +1420,18 @@ public class RunSimulator
 
         Log($"Card selection: indices [{string.Join(",", indices)}]");
         _cardSelector.ResolvePendingByIndices(indices);
-        _syncCtx.Pump();
+        // The flow that asked for the selection (event option, rest site SMITH, shop
+        // removal, relic pickup) continues on its background task; let it finish so the
+        // returned state is current and the next command can't race it.
+        var prompted = AwaitBackground();
         WaitForActionExecutor();
 
-        // Extra wait for rest-site SMITH: the background ChooseLocalOption task
-        // needs time to complete the upgrade after card selection resolves.
-        if (_runState?.CurrentRoom is RestSiteRoom)
+        if (_runState?.CurrentRoom is RestSiteRoom && !prompted)
         {
-            Thread.Sleep(200);
-            _syncCtx.Pump();
-            WaitForActionExecutor();
             // Force to map after SMITH completes (same pattern as HEAL)
             Log("Card selection in rest site (SMITH), forcing to map");
             ForceToMap();
             return MapSelectState();
-        }
-
-        // Extra wait for shop card removal: the purchase task needs to finish
-        if (_runState?.CurrentRoom is MerchantRoom)
-        {
-            Thread.Sleep(200);
-            _syncCtx.Pump();
-            WaitForActionExecutor();
-            Log("Card selection in shop (card removal), refreshing shop state");
         }
 
         return DetectDecisionPoint();
@@ -1477,7 +1443,7 @@ public class RunSimulator
         {
             Log("Skipping card selection");
             _cardSelector.CancelPending();
-            _syncCtx.Pump();
+            AwaitBackground();
             WaitForActionExecutor();
         }
         return DetectDecisionPoint();
@@ -1595,21 +1561,11 @@ public class RunSimulator
             try
             {
                 // Run on background thread so Smith card selection can pause
-                var task = Task.Run(() => RunManager.Instance.RestSiteSynchronizer.ChooseLocalOption(optionIndex));
-                for (int i = 0; i < 100; i++)
-                {
-                    _syncCtx.Pump();
-                    if (_cardSelector.HasPending) break;
-                    if (task.IsCompleted) break;
-                    Thread.Sleep(10);
-                }
-                if (_cardSelector.HasPending)
+                if (RunInBackground(() => RunManager.Instance.RestSiteSynchronizer.ChooseLocalOption(optionIndex)))
                 {
                     WaitForActionExecutor();
                     return DetectDecisionPoint();
                 }
-                if (!task.IsCompleted) task.Wait(2000);
-                _syncCtx.Pump();
             }
             catch (Exception ex)
             {
@@ -1621,11 +1577,9 @@ public class RunSimulator
             if (!_cardSelector.HasPending)
             {
                 Log("Rest site: option chosen (non-Smith), waiting for action then forcing to map");
-                // Give the action time to complete (heal HP, dig for relic, etc.)
+                // Let the action complete (heal HP, dig for relic, etc.)
                 WaitForActionExecutor();
-                _syncCtx.Pump();
-                Thread.Sleep(200);
-                _syncCtx.Pump();
+                AwaitBackground();
                 WaitForActionExecutor();
                 ForceToMap();
                 return MapSelectState();
@@ -1648,22 +1602,11 @@ public class RunSimulator
                         _eventOptionChosen = true;
                         _lastEventOptionCount = options.Count;
                         // Run on thread pool so GetSelectedCards/GetSelectedCardReward can block
-                        var task = Task.Run(() => options[optionIndex].Chosen());
-                        for (int i = 0; i < 100; i++)
-                        {
-                            _syncCtx.Pump();
-                            if (_cardSelector.HasPending || _cardSelector.HasPendingReward) break;
-                            if (_pendingBundles != null) break;
-                            if (task.IsCompleted) break;
-                            Thread.Sleep(10);
-                        }
-                        if (_cardSelector.HasPending || _cardSelector.HasPendingReward || _pendingBundles != null)
+                        if (RunInBackground(() => options[optionIndex].Chosen()))
                         {
                             WaitForActionExecutor();
                             return DetectDecisionPoint();
                         }
-                        if (!task.IsCompleted) task.Wait(2000);
-                        _syncCtx.Pump();
                     }
                     catch (Exception ex) { Log($"Event choose: {ex.Message}"); }
                 }
@@ -2879,6 +2822,64 @@ public class RunSimulator
 
     #region Helpers
 
+    // Game flows that can open a selection prompt (event options, rest site, shop purchases)
+    // run on a thread-pool task so they can block on the selector. The task is kept here
+    // while the prompt is surfaced, so the follow-up command can wait for it to finish
+    // instead of sleeping a fixed amount of time.
+    private Task? _backgroundTask;
+
+    private bool HasPendingPrompt =>
+        _cardSelector.HasPending || _cardSelector.HasPendingReward || _pendingBundles != null;
+
+    /// <summary>
+    /// Run <paramref name="work"/> on the thread pool and pump until it completes or opens a
+    /// prompt. Returns true if a prompt is pending (the task keeps running in the background).
+    /// </summary>
+    private bool RunInBackground(Func<Task> work, int timeoutMs = 3000)
+    {
+        // Never run two game flows concurrently (game state isn't thread-safe).
+        if (_backgroundTask != null && AwaitBackground(timeoutMs))
+        {
+            Log("Previous background flow is waiting on a prompt; not starting a new one");
+            return true;
+        }
+        _backgroundTask = Task.Run(work);
+        return AwaitBackground(timeoutMs);
+    }
+
+    /// <summary>
+    /// Pump until the current background task completes or a prompt appears.
+    /// Returns true if a prompt is pending.
+    /// </summary>
+    private bool AwaitBackground(int timeoutMs = 3000)
+    {
+        var task = _backgroundTask;
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (true)
+        {
+            _syncCtx.Pump();
+            if (HasPendingPrompt) return true;
+            if (task == null || task.IsCompleted) break;
+            if (sw.ElapsedMilliseconds >= timeoutMs)
+            {
+                // Stop tracking it so later commands don't each wait the full timeout.
+                Log($"Background task still running after {timeoutMs}ms; no longer waiting on it");
+                if (ReferenceEquals(_backgroundTask, task)) _backgroundTask = null;
+                return HasPendingPrompt;
+            }
+            // Wakes as soon as the task completes; never throws on a faulted task.
+            ((IAsyncResult)task).AsyncWaitHandle.WaitOne(1);
+        }
+        _syncCtx.Pump();
+        if (task != null && task.IsCompleted)
+        {
+            if (task.IsFaulted)
+                Log($"Background task failed: {task.Exception?.InnerException?.Message}");
+            if (ReferenceEquals(_backgroundTask, task)) _backgroundTask = null;
+        }
+        return HasPendingPrompt;
+    }
+
     private void WaitForActionExecutor()
     {
         try
@@ -3357,9 +3358,12 @@ public class RunSimulator
 
         public void ResolvePending(IEnumerable<CardModel> selected)
         {
-            _pendingTcs?.TrySetResult(selected);
+            // Clear state before completing: the continuation may run synchronously and
+            // request the next selection, which must not be wiped by this call.
+            var tcs = _pendingTcs;
             PendingOptions = null;
             _pendingTcs = null;
+            tcs?.TrySetResult(selected);
         }
 
         public void ResolvePendingByIndices(int[] indices)
@@ -3374,9 +3378,10 @@ public class RunSimulator
 
         public void CancelPending()
         {
-            _pendingTcs?.TrySetResult(Array.Empty<CardModel>());
+            var tcs = _pendingTcs;
             PendingOptions = null;
             _pendingTcs = null;
+            tcs?.TrySetResult(Array.Empty<CardModel>());
         }
 
         // Pending card reward from events (GetSelectedCardReward blocks until resolved)
@@ -3395,16 +3400,21 @@ public class RunSimulator
             if (options.Count == 0) return default;  // Skip
 
             // Store pending and block until main loop resolves
-            PendingRewardCards = options.ToList();
+            var wait = new ManualResetEventSlim(false);
             _rewardChoice = -1;
-            _rewardWait = new ManualResetEventSlim(false);
+            PendingRewardCards = options.ToList();
+            _rewardWait = wait;
 
             Console.Error.WriteLine($"[SIM] Card reward pending: {options.Count} cards (blocking)");
-            _rewardWait.Wait(TimeSpan.FromSeconds(300)); // Wait up to 5 min
+            wait.Wait(TimeSpan.FromSeconds(300)); // Wait up to 5 min
 
             var choice = _rewardChoice;
-            PendingRewardCards = null;
-            _rewardWait = null;
+            // Normally already cleared by ResolveReward/SkipReward; also covers the timeout.
+            if (ReferenceEquals(_rewardWait, wait))
+            {
+                PendingRewardCards = null;
+                _rewardWait = null;
+            }
 
             if (choice >= 0 && choice < options.Count)
                 return new MegaCrit.Sts2.Core.TestSupport.CardRewardSelection { card = options[choice].Card };
@@ -3413,16 +3423,20 @@ public class RunSimulator
 
         public bool HasPendingReward => PendingRewardCards != null && _rewardWait != null;
 
-        public void ResolveReward(int index)
-        {
-            _rewardChoice = index;
-            _rewardWait?.Set();
-        }
+        public void ResolveReward(int index) => CompleteReward(index);
 
-        public void SkipReward()
+        public void SkipReward() => CompleteReward(-1);
+
+        // Clear the pending flag on the calling (main) thread before waking the blocked
+        // game thread, so HasPendingReward is false as soon as this returns instead of
+        // whenever the background thread gets scheduled.
+        private void CompleteReward(int choice)
         {
-            _rewardChoice = -1;
-            _rewardWait?.Set();
+            var wait = _rewardWait;
+            _rewardChoice = choice;
+            PendingRewardCards = null;
+            _rewardWait = null;
+            wait?.Set();
         }
     }
 
