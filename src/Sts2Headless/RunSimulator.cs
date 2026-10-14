@@ -233,9 +233,13 @@ public class RunSimulator
     {
         try
         {
+            // Validate before tearing down the current run, so a bad request leaves it intact.
+            if (!KnownCharacters.Contains(character.ToLowerInvariant()))
+                return Error($"Unknown character: {character}");
             _loc.Lang = lang;
             EnsureModelDbInitialized();
-            ResetForNewRun();
+            if (!ResetForNewRun())
+                return RestartRequired();
 
             var player = CreatePlayer(character);
             if (player == null)
@@ -496,7 +500,6 @@ public class RunSimulator
         {
             _loc.Lang = lang;
             EnsureModelDbInitialized();
-            ResetForNewRun();
 
             Log("Loading save file...");
 
@@ -509,6 +512,10 @@ public class RunSimulator
 
             var save = readResult.SaveData;
             Log($"Save loaded: seed={save.SerializableRng?.Seed}, act={save.CurrentActIndex}, ascension={save.Ascension}");
+
+            // Only tear down the current run once the save is known to be usable.
+            if (!ResetForNewRun())
+                return RestartRequired();
 
             _runState = RunState.FromSerializable(save);
             if (_runState == null)
@@ -866,6 +873,10 @@ public class RunSimulator
                 return StuckError();
 
             var player = _runState.Players[0];
+
+            var routed = RouteRewardScreenAction(player, action, args);
+            if (routed != null)
+                return routed;
 
             switch (action)
             {
@@ -2363,41 +2374,61 @@ public class RunSimulator
         if (_pendingRewards == null && !_rewardsProcessed)
         {
             _goldBeforeCombat = player.Gold;
+            _rewardDone.Clear();
             try
             {
                 var rewardsSet = new RewardsSet(player).WithRewardsFromRoom(combatRoom);
                 // build 23372702: GenerateWithoutOffering() now returns Task (void);
                 // generated rewards live on rewardsSet.Rewards afterwards.
                 rewardsSet.GenerateWithoutOffering().GetAwaiter().GetResult();
-                var rewards = rewardsSet.Rewards;
+                _pendingRewards = rewardsSet.Rewards.ToList();
                 _syncCtx.Pump();
 
-                // Auto-collect gold and potions, but present card choices to agent
-                var cardRewards = new List<CardReward>();
-                foreach (var reward in rewards)
+                if (!ManualRewards)
                 {
-                    if (reward is GoldReward || reward is MegaCrit.Sts2.Core.Rewards.RelicReward
-                        || reward is MegaCrit.Sts2.Core.Rewards.PotionReward)
+                    // Auto-collect gold, relics and potions; card choices go to the agent.
+                    for (int i = 0; i < _pendingRewards.Count; i++)
                     {
-                        try { reward.SelectUnsynchronized().GetAwaiter().GetResult(); _syncCtx.Pump(); }
-                        catch (Exception ex) { Log($"Auto-collect reward: {ex.Message}"); }
-                    }
-                    else if (reward is CardReward cr)
-                    {
-                        cardRewards.Add(cr);
+                        var reward = _pendingRewards[i];
+                        if (reward is GoldReward || reward is MegaCrit.Sts2.Core.Rewards.RelicReward
+                            || reward is MegaCrit.Sts2.Core.Rewards.PotionReward)
+                        {
+                            _rewardDone.Add(i);
+                            try { reward.SelectUnsynchronized().GetAwaiter().GetResult(); _syncCtx.Pump(); }
+                            catch (Exception ex) { Log($"Auto-collect reward: {ex.Message}"); }
+                        }
+                        else if (reward is not CardReward)
+                        {
+                            _rewardDone.Add(i);  // unknown reward kinds were never offered
+                        }
                     }
                 }
-
-                if (cardRewards.Count > 0)
-                {
-                    _pendingCardReward = cardRewards[0];
-                    _pendingRewards = rewards;
-                    return CardRewardState(player, combatRoom);
-                }
-
+            }
+            catch (Exception ex)
+            {
+                Log($"Generate rewards: {ex.Message}");
                 _pendingRewards = null;
             }
-            catch (Exception ex) { Log($"Generate rewards: {ex.Message}"); }
+        }
+
+        if (_pendingRewards != null && _pendingCardReward == null)
+        {
+            if (ManualRewards)
+            {
+                if (Enumerable.Range(0, _pendingRewards.Count).Any(i => !_rewardDone.Contains(i)))
+                    return RewardsState(player);
+            }
+            else
+            {
+                // Offer every card reward in turn (fights can drop more than one).
+                for (int i = 0; i < _pendingRewards.Count; i++)
+                {
+                    if (_rewardDone.Contains(i) || _pendingRewards[i] is not CardReward cr) continue;
+                    _rewardDone.Add(i);
+                    _pendingCardReward = cr;
+                    return CardRewardState(player, combatRoom);
+                }
+            }
         }
 
         // No more pending rewards — proceed
@@ -2467,6 +2498,182 @@ public class RunSimulator
             ["can_skip"] = _pendingCardReward.CanSkip,
             ["gold_earned"] = _runState!.Players[0].Gold - _goldBeforeCombat,
             ["player"] = PlayerSummary(_runState!.Players[0]),
+        };
+    }
+
+    // ─── Manual rewards (start_run/load_save with "manual_rewards": true) ───
+
+    /// <summary>When true, post-combat rewards and treasure relics are offered as decisions
+    /// instead of being collected automatically.</summary>
+    public bool ManualRewards { get; set; }
+
+    // Indices into _pendingRewards already claimed, skipped, or handed to the card reward screen.
+    private readonly HashSet<int> _rewardDone = new();
+
+    /// <summary>The post-combat reward screen is open (manual mode, combat over, unclaimed rewards left).</summary>
+    private bool RewardsScreenOpen =>
+        ManualRewards && _pendingRewards != null && _pendingCardReward == null
+        && _runState?.CurrentRoom is CombatRoom && !CombatManager.Instance.IsInProgress
+        && !HasPendingPrompt
+        && Enumerable.Range(0, _pendingRewards.Count).Any(i => !_rewardDone.Contains(i));
+
+    private Dictionary<string, object?> RelicInfo(RelicModel r, int? index = null)
+    {
+        var vars = new Dictionary<string, object?>();
+        try { foreach (var dv in r.DynamicVars.Values) vars[dv.Name] = (int)dv.BaseValue; } catch { }
+        var info = new Dictionary<string, object?>();
+        if (index != null) info["index"] = index;
+        info["name"] = _loc.Relic(r.Id.Entry);
+        info["description"] = _loc.Bilingual("relics", r.Id.Entry + ".description");
+        info["vars"] = vars.Count > 0 ? vars : null;
+        return info;
+    }
+
+    private Dictionary<string, object?> RewardInfo(Reward reward, int index)
+    {
+        var info = new Dictionary<string, object?> { ["index"] = index };
+        switch (reward)
+        {
+            case GoldReward g:
+                info["type"] = "gold";
+                info["amount"] = g.Amount;
+                break;
+            case MegaCrit.Sts2.Core.Rewards.RelicReward rr:
+                info["type"] = "relic";
+                if (rr.Relic != null)
+                    foreach (var kv in RelicInfo(rr.Relic)) info[kv.Key] = kv.Value;
+                break;
+            case MegaCrit.Sts2.Core.Rewards.PotionReward pr:
+                info["type"] = "potion";
+                if (pr.Potion != null)
+                {
+                    info["name"] = _loc.Potion(pr.Potion.Id.Entry);
+                    info["description"] = _loc.Bilingual("potions", pr.Potion.Id.Entry + ".description");
+                }
+                break;
+            case CardReward cr:
+                info["type"] = "card";
+                info["card_count"] = cr.Cards?.Count() ?? 0;
+                info["can_skip"] = cr.CanSkip;
+                break;
+            default:
+                info["type"] = reward.GetType().Name;
+                break;
+        }
+        return info;
+    }
+
+    private Dictionary<string, object?> RewardsState(Player player)
+    {
+        var rewards = new List<Dictionary<string, object?>>();
+        for (int i = 0; i < _pendingRewards!.Count; i++)
+            if (!_rewardDone.Contains(i)) rewards.Add(RewardInfo(_pendingRewards[i], i));
+        return new Dictionary<string, object?>
+        {
+            ["type"] = "decision",
+            ["decision"] = "rewards",
+            ["context"] = RunContext(),
+            ["rewards"] = rewards,
+            ["potion_slots_full"] = !player.HasOpenPotionSlots,
+            ["gold_earned"] = player.Gold - _goldBeforeCombat,
+            ["player"] = PlayerSummary(player),
+        };
+    }
+
+    private Dictionary<string, object?> DoClaimReward(Player player, Dictionary<string, object?>? args)
+    {
+        if (!RewardsScreenOpen)
+            return Error("No rewards to claim");
+        if (args == null || !args.ContainsKey("reward_index"))
+            return Error("claim_reward requires 'reward_index'");
+        var idx = Convert.ToInt32(args["reward_index"]);
+        if (idx < 0 || idx >= _pendingRewards!.Count || _rewardDone.Contains(idx))
+            return Error($"Invalid reward index {idx}");
+
+        var reward = _pendingRewards[idx];
+        if (reward is MegaCrit.Sts2.Core.Rewards.PotionReward && !player.HasOpenPotionSlots)
+            return Error("Potion slots are full: discard_potion first, or proceed to leave this potion");
+
+        _rewardDone.Add(idx);
+        // A plain card reward uses the regular card_reward prompt (select/skip_card_reward).
+        if (reward.GetType() == typeof(CardReward))
+        {
+            _pendingCardReward = (CardReward)reward;
+            return CardRewardState(player, _runState!.CurrentRoom as CombatRoom);
+        }
+
+        // Everything else is taken through the game's own selection logic, on a background
+        // flow so pickups that open a prompt (e.g. a relic asking to choose cards) can pause.
+        Log($"Claiming reward {idx}: {reward.GetType().Name}");
+        if (RunInBackground(() => reward.SelectUnsynchronized()))
+            return DetectDecisionPoint();
+        WaitForActionExecutor();
+        return DetectDecisionPoint();
+    }
+
+    private Dictionary<string, object?> DoSkipRemainingRewards()
+    {
+        for (int i = 0; i < _pendingRewards!.Count; i++)
+        {
+            if (!_rewardDone.Add(i)) continue;
+            try { _pendingRewards[i].OnSkipped(); }
+            catch (Exception ex) { Log($"Skip reward {i}: {ex.Message}"); }
+        }
+        Log("Left remaining rewards");
+        return DetectDecisionPoint();
+    }
+
+    private Dictionary<string, object?> DoTreasureChoice(Dictionary<string, object?>? args, bool skip)
+    {
+        if (!TreasureChoicePending(out var offered) || _runState?.CurrentRoom is not TreasureRoom room)
+            return Error("No treasure relic to choose");
+        if (skip)
+            return FinishTreasure(room, relicIndex: null);
+        if (args == null || !args.ContainsKey("relic_index"))
+            return Error("select_treasure_relic requires 'relic_index'");
+        var idx = Convert.ToInt32(args["relic_index"]);
+        if (idx < 0 || idx >= offered!.Count)
+            return Error($"Invalid relic index {idx}, {offered!.Count} relics offered");
+        return FinishTreasure(room, relicIndex: idx);
+    }
+
+    /// <summary>
+    /// While a reward screen or treasure choice is open, only its own actions (and potion
+    /// management) are valid; anything else would leave the screen half-handled.
+    /// </summary>
+    private Dictionary<string, object?>? RouteRewardScreenAction(Player player, string action, Dictionary<string, object?>? args)
+    {
+        if (RewardsScreenOpen)
+        {
+            switch (action)
+            {
+                case "claim_reward": return DoClaimReward(player, args);
+                case "proceed":
+                case "leave_room":
+                case "skip_rewards": return DoSkipRemainingRewards();
+                case "use_potion":
+                case "discard_potion": return null;
+                default: return Error($"'{action}' is not available on the rewards screen: use claim_reward or proceed");
+            }
+        }
+        if (TreasureChoicePending(out _))
+        {
+            switch (action)
+            {
+                case "select_treasure_relic": return DoTreasureChoice(args, skip: false);
+                case "skip_treasure_relic":
+                case "proceed":
+                case "leave_room": return DoTreasureChoice(args, skip: true);
+                case "use_potion":
+                case "discard_potion": return null;
+                default: return Error($"'{action}' is not available while choosing a treasure relic: use select_treasure_relic or skip_treasure_relic");
+            }
+        }
+        return action switch
+        {
+            "claim_reward" or "skip_rewards" => Error("No rewards to claim"),
+            "select_treasure_relic" or "skip_treasure_relic" => Error("No treasure relic to choose"),
+            _ => null,
         };
     }
 
@@ -2777,6 +2984,34 @@ public class RunSimulator
 
     private Dictionary<string, object?> TreasureState(TreasureRoom treasureRoom)
     {
+        if (TreasureChoicePending(out var offered))
+        {
+            return new Dictionary<string, object?>
+            {
+                ["type"] = "decision",
+                ["decision"] = "treasure_relic",
+                ["context"] = RunContext(),
+                ["relics"] = offered!.Select((r, i) => RelicInfo(r, i)).ToList(),
+                ["can_skip"] = true,
+                ["player"] = PlayerSummary(_runState!.Players[0]),
+            };
+        }
+        return FinishTreasure(treasureRoom, relicIndex: 0);
+    }
+
+    /// <summary>True when manual_rewards is on and a treasure chest's relics await a choice.</summary>
+    private bool TreasureChoicePending(out IReadOnlyList<RelicModel>? offered)
+    {
+        offered = null;
+        if (!ManualRewards || _runState?.CurrentRoom is not TreasureRoom) return false;
+        try { offered = RunManager.Instance.TreasureRoomRelicSynchronizer?.CurrentRelics; }
+        catch { return false; }
+        return offered != null && offered.Count > 0;
+    }
+
+    /// <summary>Award the chosen chest relic (null = skip it), the room's other rewards, then go to the map.</summary>
+    private Dictionary<string, object?> FinishTreasure(TreasureRoom treasureRoom, int? relicIndex)
+    {
         // Treasure rooms give relics via TreasureRoomRelicSynchronizer
         Log("Treasure room — collecting rewards");
 
@@ -2803,10 +3038,15 @@ public class RunSimulator
                 relicSync.RelicsAwarded += capture;
                 try
                 {
-                    if (relicSync.CurrentRelics.Count > 0)
+                    if (relicSync.CurrentRelics.Count > 0 && relicIndex == null)
                     {
-                        Log($"Auto-picking treasure relic 0 of {relicSync.CurrentRelics.Count}");
-                        relicSync.PickRelicLocally(0);
+                        Log("Skipping treasure relic");
+                        relicSync.SkipRelicLocally();
+                    }
+                    else if (relicSync.CurrentRelics.Count > 0)
+                    {
+                        Log($"Picking treasure relic {relicIndex} of {relicSync.CurrentRelics.Count}");
+                        relicSync.PickRelicLocally(relicIndex);
                     }
                     else
                     {
@@ -3230,6 +3470,9 @@ public class RunSimulator
             Console.Error.WriteLine($"[WARN] ModelIdSerializationCache.Init: {ex.Message}");
         }
     }
+
+    private static readonly HashSet<string> KnownCharacters =
+        new() { "ironclad", "silent", "defect", "regent", "necrobinder" };
 
     private Player? CreatePlayer(string characterName)
     {
@@ -4054,25 +4297,57 @@ public class RunSimulator
         LocPatches._bundleSimRef = this;
     }
 
-    /// <summary>
-    /// Tear down the previous run, if any, so start_run / load_save can be called repeatedly
-    /// in one process without paying the one-time engine initialisation again.
-    /// </summary>
-    private void ResetForNewRun()
-    {
-        _stuckReason = null;
-        if (_runState == null && !RunManager.Instance.IsInProgress)
-            return;
+    // Set when a previous run's game flow could not be stopped; the process can't be reused.
+    private bool _poisoned;
 
-        Log("Resetting previous run");
-        // Unblock any game flow from the previous run that is still waiting on a prompt,
-        // and give it a moment to unwind before tearing the run down.
+    private Dictionary<string, object?> RestartRequired() => new()
+    {
+        ["type"] = "error",
+        ["code"] = "restart_required",
+        ["message"] = "A game flow from the previous run is still running; restart the engine process.",
+    };
+
+    private void CancelAllPrompts()
+    {
         var bundleTcs = _pendingBundleTcs;
         _pendingBundles = null;
         _pendingBundleTcs = null;
         _cardSelector.Reset();
         bundleTcs?.TrySetResult(Array.Empty<CardModel>());
-        AwaitBackground(1000);
+    }
+
+    /// <summary>
+    /// Tear down the previous run, if any, so start_run / load_save can be called repeatedly
+    /// in one process without paying the one-time engine initialisation again.
+    /// Returns false if the previous run's background flow wouldn't stop (process unusable).
+    /// </summary>
+    private bool ResetForNewRun()
+    {
+        if (_poisoned) return false;
+        _stuckReason = null;
+        if (_runState == null && !RunManager.Instance.IsInProgress)
+            return true;
+
+        Log("Resetting previous run");
+        // Unblock the previous run's game flow and let it unwind completely. Each cancelled
+        // prompt can make it open another one, so keep cancelling until the flow is done.
+        LocPatches._bundleSimRef = null;
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (true)
+        {
+            CancelAllPrompts();
+            _syncCtx.Pump();
+            var task = _backgroundTask;
+            if ((task == null || task.IsCompleted) && !HasPendingPrompt) break;
+            if (sw.ElapsedMilliseconds > 5000)
+            {
+                Log("Previous run's background flow did not stop; process must be restarted");
+                _poisoned = true;
+                return false;
+            }
+            if (task != null && !task.IsCompleted)
+                ((IAsyncResult)task).AsyncWaitHandle.WaitOne(1);
+        }
         _backgroundTask = null;
 
         CleanUp();
@@ -4081,6 +4356,7 @@ public class RunSimulator
         _selectorScope?.Dispose();
         _selectorScope = null;
         CardSelectCmd.Reset();
+        CancelAllPrompts();
         YieldPatches.SuppressYield = false;
 
         _eventOptionChosen = false;
@@ -4088,10 +4364,12 @@ public class RunSimulator
         _pendingRewards = null;
         _pendingCardReward = null;
         _rewardsProcessed = false;
+        _rewardDone.Clear();
         _goldBeforeCombat = 0;
         _lastKnownHp = 0;
         _turnStarted.Reset();
         _combatEnded.Reset();
+        return true;
     }
 
     #endregion

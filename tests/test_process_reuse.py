@@ -67,3 +67,20 @@ class TestStateAfterSelection:
         assert state["decision"] == "card_select"
         state = game.act("select_cards", indices="0")
         assert state["decision"] == "map_select", state.get("decision")
+
+
+class TestResetValidation:
+    def test_bad_character_keeps_current_run(self, game):
+        state = game.start(seed="keep-run")
+        err = game.start(character="Watcher", seed="x")
+        assert err["type"] == "error"
+        # The original run is still playable.
+        opt = next(o for o in state["options"] if not o.get("is_locked"))
+        after = game.act("choose_option", option_index=opt["index"])
+        assert after["type"] == "decision", after
+
+    def test_bad_save_keeps_current_run(self, game):
+        game.start(seed="keep-run-2")
+        err = game.send({"cmd": "load_save", "json": "{not json"})
+        assert err["type"] == "error"
+        assert game.get_map()["type"] == "map"

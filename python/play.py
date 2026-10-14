@@ -1621,8 +1621,16 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0, log=True,
                 print(t("Connection lost.","连接已断开。"))
                 break
 
+            if state.get("type") == "fatal":
+                print(f"  {c(t('Engine crashed:','引擎崩溃：'), 'red')} {state.get('message', '?')}")
+                print(c(state.get("stack_trace", ""), "dim"))
+                break
+
             if state.get("type") == "error":
                 print(f"  {c(t('Error:','错误:'), 'red')} {state.get('message', '?')}")
+                if state.get("code") in ("engine_stuck", "restart_required"):
+                    # The run can't continue; retrying 'proceed' would loop forever.
+                    break
                 state = send({"cmd": "action", "action": "proceed"})
                 continue
 

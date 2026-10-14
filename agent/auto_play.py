@@ -387,6 +387,10 @@ def play_game():
         elif dec == "bundle_select":
             d = action("select_bundle", bundle_index=0)
 
+        elif d.get("type") == "fatal" or d.get("code") in ("engine_stuck", "restart_required"):
+            print(f"  ENGINE FAILURE: {d.get('message', '')[:200]}")
+            return False
+
         elif d.get("type") == "error":
             print(f"  ERROR: {d.get('message', '')[:80]}")
             d = action("proceed")

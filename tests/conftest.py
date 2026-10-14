@@ -35,7 +35,10 @@ class Game:
             if not line:
                 raise RuntimeError("EOF from game process")
             if line.startswith("{"):
-                return json.loads(line)
+                msg = json.loads(line)
+                if msg.get("type") == "fatal":
+                    raise RuntimeError(f"Engine crashed: {msg.get('message')}\n{msg.get('stack_trace')}")
+                return msg
 
     def send(self, cmd):
         self.proc.stdin.write(json.dumps(cmd) + "\n")

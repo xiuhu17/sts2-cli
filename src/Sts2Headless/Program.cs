@@ -136,6 +136,7 @@ class Program
         switch (cmdType)
         {
             case "start_run":
+                sim.ManualRewards = ReadBool(cmd, "manual_rewards");
                 return sim.StartRun(
                     cmd.TryGetProperty("character", out var ch) ? ch.GetString() ?? "Ironclad" : "Ironclad",
                     cmd.TryGetProperty("ascension", out var asc) ? asc.GetInt32() : 0,
@@ -178,6 +179,7 @@ class Program
                 if (saveJson == null)
                     return new Dictionary<string, object?> { ["type"] = "error", ["message"] = "Provide 'path' or 'json' for load_save" };
                 var loadLang = cmd.TryGetProperty("lang", out var le) ? (le.GetString() ?? "en") : "en";
+                sim.ManualRewards = ReadBool(cmd, "manual_rewards");
                 return sim.LoadSave(saveJson, loadLang);
             }
             case "get_map":
@@ -251,6 +253,9 @@ class Program
                 return new Dictionary<string, object?> { ["type"] = "error", ["message"] = $"Unknown command: {cmdType}" };
         }
     }
+
+    static bool ReadBool(JsonElement cmd, string name) =>
+        cmd.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.True;
 
     static void WriteLine(Dictionary<string, object?> data)
     {

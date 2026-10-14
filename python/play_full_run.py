@@ -25,7 +25,7 @@ VALID_CHARACTERS = ["Ironclad", "Silent", "Defect", "Regent", "Necrobinder"]
 
 
 def play_run(seed: str, character: str = "Ironclad", verbose: bool = True, log: bool = True,
-             engine: Engine = None):
+             engine: Engine = None, manual_rewards: bool = False):
     """Play a complete run and return the result.
 
     Pass an existing Engine to reuse one process across runs (much faster for batches);
@@ -65,7 +65,10 @@ def play_run(seed: str, character: str = "Ironclad", verbose: bool = True, log: 
                 print(f"Connected: {engine.ready}")
 
         # Start run
-        state = send({"cmd": "start_run", "character": character, "seed": seed})
+        start = {"cmd": "start_run", "character": character, "seed": seed}
+        if manual_rewards:
+            start["manual_rewards"] = True
+        state = send(start)
 
         step = 0
         max_steps = 2000  # Safety limit
@@ -81,6 +84,9 @@ def play_run(seed: str, character: str = "Ironclad", verbose: bool = True, log: 
                     return {"victory": False, "seed": seed, "steps": step, "error": "engine_stuck",
                             "act": (state.get("context") or {}).get("act"),
                             "floor": (state.get("context") or {}).get("floor")}
+                if state.get("code") == "restart_required":
+                    return {"victory": False, "seed": seed, "steps": step,
+                            "error": "restart_required", "engine_broken": True}
                 raise RuntimeError(state.get("message", "Simulator error"))
 
             decision = state.get("decision", "")
@@ -218,6 +224,23 @@ def play_run(seed: str, character: str = "Ironclad", verbose: bool = True, log: 
                                  "args": {"indices": "0"}})
                 else:
                     state = send({"cmd": "action", "action": "skip_select"})
+
+            elif decision == "rewards":
+                # Same order the auto mode uses: gold/relics/potions first, then cards.
+                rewards = state.get("rewards", [])
+                takeable = [r for r in rewards
+                            if not (r.get("type") == "potion" and state.get("potion_slots_full"))]
+                pick = (next((r for r in takeable if r.get("type") != "card"), None)
+                        or next((r for r in takeable if r.get("type") == "card"), None))
+                if pick:
+                    state = send({"cmd": "action", "action": "claim_reward",
+                                  "args": {"reward_index": pick["index"]}})
+                else:
+                    state = send({"cmd": "action", "action": "proceed"})
+
+            elif decision == "treasure_relic":
+                state = send({"cmd": "action", "action": "select_treasure_relic",
+                              "args": {"relic_index": 0}})
 
             elif decision == "shop":
                 state = send({"cmd": "action", "action": "leave_room"})

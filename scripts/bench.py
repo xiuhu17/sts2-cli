@@ -78,7 +78,8 @@ _ENGINE = None
 
 def run_one(job):
     global _ENGINE
-    seed, character, dump_dir, reuse = job
+    seed, character, dump_dir, reuse, manual = job
+    extra = {"manual_rewards": True} if manual else {}
     holder = {}
 
     def make_logger(*a, **kw):
@@ -91,12 +92,12 @@ def run_one(job):
         from engine import Engine
         if _ENGINE is None:
             _ENGINE = Engine()
-        result = play_full_run.play_run(seed, character, verbose=False, log=True, engine=_ENGINE)
+        result = play_full_run.play_run(seed, character, verbose=False, log=True, engine=_ENGINE, **extra)
         if result.get("engine_broken") or result.get("error") == "engine_stuck":
             _ENGINE.close()
             _ENGINE = None
     else:
-        result = play_full_run.play_run(seed, character, verbose=False, log=True)
+        result = play_full_run.play_run(seed, character, verbose=False, log=True, **extra)
     wall = time.perf_counter() - t0
     lg = holder["logger"]
     lat = sorted(lg.latencies)
@@ -132,13 +133,15 @@ def main():
     ap.add_argument("--out")
     ap.add_argument("--compare", help="previous results JSON to diff fingerprints against")
     ap.add_argument("--dump", help="directory to write per-run trajectories (JSONL)")
+    ap.add_argument("--manual-rewards", action="store_true",
+                    help="start runs with manual_rewards (agent claims rewards / treasure relics)")
     ap.add_argument("--reuse", action="store_true",
                     help="reuse one engine process per worker across runs")
     args = ap.parse_args()
 
     if args.dump:
         os.makedirs(args.dump, exist_ok=True)
-    jobs = [(f"{args.seed_prefix}_{i}", c, args.dump, args.reuse)
+    jobs = [(f"{args.seed_prefix}_{i}", c, args.dump, args.reuse, args.manual_rewards)
             for c in args.characters.split(",") for i in range(args.runs)]
     t0 = time.perf_counter()
     if args.jobs > 1:
