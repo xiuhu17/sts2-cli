@@ -122,6 +122,9 @@ class Game:
                 state = self.act("choose_option", option_index=opts[0]["index"])
             elif dec == "card_reward":
                 state = self.act("skip_card_reward")
+            elif dec == "crystal_sphere":
+                x, y = state["hidden_cells"][0]
+                state = self.act("crystal_sphere_click", x=x, y=y, tool="big")
             elif dec == "bundle_select":
                 state = self.act("select_bundle", bundle_index=0)
             elif dec == "card_select":

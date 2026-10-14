@@ -1501,7 +1501,7 @@ public class RunSimulator
 
         // Set result directly (no ContinueWith/ThreadPool)
         var selected = (idx >= 0 && idx < bundles.Count) ? bundles[idx] : bundles[0];
-        tcs.TrySetResult(selected);
+        ResumeFlow(() => tcs.TrySetResult(selected));
 
         AwaitBackground();
         WaitForActionExecutor();
@@ -1577,7 +1577,7 @@ public class RunSimulator
                 return MarkStuck("turn transition did not resume after a mid-turn card selection");
             return DetectDecisionPoint();
         }
-        _cardSelector.ResolvePendingByIndices(indices.ToArray());
+        ResumeFlow(_cardSelector.DetachByIndices(indices.ToArray()));
         // The flow that asked for the selection (event option, rest site SMITH, shop
         // removal, relic pickup) continues on its background task; let it finish so the
         // returned state is current and the next command can't race it.
@@ -1606,7 +1606,7 @@ public class RunSimulator
                     return MarkStuck("turn transition did not resume after a mid-turn card selection");
                 return DetectDecisionPoint();
             }
-            _cardSelector.CancelPending();
+            ResumeFlow(_cardSelector.DetachCancel());
             AwaitBackground();
             WaitForActionExecutor();
         }
@@ -1623,6 +1623,10 @@ public class RunSimulator
         if (idx < 0 || idx >= potionsList.Count) return Error($"Invalid potion index {idx}");
         var potion = potionsList[idx];
         if (potion == null) return Error($"No potion at index {idx}");
+        // The game never lets the player use these by hand; UsePotionAction doesn't check.
+        if (potion.Usage == MegaCrit.Sts2.Core.Entities.Potions.PotionUsage.Automatic
+            || potion.Usage == MegaCrit.Sts2.Core.Entities.Potions.PotionUsage.None)
+            return Error($"Potion {potion.Id.Entry} can't be used manually (usage: {potion.Usage})");
 
         // Determine target based on potion's TargetType first, then fall back to target_index
         Creature? target = null;
@@ -2919,6 +2923,13 @@ public class RunSimulator
     /// </summary>
     private Dictionary<string, object?>? RouteRewardScreenAction(Player player, string action, Dictionary<string, object?>? args)
     {
+        // The Crystal Sphere minigame must be played out: leaving would strand the event flow
+        // that is waiting on it.
+        if (_crystalSphere != null)
+            return action is "crystal_sphere_click" or "use_potion" or "discard_potion"
+                ? null
+                : Error($"'{action}' is not available during the Crystal Sphere minigame: use crystal_sphere_click");
+
         if (RewardsScreenOpen)
         {
             switch (action)
@@ -3467,6 +3478,29 @@ public class RunSimulator
     }
 
     /// <summary>
+    /// Resume a game flow that was waiting on a prompt. A flow started by RunInBackground
+    /// captured the host context in its awaits, so completing its task on the main thread would
+    /// run the rest of the flow right here (inline), unbounded by AwaitBackground's timeout and
+    /// unable to block on a later card reward. Complete it from a pool thread instead and wait
+    /// until it yields, finishes, or opens the next prompt. Flows that already ran on the main
+    /// thread (combat actions, the turn loop) resume inline as before.
+    /// </summary>
+    private void ResumeFlow(Action? complete)
+    {
+        if (complete == null) return;
+        if (_backgroundTask == null)
+        {
+            complete();
+            _syncCtx.Pump();
+            return;
+        }
+        var t = Task.Run(() => RunWithHostContext(() => { complete(); return Task.CompletedTask; }));
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (!t.IsCompleted && !HasPendingPrompt && sw.ElapsedMilliseconds < 3000)
+            ((IAsyncResult)t).AsyncWaitHandle.WaitOne(1);
+    }
+
+    /// <summary>
     /// Start <paramref name="work"/> with the host sync context installed, so every async game
     /// method it starts (e.g. the turn loop of a combat entered from an event option) captures
     /// it. With a null context their later continuations (end turn, enemy turn, next draw) are
@@ -3638,6 +3672,8 @@ public class RunSimulator
                     ["description"] = _loc.Bilingual("potions", p.Id.Entry + ".description"),
                     ["vars"] = pvars.Count > 0 ? pvars : null,
                     ["target_type"] = p.TargetType.ToString(),
+                    // CombatOnly / AnyTime can be used; Automatic (e.g. Fairy in a Bottle) triggers by itself.
+                    ["usage"] = p.Usage.ToString(),
                 };
             }).Where(x => x != null).ToList(),
             ["deck_size"] = player.Deck?.Cards?.Count(c => c != null) ?? 0,
@@ -4063,6 +4099,31 @@ public class RunSimulator
             PendingOptions = null;
             _pendingTcs = null;
             tcs?.TrySetResult(selected);
+        }
+
+        /// <summary>
+        /// Clear the pending selection on the calling thread and return the action that hands
+        /// <paramref name="indices"/> to the waiting game flow (null if nothing is pending).
+        /// Lets the caller decide which thread the flow resumes on.
+        /// </summary>
+        public Action? DetachByIndices(int[] indices)
+        {
+            var options = PendingOptions;
+            var tcs = _pendingTcs;
+            if (options == null || tcs == null) return null;
+            var selected = indices.Where(i => i >= 0 && i < options.Count).Select(i => options[i]).ToList();
+            PendingOptions = null;
+            _pendingTcs = null;
+            return () => tcs.TrySetResult(selected);
+        }
+
+        /// <summary>Like DetachByIndices, resolving with an empty selection (skip).</summary>
+        public Action? DetachCancel()
+        {
+            var tcs = _pendingTcs;
+            PendingOptions = null;
+            _pendingTcs = null;
+            return tcs == null ? null : () => tcs.TrySetResult(Array.Empty<CardModel>());
         }
 
         public void ResolvePendingByIndices(int[] indices)

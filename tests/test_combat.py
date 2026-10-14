@@ -283,3 +283,17 @@ class TestCardFixes:
         after = state["enemies"][0]
         assert after["hp"] < enemy["hp"]
         assert any("Weak" in p["name"] for p in after.get("powers") or [])
+
+
+class TestPotionUsage:
+    def test_automatic_potion_not_usable(self, game):
+        game.skip_neow(game.start(seed="fairy1"))
+        game.set_player(potions=["FAIRY_IN_A_BOTTLE"])
+        state = game.enter_room("combat")
+        fairy = next(p for p in state["player"]["potions"] if "Fairy" in p["name"])
+        assert fairy["usage"] == "Automatic"
+        uses = [a for a in state["legal_actions"] if a["action"] == "use_potion"
+                and a["args"]["potion_index"] == fairy["index"]]
+        assert uses == []
+        err = game.act("use_potion", potion_index=fairy["index"])
+        assert err["type"] == "error"

@@ -77,3 +77,17 @@ class TestEventsWithInlineUi:
         state = game.select_first(state)
         names = [c["name"] for c in state["player"]["deck"]]
         assert "Ultimate Strike" in names, names
+
+
+class TestCrystalSphereGate:
+    def test_cannot_leave_mid_minigame(self, game):
+        game.skip_neow(game.start(seed="cs3"))
+        game.set_player(gold=500)
+        state = game.enter_room("event", event="CRYSTAL_SPHERE")
+        opt = next(o for o in state["options"] if not o.get("is_locked"))
+        state = game.act("choose_option", option_index=opt["index"])
+        assert state["decision"] == "crystal_sphere"
+        err = game.act("leave_room")
+        assert err["type"] == "error"
+        x, y = state["hidden_cells"][0]
+        assert game.act("crystal_sphere_click", x=x, y=y)["type"] == "decision"

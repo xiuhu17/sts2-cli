@@ -52,6 +52,9 @@ class TestFullRun:
                 state = game.act("skip_card_reward")
             elif dec == "bundle_select":
                 state = game.act("select_bundle", bundle_index=0)
+            elif dec == "crystal_sphere":
+                x, y = state["hidden_cells"][0]
+                state = game.act("crystal_sphere_click", x=x, y=y, tool="big")
             elif dec == "card_select":
                 if state.get("min_select", 0) == 0:
                     state = game.act("skip_select")

@@ -56,6 +56,8 @@ internal static class LegalActions
                 acts.Add(Act("end_turn"));
                 foreach (var p in Potions(player))
                 {
+                    if (p.GetValueOrDefault("usage") is string usage && usage != "CombatOnly" && usage != "AnyTime")
+                        continue;  // Automatic potions trigger by themselves
                     if (p.GetValueOrDefault("target_type") as string == "AnyEnemy")
                         foreach (var e in enemies)
                             acts.Add(Act("use_potion", ("potion_index", p["index"]), ("target_index", e)));
@@ -75,7 +77,8 @@ internal static class LegalActions
             case "card_select":
             {
                 var from = Items(r, "cards").Select(c => c["index"]).ToList();
-                var min = Int(r, "min_select");
+                // Same clamping as DoSelectCards: a prompt can ask for more cards than it offers.
+                var min = Math.Min(Int(r, "min_select"), from.Count);
                 var max = Math.Min(Int(r, "max_select"), from.Count);
                 if (max == 1)
                     foreach (var i in from)
@@ -84,7 +87,7 @@ internal static class LegalActions
                     acts.Add(new Dictionary<string, object?>
                     {
                         ["action"] = "select_cards",
-                        ["choose"] = new Dictionary<string, object?> { ["from"] = from, ["min"] = Math.Max(min, 1), ["max"] = max },
+                        ["choose"] = new Dictionary<string, object?> { ["from"] = from, ["min"] = Math.Min(Math.Max(min, 1), max), ["max"] = max },
                     });
                 if (min == 0)
                     acts.Add(Act("skip_select"));

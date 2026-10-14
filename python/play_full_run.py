@@ -243,6 +243,11 @@ def play_run(seed: str, character: str = "Ironclad", verbose: bool = True, log: 
                 state = send({"cmd": "action", "action": "select_treasure_relic",
                               "args": {"relic_index": 0}})
 
+            elif decision == "crystal_sphere":
+                x, y = state["hidden_cells"][0]
+                state = send({"cmd": "action", "action": "crystal_sphere_click",
+                              "args": {"x": x, "y": y, "tool": "big"}})
+
             elif decision == "shop":
                 state = send({"cmd": "action", "action": "leave_room"})
 
