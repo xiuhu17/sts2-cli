@@ -136,6 +136,55 @@ internal class LocLookup
     }
 
     public string? En(string table, string key) => _eng.GetValueOrDefault(table)?.GetValueOrDefault(key);
+
+    /// <summary>Unformatted entry in the output language (falls back to English), or null.</summary>
+    public string? Raw(string table, string key) =>
+        (Lang == "zh" ? _zhs.GetValueOrDefault(table)?.GetValueOrDefault(key) : null)
+        ?? _eng.GetValueOrDefault(table)?.GetValueOrDefault(key);
+
+    public static string Clean(string text) => StripBBCode(ImagesToText(text));
+
+    /// <summary>
+    /// Inline icons the game renders as images ("[img]res://.../ironclad_energy_icon.png[/img]")
+    /// become text: a run of N energy icons -> "N Energy" / "N点能量", star icons -> "★".
+    /// </summary>
+    private static string ImagesToText(string text)
+    {
+        if (!text.Contains("[img")) return text;
+        text = System.Text.RegularExpressions.Regex.Replace(text,
+            @"(?:\[img[^\]]*\][^\[]*energy_icon[^\[]*\[/img\]\s*)+", m =>
+            {
+                var n = System.Text.RegularExpressions.Regex.Matches(m.Value, @"\[/img\]").Count;
+                var trail = m.Value.EndsWith(" ") ? " " : "";
+                return (_lang == "zh" ? $"{n}点能量" : $"{n} Energy") + trail;
+            });
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"\[img[^\]]*\][^\[]*star[^\[]*\[/img\]", "★");
+        return System.Text.RegularExpressions.Regex.Replace(text, @"\[img[^\]]*\][^\[]*\[/img\]", "");
+    }
+
+    // Static mirror of Lang for the static helpers above.
+    private static string _lang = "en";
+
+    /// <summary>Replace icon placeholders the game draws as images with text.</summary>
+    public string ReplaceIcons(string text)
+    {
+        if (!text.Contains('{')) return text;
+        text = text.Replace("{singleStarIcon}", "★");
+        return System.Text.RegularExpressions.Regex.Replace(text, @"\{energyPrefix:energyIcons\((\d+)\)\}",
+            m => Lang == "zh" ? $"{m.Groups[1].Value}点能量" : $"{m.Groups[1].Value} Energy");
+    }
+
+    private static readonly string[] TipTables =
+        { "card_keywords", "static_hover_tips", "powers", "intents", "orbs", "enchantments", "afflictions" };
+
+    /// <summary>Resolve a bare key like "EXHAUST.title" that came back unformatted.</summary>
+    public string? ResolveKey(string text)
+    {
+        if (!System.Text.RegularExpressions.Regex.IsMatch(text, @"^[A-Z0-9_]+\.[a-zA-Z_.]+$")) return null;
+        foreach (var t in TipTables)
+            if (Raw(t, text) is string hit) return hit;
+        return null;
+    }
     public string? Zh(string table, string key) => _zhs.GetValueOrDefault(table)?.GetValueOrDefault(key);
 
     /// <summary>Strip BBCode tags like [gold], [/blue], [b], [sine], etc.</summary>
@@ -145,7 +194,7 @@ internal class LocLookup
     }
 
     /// <summary>Language for JSON output: "en" or "zh". Default: "en".</summary>
-    public string Lang { get; set; } = "en";
+    public string Lang { get => _lang; set => _lang = value; }
 
     /// <summary>Return localized string for JSON output based on Lang setting.</summary>
     public string Bilingual(string table, string key)
@@ -1923,7 +1972,8 @@ public class RunSimulator
                         ["cost"] = card.EnergyCost?.GetResolved() ?? 0,
                         ["type"] = card.Type.ToString(),
                         ["rarity"] = card.Rarity.ToString(),
-                        ["description"] = _loc.Bilingual("cards", card.Id.Entry + ".description"),
+                        ["description"] = CardText(card),
+                        ["tips"] = Tips(() => card.HoverTips, _loc.Card(card.Id.Entry)),
                         ["stats"] = stats.Count > 0 ? stats : null,
                         ["keywords"] = bkws?.Count > 0 ? bkws : null,
                     };
@@ -1957,7 +2007,8 @@ public class RunSimulator
                     ["cost"] = cr.Card.EnergyCost?.GetResolved() ?? 0,
                     ["type"] = cr.Card.Type.ToString(),
                     ["rarity"] = cr.Card.Rarity.ToString(),
-                    ["description"] = _loc.Bilingual("cards", cr.Card.Id.Entry + ".description"),
+                    ["description"] = CardText(cr.Card),
+                    ["tips"] = Tips(() => cr.Card.HoverTips, _loc.Card(cr.Card.Id.Entry)),
                     ["stats"] = stats.Count > 0 ? stats : null,
                     ["keywords"] = rrkws?.Count > 0 ? rrkws : null,
                     ["after_upgrade"] = GetUpgradedInfo(cr.Card),
@@ -1995,7 +2046,8 @@ public class RunSimulator
                     ["rarity"] = card.Rarity.ToString(),
                     ["upgraded"] = card.IsUpgraded,
                     ["stats"] = stats.Count > 0 ? stats : null,
-                    ["description"] = _loc.Bilingual("cards", card.Id.Entry + ".description"),
+                    ["description"] = CardText(card),
+                    ["tips"] = Tips(() => card.HoverTips, _loc.Card(card.Id.Entry)),
                     ["keywords"] = selkws?.Count > 0 ? selkws : null,
                     ["after_upgrade"] = GetUpgradedInfo(card),
                 };
@@ -2274,6 +2326,7 @@ public class RunSimulator
             // resets PreviewValue to BaseValue, and only damage/block/calculated vars override it,
             // so reading PreviewValue uniformly is safe. Issues #65 #69 #70 #71 #74 #75.
             var stats = new Dictionary<string, object?>();
+            string? handText = null;
             try
             {
                 c.DynamicVars.ClearPreview();
@@ -2284,6 +2337,8 @@ public class RunSimulator
                 {
                     stats[dv.Name.ToLowerInvariant()] = (int)dv.PreviewValue;
                 }
+                // Description with the same live values (Strength, Weak, ...), like the hand UI.
+                handText = CardText(c, PileType.Hand, c.CurrentTarget);
                 // Restore the live card to base state. UpdateDynamicVarPreview mutates the
                 // card's preview (and for self-cost cards like Momentum Strike, leaving it in
                 // preview state corrupts the subsequent PlayCardAction — card stays in hand).
@@ -2362,7 +2417,8 @@ public class RunSimulator
                 ["can_play"] = c.CanPlay(out _, out _),
                 ["target_type"] = c.TargetType.ToString(),
                 ["stats"] = stats.Count > 0 ? stats : null,
-                ["description"] = _loc.Bilingual("cards", c.Id.Entry + ".description"),
+                ["description"] = handText ?? CardText(c, PileType.Hand, c.CurrentTarget),
+                ["tips"] = Tips(() => c.HoverTips, _loc.Card(c.Id.Entry)),
             };
             if (starCost > 0)
             {
@@ -2440,7 +2496,7 @@ public class RunSimulator
                 var ePowers = e.Powers?.Select(pw => new Dictionary<string, object?>
                 {
                     ["name"] = _loc.Power(pw.Id.Entry),
-                    ["description"] = _loc.Bilingual("powers", pw.Id.Entry + ".description"),
+                    ["description"] = PowerText(pw),
                     ["amount"] = pw.Amount,
                 }).ToList();
 
@@ -2461,7 +2517,7 @@ public class RunSimulator
         var playerPowers = player.Creature?.Powers?.Select(pw => new Dictionary<string, object?>
         {
             ["name"] = _loc.Power(pw.Id.Entry),
-            ["description"] = _loc.Bilingual("powers", pw.Id.Entry + ".description"),
+            ["description"] = PowerText(pw),
             ["amount"] = pw.Amount,
         }).ToList();
 
@@ -2652,7 +2708,8 @@ public class RunSimulator
                 ["cost"] = c.EnergyCost?.GetResolved() ?? 0,
                 ["type"] = c.Type.ToString(),
                 ["rarity"] = c.Rarity.ToString(),
-                ["description"] = _loc.Bilingual("cards", c.Id.Entry + ".description"),
+                ["description"] = CardText(c),
+                ["tips"] = Tips(() => c.HoverTips, _loc.Card(c.Id.Entry)),
                 ["stats"] = stats.Count > 0 ? stats : null,
                 ["keywords"] = crkws?.Count > 0 ? crkws : null,
                 ["after_upgrade"] = GetUpgradedInfo(c),
@@ -2804,7 +2861,9 @@ public class RunSimulator
         var info = new Dictionary<string, object?>();
         if (index != null) info["index"] = index;
         info["name"] = _loc.Relic(r.Id.Entry);
-        info["description"] = _loc.Bilingual("relics", r.Id.Entry + ".description");
+        info["description"] = RelicText(r);
+        var relicTips = Tips(() => RelicExtraTips?.GetValue(r) as IEnumerable<MegaCrit.Sts2.Core.HoverTips.IHoverTip>);
+        if (relicTips != null) info["tips"] = relicTips;
         info["vars"] = vars.Count > 0 ? vars : null;
         return info;
     }
@@ -2828,7 +2887,7 @@ public class RunSimulator
                 if (pr.Potion != null)
                 {
                     info["name"] = _loc.Potion(pr.Potion.Id.Entry);
-                    info["description"] = _loc.Bilingual("potions", pr.Potion.Id.Entry + ".description");
+                    info["description"] = PotionText(pr.Potion);
                 }
                 break;
             case CardReward cr:
@@ -3126,6 +3185,12 @@ public class RunSimulator
                     catch { }
                 }
 
+                // Numbers filled in, as on the real option button.
+                if (title != null && title.Contains('{'))
+                    title = TryFormat(() => opt.Title?.GetFormattedText()) ?? FillTemplate(title, optVars);
+                if (optDesc != null && optDesc.Contains('{'))
+                    optDesc = TryFormat(() => opt.Description?.GetFormattedText()) ?? FillTemplate(optDesc, optVars);
+
                 return new Dictionary<string, object?>
                 {
                     ["index"] = i,
@@ -3150,6 +3215,12 @@ public class RunSimulator
             var d = _loc.Bilingual(localEvent.Description.LocTable, localEvent.Description.LocEntryKey);
             if (d != localEvent.Description.LocEntryKey)
                 eventDesc = d;
+        }
+        if (eventDesc != null && eventDesc.Contains('{'))
+        {
+            Dictionary<string, object?>? evVars = null;
+            try { evVars = localEvent.DynamicVars?.Values.ToDictionary(v => v.Name, v => (object?)(int)v.BaseValue); } catch { }
+            eventDesc = TryFormat(() => localEvent.Description?.GetFormattedText()) ?? FillTemplate(eventDesc, evVars);
         }
 
         return new Dictionary<string, object?>
@@ -3234,7 +3305,8 @@ public class RunSimulator
                     ["type"] = card?.Type.ToString() ?? "?",
                     ["rarity"] = card?.Rarity.ToString() ?? "?",
                     ["card_cost"] = cardCost,
-                    ["description"] = _loc.Bilingual("cards", entry + ".description"),
+                    ["description"] = card != null ? CardText(card) : _loc.Bilingual("cards", entry + ".description"),
+                    ["tips"] = card != null ? Tips(() => card.HoverTips, _loc.Card(card.Id.Entry)) : null,
                     ["stats"] = stats.Count > 0 ? stats : null,
                     ["keywords"] = shopkws?.Count > 0 ? shopkws : null,
                     ["after_upgrade"] = card != null ? GetUpgradedInfo(card) : null,
@@ -3248,7 +3320,7 @@ public class RunSimulator
         {
             ["index"] = i,
             ["name"] = _loc.Relic(e.Model?.Id.Entry ?? "?"),
-            ["description"] = _loc.Bilingual("relics", (e.Model?.Id.Entry ?? "?") + ".description"),
+            ["description"] = e.Model != null ? RelicText(e.Model) : _loc.Bilingual("relics", "?.description"),
             ["cost"] = e.Cost,
             ["is_stocked"] = e.IsStocked,
         }).ToList();
@@ -3257,7 +3329,7 @@ public class RunSimulator
         {
             ["index"] = i,
             ["name"] = _loc.Potion(e.Model?.Id.Entry ?? "?"),
-            ["description"] = _loc.Bilingual("potions", (e.Model?.Id.Entry ?? "?") + ".description"),
+            ["description"] = e.Model != null ? PotionText(e.Model) : _loc.Bilingual("potions", "?.description"),
             ["cost"] = e.Cost,
             ["is_stocked"] = e.IsStocked,
         }).ToList();
@@ -3602,6 +3674,213 @@ public class RunSimulator
     }
 
     /// <summary>Compute what a card would look like after upgrading (stats + cost + description).</summary>
+    private static int _cardTextFailures;
+
+    /// <summary>
+    /// Text formatted by the game (numbers filled in), or the raw localized template if the
+    /// game's formatting fails or still contains placeholders.
+    /// </summary>
+    private static string GameText(Func<string?> format, string table, string key, string? cacheKey = null)
+    {
+        if (cacheKey != null && _textCache.TryGetValue(cacheKey, out var cached)) return cached;
+        try
+        {
+            LocPatches.RealText = true;
+            var text = format();
+            if (!string.IsNullOrWhiteSpace(text))
+            {
+                text = _loc.ReplaceIcons(LocLookup.Clean(_loc.ResolveKey(text) ?? text).Trim());
+                if (!text.Contains('{'))
+                {
+                    if (cacheKey != null && _textCache.Count < 50000) _textCache[cacheKey] = text;
+                    return text;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            if (_cardTextFailures++ < 5) Console.Error.WriteLine($"[WARN] Text for {key}: {ex.Message}");
+        }
+        finally { LocPatches.RealText = false; }
+        return _loc.ReplaceIcons(_loc.Bilingual(table, key));
+    }
+
+    /// <summary>Format a game LocString with its own variables; null if that doesn't fully work.</summary>
+    private static string? TryFormat(Func<string?> format)
+    {
+        try
+        {
+            LocPatches.RealText = true;
+            var text = format();
+            if (string.IsNullOrWhiteSpace(text)) return null;
+            text = _loc.ReplaceIcons(LocLookup.Clean(_loc.ResolveKey(text) ?? text).Trim());
+            // An unresolved key ("X_POWER.remoteDescription") is a failure too.
+            if (text.Contains('{') || System.Text.RegularExpressions.Regex.IsMatch(text, @"^[A-Z0-9_]+\.[a-zA-Z_.]+$"))
+                return null;
+            return text;
+        }
+        catch { return null; }
+        finally { LocPatches.RealText = false; }
+    }
+
+    /// <summary>
+    /// Fill a localized template from known variables: {X}, {X:diff()}, {X:plural:one|many},
+    /// {X:energyIcons()}. Placeholders it can't resolve are left as they are.
+    /// </summary>
+    private static string FillTemplate(string text, Dictionary<string, object?>? vars)
+    {
+        text = _loc.ReplaceIcons(text);
+        if (vars == null || vars.Count == 0 || !text.Contains('{')) return text;
+        return System.Text.RegularExpressions.Regex.Replace(text, @"\{(\w+)(?::(\w+)(?:\(\))?(?::([^{}]*))?)?\}", m =>
+        {
+            if (!vars.TryGetValue(m.Groups[1].Value, out var v) || v == null) return m.Value;
+            var fmt = m.Groups[2].Value;
+            if (fmt == "plural" && m.Groups[3].Success)
+            {
+                var forms = m.Groups[3].Value.Split('|');
+                var n = Convert.ToDecimal(v);
+                return (n == 1 ? forms[0] : forms[^1]).Replace("{}", n.ToString());
+            }
+            if (fmt == "energyIcons") return _loc.Lang == "zh" ? $"{v}点能量" : $"{v} Energy";
+            return fmt is "" or "diff" ? v.ToString()! : m.Value;
+        });
+    }
+
+    private static string RelicText(RelicModel r) =>
+        GameText(() => r.HoverTip.Description, "relics", r.Id.Entry + ".description",
+                 CacheKey(r, "relic", r.DynamicVars.Values.Select(v => v.BaseValue)));
+
+    private static string PotionText(PotionModel p) =>
+        GameText(() => p.HoverTip.Description, "potions", p.Id.Entry + ".description",
+                 CacheKey(p, "potion", p.DynamicVars.Values.Select(v => v.BaseValue)));
+
+    private static readonly System.Reflection.MethodInfo? AddPowerVars = typeof(PowerModel).GetMethod(
+        "AddDumbVariablesToDescription", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+
+    private static string PowerText(PowerModel pw)
+    {
+        string owner;
+        // Text can name the owner ("if Vine Shambler has 13 or less HP"), so key on it.
+        try { owner = pw.Owner?.IsPlayer == true ? "player" : pw.Owner?.Monster?.Id.ToString() ?? "other"; } catch { owner = "?"; }
+        var cacheKey = CacheKey(pw, $"power|{pw.Amount}|{owner}", pw.DynamicVars.Values.Select(v => v.BaseValue));
+        if (_textCache.TryGetValue(cacheKey, out var cached)) return cached;
+
+        // Format the power's description deterministically from its own variables (the hover
+        // tips the game builds lazily depend on when they were first created).
+        string? text = null;
+        try
+        {
+            var ls = pw.HasSmartDescription ? pw.SmartDescription : pw.Description;
+            AddPowerVars?.Invoke(pw, new object?[] { ls, null });
+            text = TryFormat(() => ls.GetFormattedText());
+            if (text == null)
+            {
+                var vars = new Dictionary<string, object>
+                {
+                    ["Amount"] = pw.Amount,
+                    ["DisplayAmount"] = pw.Amount,
+                    ["OnPlayer"] = pw.Owner?.IsPlayer == true,
+                    ["IsMultiplayer"] = false,
+                    ["OwnerName"] = pw.Owner?.Monster != null ? _loc.Monster(pw.Owner.Monster.Id.Entry)
+                                    : _loc.Bilingual("characters", (pw.Owner?.Player?.Character?.Id.Entry ?? "IRONCLAD") + ".title"),
+                };
+                foreach (var v in pw.DynamicVars.Values) vars[v.Name] = v;
+                text = TryFormat(() => LocManager.Instance.SmartFormat(ls, vars));
+            }
+        }
+        catch (Exception ex)
+        {
+            if (_cardTextFailures++ < 5) Console.Error.WriteLine($"[WARN] Power text {pw.Id.Entry}: {ex.Message}");
+        }
+        if (text != null)
+        {
+            if (_textCache.Count < 50000) _textCache[cacheKey] = text;
+            return text;
+        }
+        // Fall back to the static text: no numbers, but never raw template syntax.
+        var raw = _loc.Raw("powers", pw.Id.Entry + ".description");
+        return raw != null ? FillTemplate(LocLookup.Clean(raw), new() { ["Amount"] = pw.Amount }) : _loc.Bilingual("powers", pw.Id.Entry + ".description");
+    }
+    private static bool IsBareKey(string text) =>
+        System.Text.RegularExpressions.Regex.IsMatch(text, @"^[A-Z0-9_]+\.[a-zA-Z_.]+$");
+
+    private static readonly System.Reflection.PropertyInfo? RelicExtraTips = typeof(RelicModel).GetProperty(
+        "ExtraHoverTips", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+
+    /// <summary>
+    /// The secondary tooltips the game shows next to an item (keyword and power explanations
+    /// such as Vulnerable or Exhaust), as [{title, description}], or null if there are none.
+    /// </summary>
+    private static List<Dictionary<string, object?>>? Tips(Func<IEnumerable<MegaCrit.Sts2.Core.HoverTips.IHoverTip>?> source, string? skipTitle = null)
+    {
+        try
+        {
+            LocPatches.RealText = true;
+            var list = new List<Dictionary<string, object?>>();
+            var seen = new HashSet<string>();
+            foreach (var tip in source() ?? Enumerable.Empty<MegaCrit.Sts2.Core.HoverTips.IHoverTip>())
+            {
+                if (tip is not MegaCrit.Sts2.Core.HoverTips.HoverTip ht) continue;  // card previews etc.
+                var title = LocLookup.Clean(_loc.ResolveKey(ht.Title ?? "") ?? ht.Title ?? "").Trim();
+                var desc = LocLookup.Clean(_loc.ResolveKey(ht.Description ?? "") ?? ht.Description ?? "").Trim();
+                if (title.Length == 0 || desc.Length == 0 || title == skipTitle || desc.Contains('{')
+                    || IsBareKey(title) || IsBareKey(desc) || !seen.Add(title))
+                    continue;
+                list.Add(new Dictionary<string, object?> { ["title"] = title, ["description"] = desc });
+            }
+            return list.Count > 0 ? list : null;
+        }
+        catch (Exception ex)
+        {
+            if (_cardTextFailures++ < 5) Console.Error.WriteLine($"[WARN] Tooltips: {ex.Message}");
+            return null;
+        }
+        finally { LocPatches.RealText = false; }
+    }
+
+    /// <summary>
+    /// Card description with numbers filled in, as the game renders it ("Deal 9 damage."
+    /// rather than "Deal {Damage:diff()} damage."), using the card's live values (Strength,
+    /// Weak, upgrades, ...). Falls back to the raw template if formatting fails.
+    /// </summary>
+    // Formatted text keyed by everything it depends on (model, upgrade, live values, language).
+    private static readonly Dictionary<string, string> _textCache = new();
+
+    private static string CacheKey(AbstractModel model, string extra, IEnumerable<decimal> values) =>
+        $"{_loc.Lang}|{model.Id}|{extra}|{string.Join(",", values)}";
+
+    private static string CardText(CardModel card, PileType pile = PileType.Deck, Creature? target = null)
+    {
+        string? key = null;
+        try
+        {
+            key = CacheKey(card, $"{card.CurrentUpgradeLevel}|{pile}|{card.Enchantment?.Id}|{card.Enchantment?.Amount}|{card.EnergyCost?.GetResolved()}",
+                card.DynamicVars.Values.Select(v => v.PreviewValue));
+            if (_textCache.TryGetValue(key, out var cached)) return cached;
+        }
+        catch { key = null; }
+        try
+        {
+            LocPatches.RealText = true;
+            var text = card.GetDescriptionForPile(pile, target);
+            if (!string.IsNullOrWhiteSpace(text))
+            {
+                text = _loc.ReplaceIcons(LocLookup.Clean(text).Trim());
+                if (!text.Contains('{'))
+                {
+                    if (key != null && _textCache.Count < 50000) _textCache[key] = text;
+                    return text;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            if (_cardTextFailures++ < 5) Console.Error.WriteLine($"[WARN] Card text for {card.Id.Entry}: {ex.Message}");
+        }
+        finally { LocPatches.RealText = false; }
+        return _loc.ReplaceIcons(_loc.Bilingual("cards", card.Id.Entry + ".description"));
+    }
+
     private Dictionary<string, object?>? GetUpgradedInfo(CardModel card)
     {
         if (!card.IsUpgradable) return null;
@@ -3631,7 +3910,7 @@ public class RunSimulator
             {
                 ["cost"] = clone.EnergyCost?.GetResolved() ?? 0,
                 ["stats"] = stats.Count > 0 ? stats : null,
-                ["description"] = _loc.Bilingual("cards", card.Id.Entry + ".description"),
+                ["description"] = CardText(clone),
                 ["added_keywords"] = addedKws.Count > 0 ? addedKws : null,
                 ["removed_keywords"] = removedKws.Count > 0 ? removedKws : null,
             };
@@ -3656,7 +3935,7 @@ public class RunSimulator
                 return new Dictionary<string, object?>
                 {
                     ["name"] = _loc.Relic(r.Id.Entry),
-                    ["description"] = _loc.Bilingual("relics", r.Id.Entry + ".description"),
+                    ["description"] = RelicText(r),
                     ["vars"] = vars.Count > 0 ? vars : null,
                 };
             }).ToList(),
@@ -3669,9 +3948,10 @@ public class RunSimulator
                 {
                     ["index"] = i,
                     ["name"] = _loc.Potion(p.Id.Entry),
-                    ["description"] = _loc.Bilingual("potions", p.Id.Entry + ".description"),
+                    ["description"] = PotionText(p),
                     ["vars"] = pvars.Count > 0 ? pvars : null,
                     ["target_type"] = p.TargetType.ToString(),
+                    ["tips"] = Tips(() => p.ExtraHoverTips),
                     // CombatOnly / AnyTime can be used; Automatic (e.g. Fairy in a Bottle) triggers by itself.
                     ["usage"] = p.Usage.ToString(),
                 };
@@ -3689,7 +3969,7 @@ public class RunSimulator
                     ["cost"] = c.EnergyCost?.GetResolved() ?? 0,
                     ["type"] = c.Type.ToString(),
                     ["upgraded"] = c.IsUpgraded,
-                    ["description"] = _loc.Bilingual("cards", c.Id.Entry + ".description"),
+                    ["description"] = CardText(c),
                     ["stats"] = dstats.Count > 0 ? dstats : null,
                     ["keywords"] = dkws?.Count > 0 ? dkws : null,
                     ["after_upgrade"] = GetUpgradedInfo(c),
@@ -4532,8 +4812,21 @@ public class RunSimulator
 
     internal static class LocPatches
     {
+        // Entries resolve to real text (in the output language) so every string the game builds —
+        // descriptions, tooltips, event text — has its numbers filled in by the game's own
+        // SmartFormat. Unknown entries still resolve to their key. RealText is kept as a no-op
+        // marker around the host's own formatting calls.
+        [ThreadStatic] internal static bool RealText;
+        private static readonly System.Reflection.FieldInfo? LocTableName =
+            typeof(LocTable).GetField("_name", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+
         public static bool GetRawTextPrefix(LocTable __instance, string key, ref string __result)
         {
+            if (LocTableName?.GetValue(__instance) is string table && _loc.Raw(table, key) is string text)
+            {
+                __result = text;
+                return false;
+            }
             // Return key as fallback "translation"
             __result = key;
             return false;

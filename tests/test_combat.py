@@ -297,3 +297,36 @@ class TestPotionUsage:
         assert uses == []
         err = game.act("use_potion", potion_index=fairy["index"])
         assert err["type"] == "error"
+
+
+class TestDescriptionText:
+    def test_card_descriptions_have_numbers_and_follow_strength(self, game):
+        game.skip_neow(game.start(seed="txt1"))
+        game.set_player(deck=["STRIKE_IRONCLAD", "BASH", "INFLAME", "TRUE_GRIT", "BLUDGEON"])
+        state = game.enter_room("combat")
+        for c in state["hand"]:
+            assert "{" not in c["description"], c
+        strike = next(c for c in state["hand"] if c["id"] == "CARD.STRIKE_IRONCLAD")
+        assert "6" in strike["description"]
+        inflame = next(c for c in state["hand"] if c["id"] == "CARD.INFLAME")
+        state = game.act("play_card", card_index=inflame["index"])
+        strike = next(c for c in state["hand"] if c["id"] == "CARD.STRIKE_IRONCLAD")
+        assert str(strike["stats"]["damage"]) in strike["description"]
+        assert strike["stats"]["damage"] == 8
+
+    def test_keyword_tooltips(self, game):
+        game.skip_neow(game.start(seed="txt2", lang="en"))
+        game.set_player(deck=["BASH", "TRUE_GRIT"] * 3)
+        state = game.enter_room("combat")
+        bash = next(c for c in state["hand"] if c["id"] == "CARD.BASH")
+        assert any(t["title"] == "Vulnerable" and "50%" in t["description"] for t in bash["tips"])
+        grit = next(c for c in state["hand"] if c["id"] == "CARD.TRUE_GRIT")
+        assert any(t["title"] == "Exhaust" for t in grit["tips"])
+
+    def test_power_descriptions_filled(self, game):
+        game.skip_neow(game.start(seed="txt3", lang="en"))
+        game.set_player(deck=["INFLAME"] * 5)
+        state = game.enter_room("combat")
+        state = game.act("play_card", card_index=0)
+        strength = next(p for p in state["player_powers"] if p["name"] == "Strength")
+        assert "{" not in strength["description"] and "2" in strength["description"]
