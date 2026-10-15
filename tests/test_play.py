@@ -58,3 +58,25 @@ def test_setup_repairs_missing_module_dependency(monkeypatch):
     play.ensure_setup()
     assert calls == [(["bash", os.path.join(play.ROOT, "setup.sh"), "/test/steam/data"],
                       {"cwd": play.ROOT, "check": True})]
+
+
+class TestCustomMode:
+    def test_unknown_modifier_lists_known_ones(self, game):
+        r = game.send({"cmd": "start_run", "character": "Ironclad", "seed": "cm0", "modifiers": ["NOPE"]})
+        assert r["type"] == "error" and "SEALED_DECK" in r["message"]
+
+    def test_sealed_deck_builds_a_deck_at_neow(self, game):
+        r = game.send({"cmd": "start_run", "character": "Ironclad", "seed": "cm1",
+                       "modifiers": ["SEALED_DECK"], "lang": "en"})
+        assert r["decision"] == "event_choice"
+        assert r["player"]["deck_size"] == 0
+        assert r["options"][0]["title"] == "Sealed Deck"
+        r = game.act("choose_option", option_index=0)
+        assert r["decision"] == "card_select"
+        choose = next(a for a in r["legal_actions"] if a["action"] == "select_cards")["choose"]
+        r = game.act("select_cards", indices=",".join(map(str, choose["from"][:choose["min"]])))
+        assert r["player"]["deck_size"] == 10
+
+    def test_bad_game_mode(self, game):
+        r = game.send({"cmd": "start_run", "character": "Ironclad", "seed": "cm2", "game_mode": "weird"})
+        assert r["type"] == "error"

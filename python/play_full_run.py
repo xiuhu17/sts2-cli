@@ -16,75 +16,31 @@ Examples:
 
 import argparse
 import json
-import subprocess
 import sys
 import random
-import os
-import queue
-import threading
+from engine import Engine, EngineError
 from game_log import GameLogger
 
 VALID_CHARACTERS = ["Ironclad", "Silent", "Defect", "Regent", "Necrobinder"]
 
-def _find_dotnet():
-    for p in [os.path.expanduser("~/.dotnet-arm64/dotnet"),
-              os.path.expanduser("~/.dotnet/dotnet"), "dotnet"]:
-        try:
-            if subprocess.run([p, "--version"], capture_output=True, timeout=5).returncode == 0:
-                return p
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            continue
-    return "dotnet"
 
-DOTNET = _find_dotnet()
-PROJECT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                       "src", "Sts2Headless", "Sts2Headless.csproj")
+def play_run(seed: str, character: str = "Ironclad", verbose: bool = True, log: bool = True,
+             engine: Engine = None, manual_rewards: bool = False):
+    """Play a complete run and return the result.
 
-
-def play_run(seed: str, character: str = "Ironclad", verbose: bool = True, log: bool = True):
-    """Play a complete run and return the result."""
+    Pass an existing Engine to reuse one process across runs (much faster for batches);
+    if the result has "engine_broken": True, that engine must be discarded.
+    """
     rng = random.Random(seed)
     logger = GameLogger(character, seed, enabled=log)
-    proc = subprocess.Popen(
-        [DOTNET, "run", "--no-build", "--project", PROJECT],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL if not verbose else None,
-        text=True,
-        bufsize=1,
-    )
-
-    responses = queue.Queue()
-
-    def collect_output():
-        for line in proc.stdout:
-            responses.put(line)
-        responses.put(None)
-
-    threading.Thread(target=collect_output, daemon=True).start()
-
-    def read_json_line() -> dict:
-        """Bound response waits so a deadlocked engine fails the regression."""
-        while True:
-            try:
-                line = responses.get(timeout=30)
-            except queue.Empty:
-                raise TimeoutError("No simulator response within 30 seconds") from None
-            if line is None:
-                raise RuntimeError("No response from simulator (EOF)")
-            if line.startswith("{"):
-                return json.loads(line)
-            if verbose:
-                print(f"  [skip] {line.strip()[:120]}")
+    owns_engine = engine is None
 
     def send(cmd: dict) -> dict:
         line = json.dumps(cmd)
         if verbose:
             print(f"  > {line[:200]}")
         logger.log_action(cmd)
-        proc.stdin.write(line + "\n")
-        proc.stdin.flush()
-        resp = read_json_line()
+        resp = engine.send(cmd)
         logger.log_state(resp)
         if verbose:
             rtype = resp.get("type", "?")
@@ -103,16 +59,16 @@ def play_run(seed: str, character: str = "Ironclad", verbose: bool = True, log: 
 
     step = 0
     try:
-        # Read ready message (may need to skip build warnings)
-        ready = read_json_line()
-        if ready.get("type") != "ready":
-            print(f"  Unexpected initial response: {ready}")
-            return {"victory": False, "seed": seed, "error": "bad_init"}
-        if verbose:
-            print(f"Connected: {ready}")
+        if owns_engine:
+            engine = Engine(stderr_sink=(lambda l: print(l, file=sys.stderr)) if verbose else None)
+            if verbose:
+                print(f"Connected: {engine.ready}")
 
         # Start run
-        state = send({"cmd": "start_run", "character": character, "seed": seed})
+        start = {"cmd": "start_run", "character": character, "seed": seed}
+        if manual_rewards:
+            start["manual_rewards"] = True
+        state = send(start)
 
         step = 0
         max_steps = 2000  # Safety limit
@@ -124,6 +80,13 @@ def play_run(seed: str, character: str = "Ironclad", verbose: bool = True, log: 
 
             if state.get("type") == "error":
                 print(f"  ERROR: {state.get('message', 'unknown')}")
+                if state.get("code") == "engine_stuck":
+                    return {"victory": False, "seed": seed, "steps": step, "error": "engine_stuck",
+                            "act": (state.get("context") or {}).get("act"),
+                            "floor": (state.get("context") or {}).get("floor")}
+                if state.get("code") == "restart_required":
+                    return {"victory": False, "seed": seed, "steps": step,
+                            "error": "restart_required", "engine_broken": True}
                 raise RuntimeError(state.get("message", "Simulator error"))
 
             decision = state.get("decision", "")
@@ -204,7 +167,7 @@ def play_run(seed: str, character: str = "Ironclad", verbose: bool = True, log: 
                             "cmd": "action",
                             "action": "end_turn"
                         })
-                        if state.get("type") != "error":
+                        if state.get("type") != "error" or state.get("code") == "engine_stuck":
                             break
                         import time
                         time.sleep(0.5)
@@ -254,13 +217,36 @@ def play_run(seed: str, character: str = "Ironclad", verbose: bool = True, log: 
                              "args": {"bundle_index": 0}})
 
             elif decision == "card_select":
-                # Auto-select first card
+                # Auto-select the first card(s): as many as the prompt requires, at least one
                 cards = state.get("cards", [])
                 if cards:
+                    k = min(max(state.get("min_select", 1), 1), len(cards))
                     state = send({"cmd": "action", "action": "select_cards",
-                                 "args": {"indices": "0"}})
+                                 "args": {"indices": ",".join(str(i) for i in range(k))}})
                 else:
                     state = send({"cmd": "action", "action": "skip_select"})
+
+            elif decision == "rewards":
+                # Same order the auto mode uses: gold/relics/potions first, then cards.
+                rewards = state.get("rewards", [])
+                takeable = [r for r in rewards
+                            if not (r.get("type") == "potion" and state.get("potion_slots_full"))]
+                pick = (next((r for r in takeable if r.get("type") != "card"), None)
+                        or next((r for r in takeable if r.get("type") == "card"), None))
+                if pick:
+                    state = send({"cmd": "action", "action": "claim_reward",
+                                  "args": {"reward_index": pick["index"]}})
+                else:
+                    state = send({"cmd": "action", "action": "proceed"})
+
+            elif decision == "treasure_relic":
+                state = send({"cmd": "action", "action": "select_treasure_relic",
+                              "args": {"relic_index": 0}})
+
+            elif decision == "crystal_sphere":
+                x, y = state["hidden_cells"][0]
+                state = send({"cmd": "action", "action": "crystal_sphere_click",
+                              "args": {"x": x, "y": y, "tool": "big"}})
 
             elif decision == "shop":
                 state = send({"cmd": "action", "action": "leave_room"})
@@ -274,6 +260,10 @@ def play_run(seed: str, character: str = "Ironclad", verbose: bool = True, log: 
         print(f"  Reached max steps ({max_steps})")
         return {"victory": False, "seed": seed, "steps": step, "timeout": True}
 
+    except (TimeoutError, EngineError) as e:
+        print(f"  ENGINE FAILURE: {e}")
+        return {"victory": False, "seed": seed, "steps": step, "error": str(e), "engine_broken": True}
+
     except Exception as e:
         print(f"  EXCEPTION: {e}")
         return {"victory": False, "seed": seed, "steps": step, "error": str(e)}
@@ -282,16 +272,8 @@ def play_run(seed: str, character: str = "Ironclad", verbose: bool = True, log: 
         logger.close()
         if logger.path:
             print(f"  [log] Saved to {logger.path}")
-        try:
-            proc.stdin.write(json.dumps({"cmd": "quit"}) + "\n")
-            proc.stdin.flush()
-        except:
-            pass
-        try:
-            proc.terminate()
-            proc.wait(timeout=5)
-        except:
-            proc.kill()
+        if owns_engine and engine is not None:
+            engine.close()
 
 
 def main():
@@ -304,6 +286,8 @@ def main():
     parser.add_argument("character", nargs="?", default="Ironclad",
                         choices=VALID_CHARACTERS, metavar="character",
                         help=f"Character to play as (default: Ironclad). Choices: {', '.join(VALID_CHARACTERS)}")
+    parser.add_argument("--fresh-process", action="store_true",
+                        help="Start a new engine process for every run instead of reusing one")
     args = parser.parse_args()
 
     if args.num_runs <= 0:
@@ -316,12 +300,20 @@ def main():
     print("=" * 60)
 
     results = []
+    engine = None
     for i in range(num_runs):
         seed = f"run_{i+1}"
         print(f"\n--- Run {i+1}/{num_runs} (seed: {seed}) ---")
-        result = play_run(seed, character, verbose=True)
+        if not args.fresh_process and engine is None:
+            engine = Engine(stderr_sink=lambda l: print(l, file=sys.stderr))
+        result = play_run(seed, character, verbose=True, engine=engine)
+        if engine is not None and (result.get("engine_broken") or result.get("error") == "engine_stuck"):
+            engine.close()
+            engine = None
         results.append(result)
         print()
+    if engine is not None:
+        engine.close()
 
     print("\n" + "=" * 60)
     print("SUMMARY")

@@ -49,6 +49,7 @@ public struct Vector2I
     public int Y;
     public Vector2I(int x, int y) { X = x; Y = y; }
     public static Vector2I Zero { get; } = new(0, 0);
+    public static Vector2I One { get; } = new(1, 1);  // CrystalSphereGold.Size
     public static implicit operator Vector2(Vector2I v) => new(v.X, v.Y);
 }
 
@@ -118,6 +119,8 @@ public static class Mathf
     public const float Epsilon = 1e-6f;
 
     public static float Sin(float s) => MathF.Sin(s);
+    public static float Log(float s) => MathF.Log(s);            // PhantasmalGardener.EnlargeMove
+    public static float Atan2(float y, float x) => MathF.Atan2(y, x); // MathHelper.GetAngle
     public static float Cos(float s) => MathF.Cos(s);
     public static float Tan(float s) => MathF.Tan(s);
     public static float Sqrt(float s) => MathF.Sqrt(s);

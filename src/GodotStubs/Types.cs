@@ -81,6 +81,9 @@ public struct Callable
     public static Callable From(Action action) => new(action);
     public static Callable From<T>(Action<T> action) => new(action);
     public static Callable From<T1, T2>(Action<T1, T2> action) => new(action);
+    public static Callable From<TResult>(Func<TResult> func) => new(func);  // GameAction.Cancel
+    public static Callable From<T1, T2, T3>(Action<T1, T2, T3> action) => new(action);
+    public static Callable From<T1, T2, T3, T4>(Action<T1, T2, T3, T4> action) => new(action);
 
     public void Call(params Variant[] args) => (_delegate as Action)?.Invoke();
     public void CallDeferred(params Variant[] args) => Call(args);

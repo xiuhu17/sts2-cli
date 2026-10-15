@@ -9,6 +9,14 @@ public class GodotObject
     public static bool IsInstanceValid(GodotObject? obj) => obj != null;
     public virtual bool IsQueuedForDeletion() => false;
 
+    // Signal plumbing referenced by game logic (e.g. RollingBoulderPower.AfterPlayerTurnStart).
+    // A missing member makes the whole calling method fail to JIT, gameplay part included.
+    public Error Connect(StringName signal, Callable callable, uint flags = 0) => Error.Ok;
+    public void Disconnect(StringName signal, Callable callable) { }
+    public bool IsConnected(StringName signal, Callable callable) => false;
+    public Error EmitSignal(StringName signal, params Variant[] args) => Error.Ok;
+    public Variant CallDeferred(StringName method, params Variant[] args) => default;
+
     // ToSignal - must be on GodotObject (not Node) to match real Godot
     public SignalAwaiter ToSignal(GodotObject source, StringName signal)
     {
@@ -89,8 +97,19 @@ public class Node : GodotObject
     public bool IsAncestorOf(Node node) => false;
     public bool IsInsideTree() => false;
     public int GetChildCount(bool includeInternal = false) => _children.Count;
+    // Referenced by game presentation code (e.g. ReattachPower.DoFadeOutOnAllSegments via
+    // GodotTreeExtensions.MoveChildSafely); missing members throw MissingMethodException.
+    public int GetIndex(bool includeInternal = false) => _parent?._children.IndexOf(this) ?? -1;
+    public void MoveChild(Node childNode, int toIndex)
+    {
+        if (!_children.Remove(childNode)) return;
+        if (toIndex < 0 || toIndex > _children.Count) toIndex = _children.Count;
+        _children.Insert(toIndex, childNode);
+    }
 
-    public void CallDeferred(StringName method, params Variant[] args) { }
+    // Used by GodotTreeExtensions.*Safely to pick immediate vs deferred tree changes.
+    public bool IsNodeReady() => true;
+    public bool HasNode(NodePath path) => false;
 
     public virtual void _Ready() { }
     public virtual void _EnterTree() { }

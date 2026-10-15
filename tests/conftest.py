@@ -2,15 +2,14 @@
 
 import json
 import os
-import shutil
 import subprocess
+import sys
 import pytest
 
-DOTNET = os.path.expanduser("~/.dotnet-arm64/dotnet")
-if not os.path.isfile(DOTNET):
-    DOTNET = shutil.which("dotnet") or DOTNET
-PROJECT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                       "src", "Sts2Headless", "Sts2Headless.csproj")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "python"))
+from engine import PROJECT, engine_command, find_dotnet  # noqa: E402
+
+DOTNET = find_dotnet() or "dotnet"
 
 
 class Game:
@@ -21,9 +20,10 @@ class Game:
         # Match the interactive launcher's default: resolve dependencies from lib,
         # never silently borrow missing assemblies from the Steam installation.
         env["STS2_GAME_DIR"] = os.path.join(os.path.dirname(os.path.dirname(PROJECT)), "..", "lib")
+        # stderr is discarded: an undrained PIPE fills up and blocks the engine.
         self.proc = subprocess.Popen(
-            [DOTNET, "run", "--no-build", "--project", PROJECT],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            engine_command(DOTNET),
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             text=True, bufsize=1, env=env,
         )
         ready = self._read()
@@ -35,7 +35,10 @@ class Game:
             if not line:
                 raise RuntimeError("EOF from game process")
             if line.startswith("{"):
-                return json.loads(line)
+                msg = json.loads(line)
+                if msg.get("type") == "fatal":
+                    raise RuntimeError(f"Engine crashed: {msg.get('message')}\n{msg.get('stack_trace')}")
+                return msg
 
     def send(self, cmd):
         self.proc.stdin.write(json.dumps(cmd) + "\n")
@@ -80,6 +83,11 @@ class Game:
 
     # --- Auto-play helpers ---
 
+    def select_first(self, state):
+        """Resolve a card_select with the first min_select cards (at least one)."""
+        k = min(max(state.get("min_select", 1), 1), len(state.get("cards", [])))
+        return self.act("select_cards", indices=",".join(str(i) for i in range(k)))
+
     def auto_combat(self, state):
         """Play one card or end turn."""
         hand = state.get("hand", [])
@@ -114,21 +122,48 @@ class Game:
                 state = self.act("choose_option", option_index=opts[0]["index"])
             elif dec == "card_reward":
                 state = self.act("skip_card_reward")
+            elif dec == "crystal_sphere":
+                x, y = state["hidden_cells"][0]
+                state = self.act("crystal_sphere_click", x=x, y=y, tool="big")
             elif dec == "bundle_select":
                 state = self.act("select_bundle", bundle_index=0)
             elif dec == "card_select":
                 if state.get("min_select", 0) == 0:
                     state = self.act("skip_select")
                 else:
-                    state = self.act("select_cards", indices="0")
+                    state = self.select_first(state)
             else:
                 state = self.act("proceed")
         return state
 
 
+_shared = None
+
+
 @pytest.fixture
 def game():
-    """Each test gets an independent game process."""
-    g = Game()
-    yield g
-    g.close()
+    """A game process for the test. One process is reused across tests (start_run resets the
+    run, and engine start-up costs ~1s); it is replaced if a test leaves it unusable.
+    Set STS2_TEST_FRESH=1 for a new process per test."""
+    global _shared
+    if os.environ.get("STS2_TEST_FRESH") == "1":
+        g = Game()
+        yield g
+        g.close()
+        return
+    if _shared is None or _shared.proc.poll() is not None:
+        _shared = Game()
+    yield _shared
+    try:
+        # A test that broke the engine (crash, timeout, restart_required) gets a fresh one next.
+        r = _shared.send({"cmd": "get_map"})
+        if r.get("code") in ("engine_timeout", "restart_required"):
+            raise RuntimeError(r.get("message"))
+    except Exception:
+        _shared.close()
+        _shared = None
+
+
+def pytest_sessionfinish(session, exitstatus):
+    if _shared is not None:
+        _shared.close()

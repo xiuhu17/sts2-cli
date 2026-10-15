@@ -228,3 +228,105 @@ class TestCombatEdgeCases:
                 break
         assert state["decision"] == "game_over"
         assert state["victory"] is False
+
+
+class TestPileContents:
+    def test_piles_listed_and_consistent_with_counts(self, game):
+        state = game.start(seed="piles1")
+        state = game.enter_room("combat")
+        assert state["decision"] == "combat_play"
+        for key in ("draw_pile", "discard_pile", "exhaust_pile"):
+            assert isinstance(state[key], list)
+        assert sum(c["count"] for c in state["draw_pile"]) == state["draw_pile_count"]
+        assert sum(c["count"] for c in state["discard_pile"]) == state["discard_pile_count"]
+        assert state["exhaust_pile_count"] == sum(c["count"] for c in state["exhaust_pile"])
+        # Hand + draw pile = whole deck at the start of combat.
+        deck = state["player"]["deck_size"]
+        assert len(state["hand"]) + state["draw_pile_count"] == deck
+
+    def test_draw_pile_is_sorted_not_in_draw_order(self, game):
+        state = game.start(seed="piles2")
+        state = game.enter_room("combat")
+        names = [c["name"] for c in state["draw_pile"]]
+        assert names == sorted(names)
+
+    def test_discard_pile_after_playing_a_card(self, game):
+        state = game.start(seed="piles3")
+        state = game.enter_room("combat")
+        card = next(c for c in state["hand"] if c["can_play"] and c["cost"] <= state["energy"])
+        args = {"card_index": card["index"]}
+        if card["target_type"] == "AnyEnemy":
+            args["target_index"] = 0
+        state = game.act("play_card", **args)
+        if card["type"] != "Power":
+            assert state["discard_pile_count"] + state["exhaust_pile_count"] >= 1
+
+
+class TestCardFixes:
+    def test_particle_wall_returning_to_hand_is_not_an_error(self, game):
+        """BUG-006: Particle Wall returns itself to the same hand slot after being played."""
+        game.skip_neow(game.start(character="Regent", seed="pw1"))
+        game.set_player(deck=["PARTICLE_WALL"])
+        state = game.enter_room("combat")
+        card = next(c for c in state["hand"] if "Particle" in c["name"])
+        state = game.act("play_card", card_index=card["index"])
+        assert state["type"] == "decision", state
+        assert state["player"]["block"] > 0
+
+    def test_neutralize_uses_real_card_logic(self, game):
+        game.skip_neow(game.start(character="Silent", seed="nz1"))
+        game.set_player(deck=["NEUTRALIZE"] * 5)
+        state = game.enter_room("combat")
+        enemy = state["enemies"][0]
+        state = game.act("play_card", card_index=0, target_index=0)
+        assert state["type"] == "decision", state
+        after = state["enemies"][0]
+        assert after["hp"] < enemy["hp"]
+        assert any("Weak" in p["name"] for p in after.get("powers") or [])
+
+
+class TestPotionUsage:
+    def test_automatic_potion_not_usable(self, game):
+        game.skip_neow(game.start(seed="fairy1"))
+        game.set_player(potions=["FAIRY_IN_A_BOTTLE"])
+        state = game.enter_room("combat")
+        fairy = next(p for p in state["player"]["potions"] if "Fairy" in p["name"])
+        assert fairy["usage"] == "Automatic"
+        uses = [a for a in state["legal_actions"] if a["action"] == "use_potion"
+                and a["args"]["potion_index"] == fairy["index"]]
+        assert uses == []
+        err = game.act("use_potion", potion_index=fairy["index"])
+        assert err["type"] == "error"
+
+
+class TestDescriptionText:
+    def test_card_descriptions_have_numbers_and_follow_strength(self, game):
+        game.skip_neow(game.start(seed="txt1"))
+        game.set_player(deck=["STRIKE_IRONCLAD", "BASH", "INFLAME", "TRUE_GRIT", "BLUDGEON"])
+        state = game.enter_room("combat")
+        for c in state["hand"]:
+            assert "{" not in c["description"], c
+        strike = next(c for c in state["hand"] if c["id"] == "CARD.STRIKE_IRONCLAD")
+        assert "6" in strike["description"]
+        inflame = next(c for c in state["hand"] if c["id"] == "CARD.INFLAME")
+        state = game.act("play_card", card_index=inflame["index"])
+        strike = next(c for c in state["hand"] if c["id"] == "CARD.STRIKE_IRONCLAD")
+        assert str(strike["stats"]["damage"]) in strike["description"]
+        assert strike["stats"]["damage"] == 8
+
+    def test_keyword_tooltips(self, game):
+        game.skip_neow(game.start(seed="txt2", lang="en"))
+        game.set_player(deck=["BASH", "TRUE_GRIT"] * 3)
+        state = game.enter_room("combat")
+        bash = next(c for c in state["hand"] if c["id"] == "CARD.BASH")
+        assert any(t["title"] == "Vulnerable" and "50%" in t["description"] for t in bash["tips"])
+        grit = next(c for c in state["hand"] if c["id"] == "CARD.TRUE_GRIT")
+        assert any(t["title"] == "Exhaust" for t in grit["tips"])
+
+    def test_power_descriptions_filled(self, game):
+        game.skip_neow(game.start(seed="txt3", lang="en"))
+        game.set_player(deck=["INFLAME"] * 5)
+        state = game.enter_room("combat")
+        state = game.act("play_card", card_index=0)
+        strength = next(p for p in state["player_powers"] if p["name"] == "Strength")
+        assert "{" not in strength["description"] and "2" in strength["description"]

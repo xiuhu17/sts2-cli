@@ -15,6 +15,9 @@ Examples:
 import json, subprocess, os, sys, threading, re, time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "python"))
+from engine import engine_command  # noqa: E402
+
 # --- Arg parsing ---
 COMPACT = "--compact" in sys.argv
 REPLAY_MODE = len(sys.argv) > 1 and sys.argv[1] == "replay"
@@ -37,8 +40,16 @@ else:
 
 # --- JSON helpers ---
 _STRIP_KEYS = {"description", "after_upgrade", "enchantment", "enchantment_amount",
-               "affliction", "affliction_amount", "id", "draw_pile_count",
-               "discard_pile_count", "upgraded", "act_name"}
+               "affliction", "affliction_amount", "id", "upgraded", "act_name"}
+_PILE_KEYS = {"draw_pile", "discard_pile", "exhaust_pile"}
+# Per-turn player fields kept in combat (the rest of `player` — deck, relics — is noise there).
+_COMBAT_PLAYER_KEYS = ("hp", "max_hp", "block", "potions")
+
+
+def compact_pile(pile):
+    """[{name:"Strike+", count:2, ...}] -> ["Strike+ x2"] (upgrades are already in the name)."""
+    return [f"{c.get('name')} x{c['count']}" if c.get("count", 1) > 1 else c.get("name")
+            for c in pile if isinstance(c, dict)]
 
 
 def compact_json(obj, depth=0):
@@ -49,8 +60,12 @@ def compact_json(obj, depth=0):
             if k == "context" and obj.get("decision") == "combat_play": continue
             if k == "player" and obj.get("decision") == "combat_play":
                 if isinstance(v, dict):
-                    potions = v.get("potions")
-                    if potions: result["potions"] = compact_json(potions, depth + 1)
+                    for pk in _COMBAT_PLAYER_KEYS:
+                        if v.get(pk) is not None:
+                            result[pk] = compact_json(v[pk], depth + 1)
+                continue
+            if k in _PILE_KEYS and isinstance(v, list):
+                result[k] = compact_pile(v)
                 continue
             if k == "relics" and isinstance(v, list) and depth > 0:
                 result[k] = [compact_json(r, depth + 1) if isinstance(r, dict) else r for r in v]
@@ -73,12 +88,13 @@ class Game:
     def __init__(self):
         self.lock = threading.Lock()
         self.step = 0
-        os.environ["STS2_GAME_DIR"] = os.path.expanduser(
+        # The engine finds the game DLLs in ./lib (copied by setup.sh); STS2_GAME_DIR is
+        # only an extra fallback, so don't override one the user already set.
+        os.environ.setdefault("STS2_GAME_DIR", os.path.expanduser(
             "~/Library/Application Support/Steam/steamapps/common/"
-            "Slay the Spire 2/SlayTheSpire2.app/Contents/Resources/data_sts2_macos_arm64")
+            "Slay the Spire 2/SlayTheSpire2.app/Contents/Resources/data_sts2_macos_arm64"))
         self.proc = subprocess.Popen(
-            [os.path.expanduser("~/.dotnet-arm64/dotnet"), "run", "--no-build",
-             "--project", "Sts2Headless/Sts2Headless.csproj"],
+            engine_command(),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, bufsize=1, cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         def _forward_stderr():

@@ -16,6 +16,7 @@ import os
 import argparse
 import random
 from game_log import GameLogger
+from engine import engine_command, find_dotnet
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROJECT = os.path.join(ROOT, "src", "Sts2Headless", "Sts2Headless.csproj")
@@ -37,7 +38,7 @@ def _find_dotnet():
                 return p
         except (FileNotFoundError, subprocess.TimeoutExpired):
             continue
-    return None
+    return find_dotnet()
 
 DOTNET = _find_dotnet()
 
@@ -1266,6 +1267,7 @@ def get_input(prompt, valid_options=None, state=None, multi_select=False, multi_
     {c('deck', 'cyan')}     — 查看牌组
     {c('potions', 'cyan')}  — 查看药水
     {c('relics', 'cyan')}   — 查看遗物
+    {c('piles', 'cyan')}    — 查看抽牌堆/弃牌堆/消耗堆（战斗中）
     {c('quit', 'cyan')}     — 退出
     {c('save', 'cyan')}     — 存档
     {c('saves', 'cyan')}    — 查看存档列表
@@ -1287,6 +1289,7 @@ def get_input(prompt, valid_options=None, state=None, multi_select=False, multi_
     {c('deck', 'cyan')}     — show deck
     {c('potions', 'cyan')}  — show potions
     {c('relics', 'cyan')}   — show relics
+    {c('piles', 'cyan')}    — show draw / discard / exhaust piles (in combat)
     {c('quit', 'cyan')}     — quit
     {c('abandon', 'cyan')}  — abandon run (forfeit)
     {c('save', 'cyan')}     — save game
@@ -1319,6 +1322,19 @@ def get_input(prompt, valid_options=None, state=None, multi_select=False, multi_
             p = state.get("player", {})
             for r in p.get("relics", []):
                 print(f"  🔶 {relic_str(r)}")
+            continue
+        if raw == "piles" and state:
+            if state.get("decision") != "combat_play":
+                print(f"  {t('Piles are only shown in combat.','只有战斗中才能查看牌堆。')}")
+                continue
+            for key, label in (("draw_pile", t("Draw pile", "抽牌堆")),
+                               ("discard_pile", t("Discard pile", "弃牌堆")),
+                               ("exhaust_pile", t("Exhaust pile", "消耗堆"))):
+                pile = state.get(key) or []
+                total = sum(cd.get("count", 1) for cd in pile)
+                names = ", ".join(f"{n(cd.get('name', '?'))}" + (f" x{cd['count']}" if cd.get("count", 1) > 1 else "")
+                                  for cd in pile)
+                print(f"  {c(label, 'bold')} ({total}): {names or t('empty', '空')}")
             continue
         if raw == "map":
             # Fetch full map from CLI
@@ -1499,10 +1515,12 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0, log=True,
 
     logger = GameLogger(character, actual_seed, enabled=log)
     action_log = []
+    # stderr is never read here, so discard it: a PIPE nobody drains fills up and
+    # blocks the engine mid-run.
     proc = subprocess.Popen(
-        [DOTNET, "run", "--no-build", "--project", PROJECT],
+        engine_command(DOTNET),
         stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE, text=True, bufsize=1,
+        stderr=subprocess.DEVNULL, text=True, bufsize=1,
     )
 
     def read():
@@ -1603,8 +1621,16 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0, log=True,
                 print(t("Connection lost.","连接已断开。"))
                 break
 
+            if state.get("type") == "fatal":
+                print(f"  {c(t('Engine crashed:','引擎崩溃：'), 'red')} {state.get('message', '?')}")
+                print(c(state.get("stack_trace", ""), "dim"))
+                break
+
             if state.get("type") == "error":
                 print(f"  {c(t('Error:','错误:'), 'red')} {state.get('message', '?')}")
+                if state.get("code") in ("engine_stuck", "restart_required"):
+                    # The run can't continue; retrying 'proceed' would loop forever.
+                    break
                 state = send({"cmd": "action", "action": "proceed"})
                 continue
 
@@ -1800,6 +1826,28 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0, log=True,
                     choice = get_input(t("Choose pack [index]", "选择卡牌包 [编号]"), set(valid.keys()), state=state)
                 state = send({"cmd": "action", "action": "select_bundle",
                              "args": {"bundle_index": int(choice)}})
+
+            elif dec == "crystal_sphere":
+                print(f"\n{'─' * 60}")
+                print(f"  {c('Crystal Sphere', 'bold')}  "
+                      f"{t('Divinations left','剩余占卜次数')}: {c(str(state.get('divinations_left')), 'yellow')}")
+                print(f"  {c(t('? hidden  . empty  g gold  p potion  c card  r relic  x curse', '? 未揭开  . 空  g 金币  p 药水  c 卡牌  r 遗物  x 诅咒'), 'dim')}")
+                width = state.get("width", 0)
+                print("     " + " ".join(f"{x:>2}" for x in range(width)))
+                for y, row in enumerate(state.get("rows", [])):
+                    print(f"  {y:>2} " + " ".join(f" {ch}" for ch in row))
+                hidden = state.get("hidden_cells", [])
+                valid = {f"{x} {y}" for x, y in hidden} | {f"{x} {y} s" for x, y in hidden}
+                if auto:
+                    x, y = hidden[0]
+                    choice = f"{x} {y}"
+                else:
+                    choice = get_input(t("Reveal cell 'x y' (3x3), or 'x y s' for a single cell",
+                                         "揭开格子：输入 'x y'（3x3 范围），或 'x y s'（单格）"), valid, state=state)
+                parts = choice.split()
+                state = send({"cmd": "action", "action": "crystal_sphere_click",
+                              "args": {"x": int(parts[0]), "y": int(parts[1]),
+                                       "tool": "small" if len(parts) > 2 else "big"}})
 
             elif dec == "card_select":
                 print(f"\n{'─' * 60}")
