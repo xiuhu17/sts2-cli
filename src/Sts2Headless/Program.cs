@@ -229,7 +229,10 @@ class Program
                     cmd.TryGetProperty("ascension", out var asc) ? asc.GetInt32() : 0,
                     cmd.TryGetProperty("seed", out var s) ? s.GetString() : null,
                     cmd.TryGetProperty("lang", out var lang) ? lang.GetString() ?? "en" : "en",
-                    ReadBool(cmd, "manual_rewards")
+                    ReadBool(cmd, "manual_rewards"),
+                    cmd.TryGetProperty("modifiers", out var mods) && mods.ValueKind == JsonValueKind.Array
+                        ? mods.EnumerateArray().Select(m => m.GetString() ?? "").ToList() : null,
+                    cmd.TryGetProperty("game_mode", out var gm) ? gm.GetString() : null
                 );
 
             case "action":

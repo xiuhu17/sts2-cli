@@ -290,7 +290,7 @@ public class RunSimulator
     private TaskCompletionSource<IEnumerable<CardModel>>? _pendingBundleTcs;
 
     public Dictionary<string, object?> StartRun(string character, int ascension = 0, string? seed = null, string lang = "en",
-        bool manualRewards = false)
+        bool manualRewards = false, IReadOnlyList<string>? modifiers = null, string? gameMode = null)
     {
         try
         {
@@ -298,6 +298,22 @@ public class RunSimulator
             if (!KnownCharacters.Contains(character.ToLowerInvariant()))
                 return Error($"Unknown character: {character}");
             EnsureModelDbInitialized();
+            var mode = (gameMode ?? (modifiers?.Count > 0 ? "custom" : "standard")).ToLowerInvariant() switch
+            {
+                "standard" => (GameMode?)GameMode.Standard,
+                "custom" => GameMode.Custom,
+                "daily" => GameMode.Daily,
+                _ => null,
+            };
+            if (mode == null) return Error($"Unknown game_mode '{gameMode}' (standard|custom|daily)");
+            var modifierModels = new List<ModifierModel>();
+            foreach (var name in modifiers ?? Array.Empty<string>())
+            {
+                var m = ResolveModifier(name);
+                if (m == null)
+                    return Error($"Unknown modifier '{name}'. Known: {string.Join(", ", KnownModifiers())}");
+                modifierModels.Add(m);
+            }
             if (!ResetForNewRun())
                 return RestartRequired();
             _loc.Lang = lang;
@@ -313,6 +329,8 @@ public class RunSimulator
             // Use CreateForTest which properly handles mutable copies internally
             _runState = RunState.CreateForTest(
                 players: new[] { player },
+                modifiers: modifierModels,
+                gameMode: mode.Value,
                 ascensionLevel: ascension,
                 seed: seedStr
             );
@@ -4258,6 +4276,17 @@ public class RunSimulator
         {
             Console.Error.WriteLine($"[WARN] ModelIdSerializationCache.Init: {ex.Message}");
         }
+    }
+
+    /// <summary>Modifier ids as used by custom mode, e.g. "MIDAS", "SEALED_DECK".</summary>
+    private static IEnumerable<string> KnownModifiers() =>
+        ModelDb.All.OfType<ModifierModel>().Select(m => m.Id.Entry).Distinct().OrderBy(x => x);
+
+    private static ModifierModel? ResolveModifier(string name)
+    {
+        var entry = name.Trim().ToUpperInvariant().Replace(' ', '_');
+        var canonical = ModelDb.All.OfType<ModifierModel>().FirstOrDefault(m => m.Id.Entry == entry);
+        return canonical?.ToMutable() as ModifierModel;
     }
 
     private static readonly HashSet<string> KnownCharacters =
