@@ -137,9 +137,33 @@ class Game:
         return state
 
 
+_shared = None
+
+
 @pytest.fixture
 def game():
-    """Each test gets an independent game process."""
-    g = Game()
-    yield g
-    g.close()
+    """A game process for the test. One process is reused across tests (start_run resets the
+    run, and engine start-up costs ~1s); it is replaced if a test leaves it unusable.
+    Set STS2_TEST_FRESH=1 for a new process per test."""
+    global _shared
+    if os.environ.get("STS2_TEST_FRESH") == "1":
+        g = Game()
+        yield g
+        g.close()
+        return
+    if _shared is None or _shared.proc.poll() is not None:
+        _shared = Game()
+    yield _shared
+    try:
+        # A test that broke the engine (crash, timeout, restart_required) gets a fresh one next.
+        r = _shared.send({"cmd": "get_map"})
+        if r.get("code") in ("engine_timeout", "restart_required"):
+            raise RuntimeError(r.get("message"))
+    except Exception:
+        _shared.close()
+        _shared = None
+
+
+def pytest_sessionfinish(session, exitstatus):
+    if _shared is not None:
+        _shared.close()

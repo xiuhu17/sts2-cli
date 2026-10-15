@@ -127,3 +127,29 @@ class TestTreasure:
         game.enter_room("treasure")
         err = game.act("select_treasure_relic", relic_index=99)
         assert err["type"] == "error"
+
+
+class TestEventRewards:
+    def test_neow_rewards_are_claimable_and_skippable(self, game):
+        state = game.send({"cmd": "start_run", "character": "Ironclad", "seed": "NP8VU5N662YB",
+                           "manual_rewards": True})
+        state = game.act("choose_option", option_index=0)  # Lost box: a card reward + a potion
+        assert state["decision"] == "rewards" and state["source"] == "event"
+        types = sorted(r["type"] for r in state["rewards"])
+        assert types == ["card", "potion"]
+        card = next(r for r in state["rewards"] if r["type"] == "card")
+        state = game.act("claim_reward", reward_index=card["index"])
+        assert state["decision"] == "card_reward"
+        deck = state["player"]["deck_size"]
+        state = game.act("select_card_reward", card_index=0)
+        assert state["decision"] == "rewards"
+        assert state["player"]["deck_size"] == deck + 1
+        state = game.act("proceed")  # leave the potion
+        assert state["decision"] == "map_select"
+        assert state["player"]["potions"] == []
+
+    def test_default_mode_still_auto_collects(self, game):
+        state = game.start(seed="NP8VU5N662YB")
+        state = game.act("choose_option", option_index=0)
+        assert state["decision"] == "card_reward"
+        assert len(state["player"]["potions"]) == 1

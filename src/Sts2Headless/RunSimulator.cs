@@ -2065,6 +2065,10 @@ public class RunSimulator
             };
         }
 
+        // Rewards offered by an event (manual_rewards)
+        if (EventRewardsOpen)
+            return EventRewardsState(player);
+
         // Check if there's a pending card reward
         if (_pendingCardReward != null)
         {
@@ -2728,6 +2732,112 @@ public class RunSimulator
         };
     }
 
+    // ─── Event rewards (manual_rewards) ───
+    // Events hand out rewards through RewardsSet.testSelector on their background flow. In
+    // manual mode the selector parks the set here and waits; claims run the game's own
+    // RewardsSetSynchronizer.SelectLocalReward on a pool thread (a card reward opens the
+    // usual card_reward prompt); proceed skips the rest and resumes the event.
+
+    private TaskCompletionSource? _eventRewardsTcs;
+    private RewardsSet? _eventRewardSet;
+    private List<Reward>? _eventRewards;
+    private readonly HashSet<int> _eventRewardDone = new();
+    private Task? _eventClaim;
+
+    internal Task OfferEventRewards(RewardsSet set)
+    {
+        var tcs = new TaskCompletionSource();
+        _eventRewardSet = set;
+        _eventRewards = set.Rewards.ToList();
+        _eventRewardDone.Clear();
+        _eventClaim = null;
+        _eventRewardsTcs = tcs;
+        Console.Error.WriteLine($"[SIM] Event rewards pending: {_eventRewards.Count}");
+        return tcs.Task;
+    }
+
+    /// <summary>The event reward screen is showing (no claim prompt in front of it).</summary>
+    private bool EventRewardsOpen =>
+        _eventRewardsTcs != null && _eventRewards != null
+        && !_cardSelector.HasPending && !_cardSelector.HasPendingReward && _pendingBundles == null
+        && _crystalSphere == null;
+
+    private void AwaitEventClaim()
+    {
+        var t = _eventClaim;
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (t != null && !t.IsCompleted && !_cardSelector.HasPending && !_cardSelector.HasPendingReward
+               && _pendingBundles == null && sw.ElapsedMilliseconds < 3000)
+        {
+            _syncCtx.Pump();
+            ((IAsyncResult)t).AsyncWaitHandle.WaitOne(1);
+        }
+        if (t != null && t.IsFaulted) Log($"Event reward claim failed: {t.Exception?.InnerException}");
+        if (t != null && t.IsCompleted) _eventClaim = null;
+    }
+
+    private Dictionary<string, object?> EventRewardsState(Player player)
+    {
+        AwaitEventClaim();
+        var rewards = new List<Dictionary<string, object?>>();
+        for (int i = 0; i < _eventRewards!.Count; i++)
+            if (!_eventRewardDone.Contains(i)) rewards.Add(RewardInfo(_eventRewards[i], i));
+        if (rewards.Count == 0)
+            return DoFinishEventRewards();  // everything claimed: leave the screen like the game does
+        return new Dictionary<string, object?>
+        {
+            ["type"] = "decision",
+            ["decision"] = "rewards",
+            ["source"] = "event",
+            ["context"] = RunContext(),
+            ["rewards"] = rewards,
+            ["potion_slots_full"] = !player.HasOpenPotionSlots,
+            ["player"] = PlayerSummary(player),
+        };
+    }
+
+    private Dictionary<string, object?> DoClaimEventReward(Player player, Dictionary<string, object?>? args)
+    {
+        if (args == null || !args.ContainsKey("reward_index"))
+            return Error("claim_reward requires 'reward_index'");
+        var idx = Convert.ToInt32(args["reward_index"]);
+        if (idx < 0 || idx >= _eventRewards!.Count || _eventRewardDone.Contains(idx))
+            return Error($"Invalid reward index {idx}");
+        var reward = _eventRewards[idx];
+        if (reward is MegaCrit.Sts2.Core.Rewards.PotionReward && !player.HasOpenPotionSlots)
+            return Error("Potion slots are full: discard_potion first, or proceed to leave this potion");
+
+        _eventRewardDone.Add(idx);
+        Log($"Claiming event reward {idx}: {reward.GetType().Name}");
+        var synchronizer = RunManager.Instance.RewardsSetSynchronizer;
+        _eventClaim = Task.Run(() => RunWithHostContext(() => synchronizer.SelectLocalReward(reward)));
+        AwaitEventClaim();
+        WaitForActionExecutor();
+        return DetectDecisionPoint();
+    }
+
+    private Dictionary<string, object?> DoFinishEventRewards()
+    {
+        AwaitEventClaim();
+        var set = _eventRewardSet;
+        var tcs = _eventRewardsTcs;
+        _eventRewardsTcs = null;
+        _eventRewards = null;
+        _eventRewardSet = null;
+        try
+        {
+            var synchronizer = RunManager.Instance.RewardsSetSynchronizer;
+            if (set != null && !synchronizer.IsRewardsSetCompleted(set))
+                synchronizer.SkipLocalRewardsSet();
+        }
+        catch (Exception ex) { Log($"Skip event rewards: {ex.Message}"); }
+        Log("Left event rewards");
+        ResumeFlow(tcs == null ? null : () => tcs.TrySetResult());
+        AwaitBackground();
+        WaitForActionExecutor();
+        return DetectDecisionPoint();
+    }
+
     // ─── Crystal Sphere minigame ───
     // The event's minigame logic lives in CrystalSphereMinigame; only its screen is UI. The
     // screen is replaced (LocPatches.CrystalSphereScreenPrefix) by capturing the minigame here
@@ -2982,6 +3092,20 @@ public class RunSimulator
     /// </summary>
     private Dictionary<string, object?>? RouteRewardScreenAction(Player player, string action, Dictionary<string, object?>? args)
     {
+        if (EventRewardsOpen)
+        {
+            switch (action)
+            {
+                case "claim_reward": return DoClaimEventReward(player, args);
+                case "proceed":
+                case "leave_room":
+                case "skip_rewards": return DoFinishEventRewards();
+                case "use_potion":
+                case "discard_potion": return null;
+                default: return Error($"'{action}' is not available on the rewards screen: use claim_reward or proceed");
+            }
+        }
+
         // The Crystal Sphere minigame must be played out: leaving would strand the event flow
         // that is waiting on it.
         if (_crystalSphere != null)
@@ -3524,7 +3648,7 @@ public class RunSimulator
 
     private bool HasPendingPrompt =>
         _cardSelector.HasPending || _cardSelector.HasPendingReward || _pendingBundles != null
-        || _crystalSphere != null;
+        || _crystalSphere != null || _eventRewardsTcs != null;
 
     /// <summary>
     /// Run <paramref name="work"/> on the thread pool and pump until it completes or opens a
@@ -4109,6 +4233,14 @@ public class RunSimulator
         // so skipped cards finish the set and its event continuation can resume.
         RewardsSet.testSelector = async set =>
         {
+            // manual_rewards: offer the set as a "rewards" decision and wait for the player.
+            // Not on the main thread: it would wait for an answer only it can deliver.
+            var sim = LocPatches._bundleSimRef;
+            if (sim != null && sim.ManualRewards && Environment.CurrentManagedThreadId != MainThreadId)
+            {
+                await sim.OfferEventRewards(set);
+                return;
+            }
             var synchronizer = RunManager.Instance.RewardsSetSynchronizer;
             foreach (var reward in set.Rewards)
                 await synchronizer.SelectLocalReward(reward);
@@ -5114,6 +5246,10 @@ public class RunSimulator
 
     private void CancelAllPrompts()
     {
+        var eventTcs = _eventRewardsTcs;
+        _eventRewardsTcs = null;
+        _eventRewards = null;
+        eventTcs?.TrySetResult();
         var sphere = _crystalSphere;
         _crystalSphere = null;
         try { sphere?.ForceMinigameEnd(); } catch (Exception ex) { Log($"Crystal Sphere end: {ex.Message}"); }
