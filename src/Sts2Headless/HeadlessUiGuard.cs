@@ -33,7 +33,12 @@ internal static class HeadlessUiGuard
     {
         if (Environment.GetEnvironmentVariable("STS2_NO_UI_GUARD") == "1")
         {
-            Console.Error.WriteLine("[INFO] UI guard disabled (STS2_NO_UI_GUARD=1)");
+            // The setup-time rewrite is part of the file and can't be switched off here.
+            string? stamp = null;
+            try { stamp = ReadStamp(gameAssembly.Location); } catch { }
+            Console.Error.WriteLine(stamp != null
+                ? "[WARN] STS2_NO_UI_GUARD=1 only skips the runtime rewrite; this sts2.dll was guarded by setup.sh (use lib/sts2.dll.original to run without it)"
+                : "[INFO] UI guard disabled (STS2_NO_UI_GUARD=1)");
             return;
         }
         if (IsPreApplied(gameAssembly))
@@ -92,7 +97,16 @@ internal static class HeadlessUiGuard
     /// </summary>
     private static bool IsPreApplied(Assembly gameAssembly)
     {
-        if (Environment.GetEnvironmentVariable("STS2_UI_GUARD_RUNTIME") == "1") return false;
+        if (Environment.GetEnvironmentVariable("STS2_UI_GUARD_RUNTIME") == "1")
+        {
+            try
+            {
+                if (ReadStamp(gameAssembly.Location) != null)
+                    Console.Error.WriteLine("[WARN] STS2_UI_GUARD_RUNTIME=1 on an sts2.dll already guarded by setup.sh: call sites get guarded twice (harmless, but dumps/timings aren't comparable)");
+            }
+            catch { }
+            return false;
+        }
         string? stamp;
         try { stamp = ReadStamp(gameAssembly.Location); }
         catch (Exception ex)

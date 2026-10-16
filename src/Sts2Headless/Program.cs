@@ -156,8 +156,13 @@ class Program
         private long _deadlineTicks;    // its allowed duration, in Stopwatch ticks
         private string _what = "";      // the command line (for the log)
         private readonly TimeSpan _timeout;
+        private Exception? _warmupError;  // reported by the first start_run/load_save, like lazy init did
 
         public EngineLoop(TimeSpan timeout) => _timeout = timeout;
+
+        private static bool IsRunStart(JsonElement cmd) =>
+            cmd.ValueKind == JsonValueKind.Object && cmd.TryGetProperty("cmd", out var c)
+            && c.ValueKind == JsonValueKind.String && c.GetString() is "start_run" or "load_save";
 
         private void Begin(string what, TimeSpan limit)
         {
@@ -201,7 +206,13 @@ class Program
             {
                 Begin("<warmup>", initLimit);
                 try { RunSimulator.Warmup(); }
-                catch (Exception ex) { Console.Error.WriteLine($"[WARN] warmup: {ex}"); }
+                catch (Exception ex)
+                {
+                    // Lazily, this exception was the first start_run/load_save's error response;
+                    // keep it that way rather than letting that command run on a half-initialised engine.
+                    Console.Error.WriteLine($"[WARN] warmup: {ex}");
+                    _warmupError = ex;
+                }
                 if (!End()) Park();
             }
 
@@ -223,6 +234,12 @@ class Program
                 Begin(line, _timeout);
                 try
                 {
+                    if (_warmupError != null && IsRunStart(cmd))
+                    {
+                        var ex = _warmupError;
+                        _warmupError = null;
+                        throw new InvalidOperationException($"Engine initialisation failed: {ex.GetType().Name}: {ex.Message}", ex);
+                    }
                     result = HandleCommand(sim, cmd);
                     if (result != null) LegalActions.Attach(result);
                 }

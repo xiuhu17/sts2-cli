@@ -101,6 +101,19 @@ def test_quit_is_answered_promptly_after_ready():
         p.kill()
 
 
+def test_warmup_failure_is_reported_by_the_first_start_run():
+    """Lazy init used to fail the first start_run; warm-up must not hide that error."""
+    p, send, ready = _spawn({"STS2_DEBUG_COMMANDS": "1", "STS2_DEBUG_FAIL_WARMUP": "1"})
+    try:
+        assert ready["type"] == "ready"
+        assert send({"cmd": "get_map"})["type"] == "error"  # no run yet, as without the failure
+        r = send({"cmd": "start_run", "character": "Ironclad", "seed": "wf"})
+        assert r["type"] == "error" and "simulated warm-up failure" in r["message"], r
+        assert send({"cmd": "quit"})["type"] == "quit_result"
+    finally:
+        p.kill()
+
+
 def _guard_dump(lines):
     return collections.Counter((name, int(n)) for _, n, name in (l.split("\t") for l in lines if l.strip()))
 

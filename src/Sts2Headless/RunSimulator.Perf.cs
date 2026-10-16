@@ -87,7 +87,14 @@ public partial class RunSimulator
     }
 
     /// <summary>One-time engine initialisation, run right after 'ready' so the first start_run doesn't pay for it.</summary>
-    internal static void Warmup() => EnsureModelDbInitialized();
+    internal static void Warmup()
+    {
+        // Test hook: simulate an initialisation failure (tests/test_perf.py).
+        if (Environment.GetEnvironmentVariable("STS2_DEBUG_COMMANDS") == "1"
+            && Environment.GetEnvironmentVariable("STS2_DEBUG_FAIL_WARMUP") == "1")
+            throw new InvalidOperationException("simulated warm-up failure");
+        EnsureModelDbInitialized();
+    }
 
     /// <summary>Cheap per-command housekeeping (bounds very long runs and load_save loops).</summary>
     internal static void AfterCommand() => ClearMockSaveStoreLog();
