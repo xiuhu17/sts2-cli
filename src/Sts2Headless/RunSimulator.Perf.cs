@@ -186,6 +186,9 @@ public partial class RunSimulator
         {
             var sb = new System.Text.StringBuilder(48);
             sb.Append(_loc.Lang).Append('|').Append(card.Id.ToString()).Append('|').Append(card.CurrentUpgradeLevel);
+            // Enchanted / afflicted cards preview the upgrade on a clone of themselves.
+            if (card.Enchantment != null) sb.Append("|e").Append(card.Enchantment.Id.Entry).Append(':').Append(card.Enchantment.Amount);
+            if (card.Affliction != null) sb.Append("|a").Append(card.Affliction.Id.Entry).Append(':').Append(card.Affliction.Amount);
             if (card.Keywords != null)
                 foreach (var k in card.Keywords)
                     if (k != MegaCrit.Sts2.Core.Entities.Cards.CardKeyword.None) sb.Append('|').Append((int)k);

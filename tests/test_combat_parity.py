@@ -76,6 +76,64 @@ class TestCardCosts:
         assert playable["can_play"] is True and "unplayable_reasons" not in playable
         r = game.act("play_card", card_index=clash["index"], target_index=0)
         assert r["type"] == "error" and "BlockedByCardLogic" in r["message"]
+        # GetPlayerDialogueLine: the character's line, and NCard's crossed-out cost icon.
+        assert "I can't play this card." in r["message"]
+        for c in (clash, injury):
+            assert c["unplayable_message"] == "I can't play this card." and c["cost_crossed"] is True
+        assert "unplayable_message" not in playable and "cost_crossed" not in playable
+
+    def test_unplayable_message_energy(self, game):
+        state = _combat(game, "Ironclad", ["BASH"] * 5, seed="um1")
+        state = game.act("play_card", card_index=0, target_index=0)
+        bash = state["hand"][0]
+        assert bash["unplayable_reasons"] == ["EnergyCostTooHigh"]
+        assert bash["unplayable_message"] == "I don't have enough Energy."
+        assert "cost_crossed" not in bash  # resource reasons keep the cost icon
+        r = game.act("play_card", card_index=0, target_index=0)
+        assert r["type"] == "error" and "I don't have enough Energy." in r["message"]
+
+    def test_unplayable_message_stars(self, game):
+        state = _combat(game, "Regent", ["FALLING_STAR"] * 5, seed="um2")
+        state = game.act("play_card", card_index=0, target_index=0)
+        fs = state["hand"][0]
+        assert fs["unplayable_reasons"] == ["StarCostTooHigh"]
+        assert fs["unplayable_message"] == "I don't have enough Stars." and "cost_crossed" not in fs
+
+    def test_unplayable_message_blocked_by_hook(self, game):
+        state = _combat(game, "Ironclad", ["DEFEND_IRONCLAD"] * 6, encounter="LIVING_FOG_NORMAL", seed="u3", lang="zh")
+        state = game.act("end_turn")  # the fog's first move gives Smoggy
+        state = game.act("play_card", card_index=0)
+        d = state["hand"][0]
+        assert d["unplayable_reasons"] == ["BlockedByHook"] and d["blocked_by"] == "烟雾弥漫"
+        assert d["unplayable_message"] == "我被烟雾弥漫所阻挡。" and d["cost_crossed"] is True
+
+    def test_unplayable_message_no_living_allies(self, game):
+        state = _combat(game, "Ironclad", ["COORDINATE"] * 5, seed="um4")
+        c = state["hand"][0]
+        assert "NoLivingAllies" in c["unplayable_reasons"]
+        assert c["unplayable_message"] == "I've got no teammates."
+
+    def test_unplayable_message_zh(self, game):
+        state = _combat(game, "Ironclad", ["CLASH", "INJURY", "BASH"], seed="um5", lang="zh")
+        inj = next(c for c in state["hand"] if c["id"] == "CARD.INJURY")
+        assert inj["unplayable_message"] == "我不能打出这张牌。"
+
+    def test_chemical_x_raises_x(self, game):
+        """Hook.ModifyXValue: Chemical X adds 2 to X (ResolveEnergyXValue)."""
+        state = _combat(game, "Ironclad", ["WHIRLWIND"] * 6, seed="cx", relics=["CHEMICAL_X"])
+        ww = state["hand"][0]
+        assert ww["x_value"] == state["energy"] + 2
+        row = ww["damage_by_target"][0]
+        assert row["repeat"] == state["energy"] + 2
+        hp = state["enemies"][0]["hp"]
+        state = game.act("play_card", card_index=0)
+        assert hp - state["enemies"][0]["hp"] == row["total_damage"]
+
+    def test_chemical_x_star_x(self, game):
+        state = _combat(game, "Regent", ["STARDUST"] * 5, encounter="NIBBITS_NORMAL", seed="cx2", relics=["CHEMICAL_X"])
+        sd = state["hand"][0]
+        assert sd["x_value"] == state["stars"] + 2
+        assert sd["damage_by_target"][0]["repeat"] == state["stars"] + 2
 
 
 class TestUpgradedCards:

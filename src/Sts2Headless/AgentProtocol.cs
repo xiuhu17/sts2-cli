@@ -321,7 +321,7 @@ public partial class RunSimulator
                         cards[i]["transforms_to"] = new Dictionary<string, object?>
                         {
                             ["name"] = _loc.Card(tr.Replacement.Id.Entry) + (tr.Replacement.IsUpgraded ? "+" : ""),
-                            ["description"] = CardText(tr.Replacement),
+                            ["description"] = tr.Replacement.IsMutable ? PreviewedCard(tr.Replacement, PileType.None).text : CardText(tr.Replacement),
                         };
                     else if (tr.ReplacementOptions != null)
                         cards[i]["transform_options"] = tr.ReplacementOptions
@@ -722,8 +722,10 @@ public partial class RunSimulator
             catch { stats.Clear(); text = null; }
             finally { try { c.DynamicVars.ClearPreview(); } catch { } }
         }
+        // Elsewhere (deck view, piles) the card shows as UpdateVisuals draws it: enchantment-
+        // modified values (Sharp), no global hooks.
         if (stats.Count == 0)
-            try { foreach (var dv in c.DynamicVars.Values) stats[dv.Name.ToLowerInvariant()] = (int)dv.BaseValue; } catch { }
+            (text, stats) = PreviewedCard(c, pile);
         var kws = c.Keywords?.Where(k => k != CardKeyword.None).Select(k => k.ToString()).ToList();
         var d = new Dictionary<string, object?>();
         if (index != null) d["index"] = index;
@@ -1257,7 +1259,7 @@ public partial class RunSimulator
             ["play_card"] = "{card_index, target_index? | target_id?} (a target is required for AnyEnemy cards when 2+ enemies; target_id = enemy combat_id)",
             ["end_turn"] = "{}",
             ["use_potion"] = "{potion_index, target_index? | target_id?} (only when the potion's can_use is true)",
-            ["discard_potion"] = "{potion_index}",
+            ["discard_potion"] = "{potion_index} (not while the potion is queued)",
             ["choose_option"] = "{option_index} (events, rest site)",
             ["select_card_reward"] = "{card_index}",
             ["skip_card_reward"] = "{} (only when can_skip)",

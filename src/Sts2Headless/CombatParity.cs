@@ -187,6 +187,11 @@ public partial class RunSimulator
                     .Where(f => f != UnplayableReason.None && reason.HasFlag(f))
                     .Select(f => f.ToString()).ToList();
                 if (preventer != null && preventer != c) d["blocked_by"] = ModelName(preventer);
+                var msg = UnplayableMessage(reason, preventer);
+                if (msg != null) d["unplayable_message"] = msg;
+                // NCard shows the crossed-out cost icon unless the reason is energy/stars.
+                if (!reason.HasFlag(UnplayableReason.EnergyCostTooHigh) && !reason.HasFlag(UnplayableReason.StarCostTooHigh))
+                    d["cost_crossed"] = true;
             }
         }
         catch { d["can_play"] = false; }
@@ -198,16 +203,67 @@ public partial class RunSimulator
             else if (inPlay && c.ShouldGlowRed) d["glow"] = "red";
         }
         catch { }
+        var x = XValue(c, pcs);
+        if (x != null) d["x_value"] = x;
+    }
+
+    /// <summary>
+    /// The X an X-cost card would resolve to if played now: the energy (or stars) it would
+    /// spend (SpendResources), passed through Hook.ModifyXValue (Chemical X +2), as
+    /// ResolveEnergyXValue / ResolveStarXValue do. ModifyXValue hooks are pure reads (Chemical
+    /// X's Flash is in BeforeCardPlayed).
+    /// </summary>
+    private static int? XValue(CardModel c, PlayerCombatState? pcs)
+    {
         try
         {
-            if (c.EnergyCost?.CostsX == true) d["x_value"] = c.EnergyCost.GetAmountToSpend();
-            else if (c.HasStarCostX) d["x_value"] = pcs?.Stars ?? 0;
+            int spent;
+            if (c.EnergyCost?.CostsX == true) spent = c.EnergyCost.GetAmountToSpend();
+            else if (c.HasStarCostX) spent = Math.Max(0, pcs?.Stars ?? 0);
+            else return null;
+            var cs = c.CombatState;
+            return cs != null ? MegaCrit.Sts2.Core.Hooks.Hook.ModifyXValue(cs, c, spent) : spent;
         }
-        catch { }
+        catch { return null; }
     }
 
     private static string UnplayableText(UnplayableReason reason, AbstractModel? preventer) =>
         preventer != null ? $"{reason} ({ModelName(preventer)})" : reason.ToString();
+
+    /// <summary>
+    /// The line the character says when the player tries to play a card it can't
+    /// (UnplayableReasonExtensions.GetPlayerDialogueLine, combat_messages), in priority order:
+    /// no living allies, energy, stars, a blocking hook ("I'm blocked by Smoggy."), then the
+    /// Unplayable keyword / card logic. Null when the reason has none of these.
+    /// </summary>
+    private static string? UnplayableMessage(UnplayableReason reason, AbstractModel? preventer)
+    {
+        string? key = null;
+        string? hook = null;
+        if (reason.HasFlag(UnplayableReason.NoLivingAllies)) key = "NO_LIVING_ALLIES";
+        else if (reason.HasFlag(UnplayableReason.EnergyCostTooHigh)) key = "NOT_ENOUGH_ENERGY";
+        else if (reason.HasFlag(UnplayableReason.StarCostTooHigh)) key = "NOT_ENOUGH_STARS";
+        else if (reason.HasFlag(UnplayableReason.BlockedByHook))
+        {
+            // The game names card/relic/power/enchantment/affliction preventers.
+            if (preventer is CardModel or RelicModel or PowerModel or EnchantmentModel or AfflictionModel)
+            {
+                key = "BLOCKED_BY_HOOK";
+                hook = ModelName(preventer);
+            }
+            else if (preventer == null) key = "UNPLAYABLE";
+            else { key = "BLOCKED_BY_HOOK"; hook = "<UNKNOWN>"; }
+        }
+        else if (reason.HasFlag(UnplayableReason.HasUnplayableKeyword) || reason.HasFlag(UnplayableReason.BlockedByCardLogic))
+            key = "UNPLAYABLE";
+        if (key == null) return null;
+        var raw = _loc.Raw("combat_messages", key);
+        if (raw == null) return null;
+        // The dialogue bubble breaks lines by hand; as one line, English joins with a space.
+        raw = raw.Replace("\n", _loc.Lang == "zh" ? "" : " ");
+        if (hook != null) raw = raw.Replace("{BlockingHook}", hook);
+        return LocLookup.Clean(raw).Trim();
+    }
 
     // ── Powers ──
 

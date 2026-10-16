@@ -73,7 +73,8 @@ public partial class RunSimulator
                 "card_select" when action == "skip_select" => "this selection requires a choice (it is not cancelable)",
                 _ when action == "leave_room" && name is "event_choice" or "rest_site" => "a choice is still required here",
                 _ => ReasonFor(decision, action, args ?? new Dictionary<string, object?>()) is { } r
-                    && action is "use_potion" or "discard_potion" or "claim_reward"
+                    && (action is "use_potion" or "discard_potion" or "claim_reward"
+                        || (action == "play_card" && name == "combat_play"))  // no card playable: say why this one isn't
                     ? r : $"it is not available on {Where(name)}",
             };
         }
@@ -178,8 +179,13 @@ public partial class RunSimulator
                 if (card == null) return $"invalid card index {args.GetValueOrDefault("card_index")}, hand has {hand.Count} cards";
                 if (card.GetValueOrDefault("can_play") is not true)
                 {
+                    // The character's line for it (GetPlayerDialogueLine), e.g. "I don't have enough
+                    // Energy.", followed by the reason flags.
                     var reasons = (card.GetValueOrDefault("unplayable_reasons") as System.Collections.IEnumerable)?.Cast<object>().Select(o => o.ToString());
-                    return $"cannot play {card.GetValueOrDefault("name")}: {(reasons != null ? string.Join(", ", reasons) : "not playable now")}";
+                    var flags = reasons != null ? string.Join(", ", reasons) : null;
+                    if (card.GetValueOrDefault("unplayable_message") is string msg)
+                        return $"cannot play {card.GetValueOrDefault("name")}: {msg}" + (flags != null ? $" ({flags})" : "");
+                    return $"cannot play {card.GetValueOrDefault("name")}: {flags ?? "not playable now"}";
                 }
                 return Target(card.GetValueOrDefault("target_type") as string);
             }
@@ -193,6 +199,7 @@ public partial class RunSimulator
                         : "this potion can only be used in combat";
                 if (potion.GetValueOrDefault("usage") is string u && u != "CombatOnly" && u != "AnyTime")
                     return $"this potion is not used by hand (usage {u})";
+                if (potion.GetValueOrDefault("queued") is true) return "this potion is already being used (queued)";
                 if (potion.GetValueOrDefault("can_use") is false) return "this potion can't be used now";
                 if (player?.GetValueOrDefault("can_use_or_remove_potions") is false) return "potions are locked here";
                 if (name != "combat_play" && potion.GetValueOrDefault("target_type") as string == "AnyEnemy")
@@ -201,6 +208,8 @@ public partial class RunSimulator
             }
             case "discard_potion":
                 if (player?.GetValueOrDefault("can_use_or_remove_potions") is false) return "potions are locked here";
+                if (ByIndex(Items(player, "potions"), args.GetValueOrDefault("potion_index"))?.GetValueOrDefault("queued") is true)
+                    return "this potion is already being used (queued)";
                 return $"no potion at index {args.GetValueOrDefault("potion_index")}";
             case "claim_reward":
             {

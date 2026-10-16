@@ -111,3 +111,66 @@ class TestRevealedUnknown:
                 s = game.send({"cmd": "action", **a})
                 assert s.get("type") != "error", s
         raise AssertionError("never reached a visited ? node")
+
+
+class TestEnchantedCardLists:
+    """NCard.UpdateVisuals refreshes the card's and its enchantment's previews in every card
+    list, so an enchantment's numbers (Sharp's +damage, Nimble's +block) show outside combat."""
+
+    def _sharp_perfected_strike(self, game, lang="en"):
+        game.start(seed="e1", lang=lang)
+        game.set_player(deck=["PERFECTED_STRIKE"] + ["DEFEND_IRONCLAD"] * 3, gold=999)
+        game.enter_room("event", event="SELF_HELP_BOOK")
+        s = game.act("choose_option", option_index=0)  # enchants Perfected Strike with Sharp 2
+        assert any(e["type"] == "deck_changed" for e in s.get("events", [])), s.get("events")
+        return s
+
+    @staticmethod
+    def _ps(cards):
+        return next(c for c in cards if c["id"] == "CARD.PERFECTED_STRIKE")
+
+    def test_deck_views(self, game):
+        s = self._sharp_perfected_strike(game, lang="zh")
+        for card in (self._ps(game.send({"cmd": "get_deck"})["cards"]), self._ps(s["player"]["deck"])):
+            assert card["enchantment"] == "锋利" and card["enchantment_amount"] == 2
+            assert card["description"].startswith("造成8点伤害"), card
+            assert card["stats"]["calculateddamage"] == 8
+        up = self._ps(s["player"]["deck"])["after_upgrade"]
+        assert up["stats"]["calculateddamage"] == 8 and up["stats"]["extradamage"] == 3
+
+    def test_smith_and_shop_removal(self, game):
+        self._sharp_perfected_strike(game)
+        s = game.enter_room("rest_site")
+        smith = next(o["index"] for o in s["options"] if "SMITH" in str(o.get("id", "")).upper()
+                     or o.get("name") == "Smith")
+        s = game.act("choose_option", option_index=smith)
+        assert s["decision"] == "card_select"
+        ps = self._ps(s["cards"])
+        assert ps["description"].startswith("Deal 8 damage") and ps["enchantment"] == "Sharp"
+        assert ps["enchantment_amount"] == 2 and ps["stats"]["calculateddamage"] == 8
+        self._sharp_perfected_strike(game)
+        s = game.enter_room("shop")
+        s = game.act("remove_card")
+        assert s["decision"] == "card_select"
+        ps = self._ps(s["cards"])
+        assert ps["description"].startswith("Deal 8 damage") and ps["enchantment"] == "Sharp"
+
+    def test_fresnel_lens_shop_and_card_reward(self, game):
+        game.start(seed="f1")
+        game.set_player(relics=["FRESNEL_LENS"], gold=999)
+        s = game.enter_room("shop")
+        iw = next(c for c in s["cards"] if c["id"] == "CARD.IRON_WAVE")
+        assert iw["enchantment"] == "Nimble" and iw["enchantment_amount"] == 2
+        assert iw["stats"]["block"] == 7 and "Gain 7 Block" in iw["description"]  # 5 + Nimble 2
+        game.start(seed="fr4")
+        game.set_player(relics=["FRESNEL_LENS"], deck=["STRIKE_IRONCLAD"] * 5, hp=80)
+        s = game.enter_room("combat", encounter="SHRINKER_BEETLE_WEAK")
+        for _ in range(40):
+            if s["decision"] != "combat_play":
+                break
+            i = next((c["index"] for c in s["hand"] if c["can_play"]), None)
+            s = game.act("play_card", card_index=i, target_index=0) if i is not None else game.act("end_turn")
+        s = game.act("claim_reward", reward_index=next(r["index"] for r in s["rewards"] if r["type"] == "card"))
+        assert s["decision"] == "card_reward"
+        bw = next(c for c in s["cards"] if c["id"] == "CARD.BLOOD_WALL")
+        assert bw["enchantment"] == "Nimble" and bw["stats"]["block"] == 18 and "Gain 18 Block" in bw["description"]
