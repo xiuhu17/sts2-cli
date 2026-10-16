@@ -65,6 +65,7 @@ class TestRevealedUnknown:
         for seed in ("u2", "u3", "u1"):
             s = game.start(seed=seed)
             game.set_player(max_hp=999, hp=999)
+            entered = {}  # (col, row) of a "?" we walked into -> the room_type we landed in
             for _ in range(600):
                 d = s["decision"]
                 if d == "game_over":
@@ -76,6 +77,8 @@ class TestRevealedUnknown:
                     if seen:
                         for n in seen:
                             assert n["revealed_type"] in ("Monster", "Elite", "Treasure", "Shop", "Event"), n
+                            if (n["col"], n["row"]) in entered:
+                                assert n["revealed_type"] == entered[(n["col"], n["row"])], (n, entered)
                         assert all("revealed_type" not in n for r in m["rows"] for n in r
                                    if not n["visited"] or n["type"] != "Unknown")
                         return
@@ -83,6 +86,12 @@ class TestRevealedUnknown:
                     opts = _legal(s, "select_map_node")
                     pick = [a for a in opts if (a["args"]["col"], a["args"]["row"]) in unk] or opts
                     a = rng.choice(pick)
+                    s = game.send({"cmd": "action", **a})
+                    assert s.get("type") != "error", s
+                    coord = (a["args"]["col"], a["args"]["row"])
+                    if coord in unk:
+                        entered[coord] = s["context"]["room_type"]
+                    continue
                 elif d == "crystal_sphere":
                     x, y = rng.choice(s["hidden_cells"])
                     a = {"action": "crystal_sphere_click", "args": {"x": x, "y": y, "tool": "big"}}

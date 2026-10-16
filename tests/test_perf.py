@@ -138,13 +138,20 @@ def test_amalgamator_skips_the_real_time_pause():
     try:
         send({"cmd": "start_run", "character": "Ironclad", "seed": "amal"})
         r = send({"cmd": "enter_room", "type": "event", "event": "AMALGAMATOR"})
-        r = send({"cmd": "action", "action": "choose_option", "args": {"option_index": 0}})
+        strikes_before = sum(c["name"] == "Strike" for c in r["player"]["deck"])
+        # Choose the Combine Strikes option by its key, not its position.
+        opt = next(o for o in r["options"] if "COMBINE_STRIKES" in (o.get("text_key") or ""))
+        r = send({"cmd": "action", "action": "choose_option", "args": {"option_index": opt["index"]}})
         assert r["decision"] == "card_select", r
+        picks = [i for i, c in enumerate(r["cards"]) if c["name"] == "Strike"][:2]
+        assert len(picks) == 2, r["cards"]
         t = time.perf_counter()
-        r = send({"cmd": "action", "action": "select_cards", "args": {"indices": "0,1"}})
+        r = send({"cmd": "action", "action": "select_cards", "args": {"indices": ",".join(map(str, picks))}})
         dt = time.perf_counter() - t
         assert r["decision"] == "event_choice", r
-        assert any(c["name"] == "Ultimate Strike" for c in r["player"]["deck"])
+        deck = r["player"]["deck"]
+        assert sum(c["name"] == "Ultimate Strike" for c in deck) == 1
+        assert sum(c["name"] == "Strike" for c in deck) == strikes_before - 2
         assert dt < 0.15, dt
     finally:
         p.kill()
