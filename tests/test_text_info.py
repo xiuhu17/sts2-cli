@@ -7,6 +7,19 @@ def _legal(state, action):
     return [a for a in state.get("legal_actions", []) if a["action"] == action]
 
 
+def _concrete(a, rng):
+    """A legal entry as a command: a {"choose": ...} selection becomes a seeded random pick of
+    min..max of its indices, a {"choose_cell": ...} a random listed cell and tool."""
+    if "choose" in a:
+        c = a["choose"]
+        picks = sorted(rng.sample(c["from"], rng.randint(c["min"], c["max"])))
+        return {"action": a["action"], "args": {"indices": ",".join(map(str, picks))}}
+    if "choose_cell" in a:
+        x, y = rng.choice(a["choose_cell"]["cells"])
+        return {"action": a["action"], "args": {"x": x, "y": y, "tool": rng.choice(a["choose_cell"]["tools"])}}
+    return {"action": a["action"], **({"args": a["args"]} if "args" in a else {})}
+
+
 class TestReplay:
     def test_soldiers_stew_adds_replay_line_and_play_count(self, game):
         for lang, line in (("en", "Replay 1."), ("zh", "重放1。")):
@@ -92,12 +105,9 @@ class TestRevealedUnknown:
                     if coord in unk:
                         entered[coord] = s["context"]["room_type"]
                     continue
-                elif d == "crystal_sphere":
-                    x, y = rng.choice(s["hidden_cells"])
-                    a = {"action": "crystal_sphere_click", "args": {"x": x, "y": y, "tool": "big"}}
                 else:
                     opts = [a for a in s["legal_actions"] if a["action"] != "discard_potion"]
-                    a = rng.choice(_legal(s, "play_card") or opts)
+                    a = _concrete(rng.choice(_legal(s, "play_card") or opts), rng)
                 s = game.send({"cmd": "action", **a})
                 assert s.get("type") != "error", s
         raise AssertionError("never reached a visited ? node")
