@@ -180,3 +180,21 @@ class TestBubbles:
         assert speech[0]["key"] == "monsters.KNOWLEDGE_DEMON.moves.CURSE_OF_KNOWLEDGE.startLine"
         state = game.select(state, 0)
         assert [e["text"] for e in state["events"] if e["type"] == "speech"] == [done]
+
+    def test_blocked_autoplay_thought(self, game):
+        """Havoc auto-plays the top card; Normality blocks it as the 4th card this turn and the
+        game shows the BlockedByHook line as a thought bubble (CardCmd.AutoPlay)."""
+        game.start(character="Ironclad", seed="blk0")
+        game.set_player(deck=["NORMALITY", "ANGER", "ANGER", "HAVOC", "DEFEND_IRONCLAD", "STRIKE_IRONCLAD"],
+                        hp=999, max_hp=999)
+        state = game.enter_room("combat", encounter="SHRINKER_BEETLE_WEAK")
+        for cid in ("CARD.ANGER", "CARD.ANGER", "CARD.HAVOC"):
+            card = next(c for c in state["hand"] if c["id"] == cid)
+            args = {"card_index": card["index"]}
+            if card.get("target_type") == "AnyEnemy":
+                args["target_index"] = 0
+            state = game.act("play_card", **args)
+        thoughts = [e for e in state["events"] if e["type"] == "thought"]
+        assert len(thoughts) == 1, state["events"]
+        assert thoughts[0]["key"] == "combat_messages.BLOCKED_BY_HOOK"
+        assert "Normality" in thoughts[0]["text"]

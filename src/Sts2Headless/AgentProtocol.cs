@@ -1019,6 +1019,13 @@ public partial class RunSimulator
             if (think != null)
                 harmony.Patch(think, prefix: new HarmonyMethod(typeof(RunSimulator).GetMethod(nameof(ThinkCmdPlayPrefix),
                     System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)));
+            // CardCmd.AutoPlay shows the BlockedByHook line ("I'm blocked by Normality.") as a
+            // thought bubble straight through NThoughtBubbleVfx, not ThinkCmd. In game logic that is
+            // the only caller of GetPlayerDialogueLine (the others are the mouse/controller UI).
+            var dialogue = typeof(CardModel).Assembly.GetType("MegaCrit.Sts2.Core.Entities.Cards.UnplayableReasonExtensions")?.GetMethod("GetPlayerDialogueLine");
+            if (dialogue != null)
+                harmony.Patch(dialogue, postfix: new HarmonyMethod(typeof(RunSimulator).GetMethod(nameof(PlayerDialogueLinePostfix),
+                    System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)));
             var flash = typeof(RelicModel).GetMethod("Flash", new[] { typeof(IEnumerable<Creature>) });
             if (flash != null)
                 harmony.Patch(flash, postfix: new HarmonyMethod(typeof(RunSimulator).GetMethod(nameof(RelicFlashPostfix),
@@ -1032,6 +1039,14 @@ public partial class RunSimulator
     {
         RecordBubble("thought", line, speaker);
         return false;
+    }
+
+    private static void PlayerDialogueLinePostfix(LocString? __result)
+    {
+        if (__result == null) return;
+        Creature? speaker = null;
+        try { speaker = _eventSink?._runState?.Players.FirstOrDefault()?.Creature; } catch { }
+        RecordBubble("thought", __result, speaker);
     }
 
     private static void RelicFlashPostfix(RelicModel __instance)
