@@ -58,6 +58,8 @@ internal static class LegalActions
                 {
                     if (p.GetValueOrDefault("usage") is string usage && usage != "CombatOnly" && usage != "AnyTime")
                         continue;  // Automatic potions trigger by themselves
+                    if (p.GetValueOrDefault("can_use") is false)
+                        continue;  // e.g. potions locked, or the custom usability check fails
                     if (p.GetValueOrDefault("target_type") as string == "AnyEnemy")
                         foreach (var e in enemies)
                             acts.Add(Act("use_potion", ("potion_index", p["index"]), ("target_index", e)));
@@ -176,9 +178,18 @@ internal static class LegalActions
                 break;
         }
 
-        // Discarding a potion is allowed at any decision point.
-        foreach (var p in Potions(player))
-            acts.Add(Act("discard_potion", ("potion_index", p["index"])));
+        // Outside combat the potion popup still enables "Use" for AnyTime potions (Blood Potion,
+        // Fruit Juice, Foul Potion at the merchant, ...); "can_use" carries the game's checks.
+        // None of them targets an enemy there, so no target is needed.
+        if (decision != "combat_play")
+            foreach (var p in Potions(player))
+                if (p.GetValueOrDefault("can_use") is true)
+                    acts.Add(Act("use_potion", ("potion_index", p["index"])));
+
+        // Discarding a potion is allowed at any decision point, unless an event locks potions.
+        if (player?.GetValueOrDefault("can_use_or_remove_potions") is not false)
+            foreach (var p in Potions(player))
+                acts.Add(Act("discard_potion", ("potion_index", p["index"])));
         return acts;
     }
 
