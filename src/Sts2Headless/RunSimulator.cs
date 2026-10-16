@@ -198,7 +198,30 @@ internal class LocLookup
     }
 
     /// <summary>Language for JSON output: "en" or "zh". Default: "en".</summary>
-    public string Lang { get => _lang; set => _lang = value; }
+    public string Lang
+    {
+        get => _lang;
+        set
+        {
+            if (value != _lang) ClearGameTextCaches();
+            _lang = value;
+        }
+    }
+
+    /// <summary>
+    /// The game caches some formatted hover tips process-wide (HoverTipFactory keyword and potion
+    /// tips). A reused process that switches language would keep serving the old language's text.
+    /// </summary>
+    private static void ClearGameTextCaches()
+    {
+        try
+        {
+            foreach (var f in typeof(MegaCrit.Sts2.Core.HoverTips.HoverTipFactory).GetFields(
+                         System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public))
+                if (f.GetValue(null) is System.Collections.IDictionary d) d.Clear();
+        }
+        catch (Exception ex) { Console.Error.WriteLine($"[WARN] Clear hover tip caches: {ex.Message}"); }
+    }
 
     /// <summary>Return localized string for JSON output based on Lang setting.</summary>
     public string Bilingual(string table, string key)
@@ -1917,6 +1940,10 @@ public partial class RunSimulator
             else
                 _finishedEventAcked = ev;
         }
+        // NRestSiteRoom enables Proceed only once an option has been used (or none is left).
+        if (_runState?.CurrentRoom is RestSiteRoom restRoom && !ReferenceEquals(_restChoiceRoom, restRoom)
+            && restRoom.Options?.Any(o => o.IsEnabled) == true)
+            return Error("Choose a rest site option first: the rest site can be left only after one is used");
         try { RunManager.Instance.ProceedFromTerminalRewardsScreen().GetAwaiter().GetResult(); }
         catch { }
         _syncCtx.Pump();
@@ -2771,6 +2798,18 @@ public partial class RunSimulator
             }
             catch (Exception ex) { Log($"EnterNextAct: {ex.Message}"); }
             return DetectDecisionPoint();
+        }
+
+        // An event fight that resumes its event (Battleworn Dummy): leaving the reward screen
+        // goes back to the event (RunManager.ProceedFromTerminalRewardsScreen ->
+        // ResumePreviousRoom), whose Resume shows the outcome and can offer rewards.
+        if (combatRoom.ShouldResumeParentEventAfterCombat && _runState?.CurrentRoomCount > 1)
+        {
+            Log("Event combat over, resuming the event");
+            if (!RunInBackground(() => RunManager.Instance.ProceedFromTerminalRewardsScreen()))
+                WaitForActionExecutor();
+            if (_runState?.CurrentRoom is EventRoom || HasPendingPrompt)
+                return DetectDecisionPoint();
         }
 
         // Normal → go to map
@@ -3960,6 +3999,7 @@ public partial class RunSimulator
     private static string GameText(Func<string?> format, string table, string key, string? cacheKey = null)
     {
         if (cacheKey != null && _textCache.TryGetValue(cacheKey, out var cached)) return cached;
+        var prevRealText = LocPatches.RealText;  // nested formatting keeps the caller's mode
         try
         {
             LocPatches.RealText = true;
@@ -3978,13 +4018,14 @@ public partial class RunSimulator
         {
             if (_cardTextFailures++ < 5) Console.Error.WriteLine($"[WARN] Text for {key}: {ex.Message}");
         }
-        finally { LocPatches.RealText = false; }
+        finally { LocPatches.RealText = prevRealText; }
         return _loc.ReplaceIcons(_loc.Bilingual(table, key));
     }
 
     /// <summary>Format a game LocString with its own variables; null if that doesn't fully work.</summary>
     private static string? TryFormat(Func<string?> format)
     {
+        var prevRealText = LocPatches.RealText;  // nested formatting keeps the caller's mode
         try
         {
             LocPatches.RealText = true;
@@ -3997,7 +4038,7 @@ public partial class RunSimulator
             return text;
         }
         catch { return null; }
-        finally { LocPatches.RealText = false; }
+        finally { LocPatches.RealText = prevRealText; }
     }
 
     /// <summary>
@@ -4090,6 +4131,7 @@ public partial class RunSimulator
     /// </summary>
     private static List<Dictionary<string, object?>>? Tips(Func<IEnumerable<MegaCrit.Sts2.Core.HoverTips.IHoverTip>?> source, string? skipTitle = null)
     {
+        var prevRealText = LocPatches.RealText;  // nested formatting keeps the caller's mode
         try
         {
             LocPatches.RealText = true;
@@ -4120,7 +4162,7 @@ public partial class RunSimulator
             if (_cardTextFailures++ < 5) Console.Error.WriteLine($"[WARN] Tooltips: {ex.Message}");
             return null;
         }
-        finally { LocPatches.RealText = false; }
+        finally { LocPatches.RealText = prevRealText; }
     }
 
     /// <summary>
@@ -4144,6 +4186,7 @@ public partial class RunSimulator
             if (_textCache.TryGetValue(key, out var cached)) return cached;
         }
         catch { key = null; }
+        var prevRealText = LocPatches.RealText;  // nested formatting keeps the caller's mode
         try
         {
             LocPatches.RealText = true;
@@ -4162,7 +4205,7 @@ public partial class RunSimulator
         {
             if (_cardTextFailures++ < 5) Console.Error.WriteLine($"[WARN] Card text for {card.Id.Entry}: {ex.Message}");
         }
-        finally { LocPatches.RealText = false; }
+        finally { LocPatches.RealText = prevRealText; }
         return _loc.ReplaceIcons(_loc.Bilingual("cards", card.Id.Entry + ".description"));
     }
 

@@ -68,6 +68,14 @@ class TestEventText:
         tip = state["options"][0]["tips"][0]
         assert tip["card"].startswith("CARD.") and tip["description"]
 
+    def test_keyword_tips_follow_language_in_a_reused_process(self, game):
+        # The game caches keyword tips process-wide; an en run must not leak into a zh one.
+        for lang in ("en", "zh"):
+            game.skip_neow(game.start(seed="tips4", lang=lang))
+            state = game.enter_room("event", event="TEA_MASTER")
+            titles = [t["title"] for o in state["options"] for t in (o.get("tips") or [])]
+        assert titles and not any(re.fullmatch(r"[A-Za-z ]+", t) for t in titles), titles
+
     def test_bbcode_with_parameters_is_stripped(self, game):
         game.skip_neow(game.start(seed="bb1"))
         state = game.enter_room("event", event="AROMA_OF_CHAOS")
@@ -173,6 +181,36 @@ class TestRestSite:
         game.skip_neow(game.start(seed="rs3"))
         game.set_player(hp=30)
         state = game.enter_room("rest_site")
+        state = game.act("choose_option", option_index=0)
+        assert state["decision"] == "map_select"
+
+    def test_cannot_leave_before_a_choice(self, game):
+        game.skip_neow(game.start(seed="rs4"))
+        state = game.enter_room("rest_site")
+        assert "leave_room" not in actions(state)
+        assert game.act("leave_room")["type"] == "error"
+        # Cancelling Smith keeps the rest site open, still without Proceed.
+        smith = next(o for o in state["options"] if o["option_id"] == "SMITH")
+        state = game.act("choose_option", option_index=smith["index"])
+        assert state["decision"] == "card_select"
+        state = game.act("skip_select")
+        assert state["decision"] == "rest_site" and state["can_leave"] is False
+
+
+class TestEventCombatResume:
+    def test_battleworn_dummy_returns_to_the_event(self, game):
+        # The fight resumes its event (shouldResumeAfterCombat): outcome page and potion reward.
+        game.skip_neow(game.start(seed="dum1"))
+        game.send({"cmd": "set_player", "hp": 999, "max_hp": 999, "deck": ["BLUDGEON"] * 10})
+        state = game.enter_room("event", event="BATTLEWORN_DUMMY")
+        state = fight(game, game.act("choose_option", option_index=0))
+        for _ in range(5):
+            if state["decision"] != "card_reward":
+                break
+            state = game.act("skip_card_reward")
+        assert state["decision"] == "event_choice" and state["event_id"] == "BATTLEWORN_DUMMY"
+        assert state["finished"] is True and state["description"]
+        assert len(state["player"]["potions"]) == 1
         state = game.act("choose_option", option_index=0)
         assert state["decision"] == "map_select"
 
