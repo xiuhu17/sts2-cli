@@ -604,6 +604,13 @@ def relic_str(r):
         # Resolve template vars with actual values
         vars_dict = r.get("vars") or {}
         d = resolve_template(d, vars_dict)
+        # What the relic icon shows: its counter, glow (Active), greyed out (Disabled / used up).
+        if r.get("counter") is not None:
+            name += f" [{r['counter']}{'*' if r.get('status') == 'Active' else ''}]"
+        elif r.get("status") == "Active":
+            name += " [*]"
+        if r.get("used_up") or r.get("melted") or r.get("status") == "Disabled":
+            name = c(name, "dim")
         return f"{name}" + (f": {c(d, 'dim')}" if d else "")
     return n(r)
 

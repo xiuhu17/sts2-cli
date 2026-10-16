@@ -428,7 +428,8 @@ public partial class RunSimulator
                         var id = rEl.GetString();
                         if (id == null) continue;
                         var model = ModelDb.GetById<RelicModel>(new ModelId("RELIC", id));
-                        if (model != null) list.Add(model.ToMutable());
+                        // AddRelicInternal sets the Owner: hooks (e.g. ShouldAllowFreeTravel) need it.
+                        if (model != null) player.AddRelicInternal(model.ToMutable(), -1, silent: true);
                     }
                 }
             }
@@ -631,8 +632,29 @@ public partial class RunSimulator
 
             RunManager.Instance.Launch();
             Log("Run launched");
+            ContinueSave.Last = save;
 
-            if (savedRoom is MapRoom || savedRoom == null)
+            if (ContinueSave.ShouldReenterLatestCoord(save))
+            {
+                // The game's Continue (NGame.LoadRun): rebuild the saved map and re-enter the
+                // last visited node, so the same room and encounter come back.
+                Log("Re-entering the latest map coord (continue save)");
+                RunManager.Instance.GenerateMap().GetAwaiter().GetResult();
+                _syncCtx.Pump();
+                var preFinished = ContinueSave.IsReloadableRoom(save.PreFinishedRoom)
+                    ? AbstractRoom.FromSerializable(save.PreFinishedRoom, _runState) : null;
+                _lastKnownHp = _runState.Players[0].Creature?.CurrentHp ?? 0;
+                ContinueSave.SuppressRoomEndRewards = true;
+                try
+                {
+                    RunManager.Instance.LoadIntoLatestMapCoord(preFinished).GetAwaiter().GetResult();
+                    _syncCtx.Pump();
+                    WaitForActionExecutor();
+                }
+                finally { ContinueSave.SuppressRoomEndRewards = false; }
+                ContinueSave.Last = save;
+            }
+            else if (savedRoom is MapRoom || savedRoom == null)
             {
                 // Preserve Neow for saves created before the first blessing choice.
                 // Once the run has visited at least one map node, re-entering Act 1
@@ -924,6 +946,13 @@ public partial class RunSimulator
                 Log($"Saving map checkpoint (room={currentRoom?.GetType().Name ?? "null"}, outputPath={outputPath})...");
                 serializableRun = RunManager.Instance.ToSave(currentRoom);
             }
+            else if (ContinueSave.Last is { } gameSave && ContinueSave.MatchesPosition(gameSave, _runState))
+            {
+                // Mid-room: write what the game itself last saved (on entering this node, or
+                // after winning its fight). Loading it re-enters the same room, like Continue.
+                Log($"Saving the game's continue save from {currentRoom.GetType().Name} (outputPath={outputPath})...");
+                serializableRun = gameSave;
+            }
             else
             {
                 Log($"Saving pre-room checkpoint from {currentRoom.GetType().Name} (outputPath={outputPath})...");
@@ -1027,14 +1056,21 @@ public partial class RunSimulator
         if (args == null || !args.ContainsKey("col") || !args.ContainsKey("row"))
             return Error("select_map_node requires 'col' and 'row'");
 
-        // Only nodes offered by map_select are reachable; EnterMapCoord would happily
-        // teleport anywhere on the map.
-        if (_runState?.CurrentRoom is MapRoom
-            && MapSelectState().GetValueOrDefault("choices") is List<Dictionary<string, object?>> offered
-            && !offered.Any(c => Equals(c["col"], Convert.ToInt32(args["col"])) && Equals(c["row"], Convert.ToInt32(args["row"]))))
+        // Travel is only possible from the map (the game disables it while a room is open:
+        // RunManager.EnterRoom -> SetTravelEnabled(false)), and only to the nodes map_select
+        // offers; EnterMapCoord would happily teleport anywhere on the map.
+        if (!(_runState?.CurrentRoom is MapRoom || _runState?.CurrentRoom == null) || HasPendingPrompt)
+            return Error("select_map_node is only available at map_select");
+        int reqCol, reqRow;
+        try { reqCol = Convert.ToInt32(args["col"]); reqRow = Convert.ToInt32(args["row"]); }
+        catch { return Error("select_map_node: 'col' and 'row' must be integers"); }
+        if (_runState?.Map == null)
+            return Error("No map available");
+        var offered = TravelablePoints(_runState.Map);
+        if (!offered.Any(p => p.coord.col == reqCol && p.coord.row == reqRow))
         {
-            var list = string.Join(", ", offered.Select(c => $"({c["col"]},{c["row"]})"));
-            return Error($"Map node ({args["col"]},{args["row"]}) is not reachable; choices: {list}");
+            var list = string.Join(", ", offered.Select(p => $"({p.coord.col},{p.coord.row})"));
+            return Error($"Map node ({reqCol},{reqRow}) is not reachable; choices: {list}");
         }
 
         // Reset tracking for new room
@@ -1046,8 +1082,8 @@ public partial class RunSimulator
         _pendingRewards = null;
         _lastKnownHp = player.Creature?.CurrentHp ?? 0;
 
-        var col = Convert.ToInt32(args["col"]);
-        var row = Convert.ToInt32(args["row"]);
+        var col = reqCol;
+        var row = reqRow;
         var coord = new MapCoord((byte)col, (byte)row);
 
         Log($"Moving to map coord ({col},{row})");
@@ -1705,6 +1741,9 @@ public partial class RunSimulator
         if (potion.Usage == MegaCrit.Sts2.Core.Entities.Potions.PotionUsage.Automatic
             || potion.Usage == MegaCrit.Sts2.Core.Entities.Potions.PotionUsage.None)
             return Error($"Potion {potion.Id.Entry} can't be used manually (usage: {potion.Usage})");
+        // Same rules as the potion popup's Use button (NPotionPopup).
+        if (!PotionUsable(player, potion, out var unusableReason))
+            return Error($"Potion {potion.Id.Entry} can't be used now: {unusableReason}");
 
         // Determine target based on potion's TargetType first, then fall back to target_index
         Creature? target = null;
@@ -1712,9 +1751,15 @@ public partial class RunSimulator
 
         // Self-targeting potions (Flex, Fortifier, etc.) ALWAYS target the player
         // regardless of any target_index the caller provides
-        if (potionTargetType == TargetType.Self || potionTargetType == TargetType.TargetedNoCreature)
+        if (potionTargetType == TargetType.Self)
         {
             target = player.Creature;
+        }
+        else if (potionTargetType == TargetType.TargetedNoCreature)
+        {
+            // No creature target (e.g. Foul Potion thrown at the merchant): IsValidTarget only
+            // accepts null for this target type.
+            target = null;
         }
         else if (potionTargetType == TargetType.AnyEnemy)
         {
@@ -1752,28 +1797,70 @@ public partial class RunSimulator
             WaitForActionExecutor();
             _syncCtx.Pump();
 
-            // Effect may require card_select before the potion slot clears — do not discard as "stuck".
-            if (_cardSelector.HasPending || _cardSelector.HasPendingReward)
+            // Effect may open a prompt (card_select, bundle, ...) before the potion slot clears.
+            if (HasPendingPrompt)
                 return DetectDecisionPoint();
 
-            // Verify potion was consumed
+            // A cancelled use (invalid target, failed check) leaves the potion in its slot, as
+            // in the game. Never discard it on the player's behalf.
             var afterPotions = player.Potions?.ToList() ?? new();
             if (afterPotions.Contains(potion))
             {
-                // Potion wasn't consumed — manually discard it
-                Log("Potion not consumed by action, manually discarding");
-                MegaCrit.Sts2.Core.Commands.PotionCmd.Discard(potion).GetAwaiter().GetResult();
-                _syncCtx.Pump();
+                Log("Potion not consumed by action (use cancelled); keeping it");
+                return Error($"Potion {potion.Id.Entry} use was cancelled; the potion was kept");
             }
         }
         catch (Exception ex)
         {
             Log($"Use potion failed: {ex.Message}");
-            // Try manual discard as fallback
-            try { MegaCrit.Sts2.Core.Commands.PotionCmd.Discard(potion).GetAwaiter().GetResult(); } catch { }
+            if ((player.Potions?.Contains(potion)) == true)
+                return Error($"Potion {potion.Id.Entry} use failed ({ex.Message}); the potion was kept");
         }
 
         return DetectDecisionPoint();
+    }
+
+    /// <summary>
+    /// Whether the potion popup would enable "Use" (NPotionPopup: usage, CanUseOrRemovePotions,
+    /// PassesCustomUsabilityCheck, and for CombatOnly potions RefreshButtons' turn checks).
+    /// </summary>
+    private bool PotionUsable(Player player, PotionModel potion, out string reason)
+    {
+        reason = "";
+        if (potion.IsQueued) { reason = "already being used"; return false; }
+        if (player.Creature == null || player.Creature.IsDead) { reason = "player is dead"; return false; }
+        if (!player.CanUseOrRemovePotions) { reason = "potions are locked right now"; return false; }
+        // A card / bundle selection screen is open and its flow is waiting on the answer.
+        if (_cardSelector.HasPending || _cardSelector.HasPendingReward || _pendingBundles != null)
+        { reason = "a selection is open"; return false; }
+        switch (potion.Usage)
+        {
+            case MegaCrit.Sts2.Core.Entities.Potions.PotionUsage.AnyTime:
+                break;
+            case MegaCrit.Sts2.Core.Entities.Potions.PotionUsage.CombatOnly:
+            {
+                if (!CombatManager.Instance.IsInProgress) { reason = "it can only be used in combat"; return false; }
+                var creature = player.Creature;
+                if (creature.CombatState?.CurrentSide != creature.Side || CombatManager.Instance.PlayerActionsDisabled)
+                { reason = "it can only be used during your turn"; return false; }
+                if (HasPendingPrompt) { reason = "a selection is open"; return false; }  // InACardSelectScreen
+                break;
+            }
+            default:
+                reason = $"usage {potion.Usage}"; return false;
+        }
+        bool custom;
+        // Foul Potion is thrown at the merchant: the game checks for the merchant's button node,
+        // which headless shops don't have. Its OnUse (gain gold) works without it.
+        if (potion is MegaCrit.Sts2.Core.Models.Potions.FoulPotion && !CombatManager.Instance.IsInProgress
+            && _runState?.CurrentRoom is MerchantRoom)
+            custom = true;
+        else
+        {
+            try { custom = potion.PassesCustomUsabilityCheck; } catch { custom = false; }
+        }
+        if (!custom) { reason = "it can't be used here"; return false; }
+        return true;
     }
 
     private Dictionary<string, object?> DoDiscardPotion(Player player, Dictionary<string, object?>? args)
@@ -1786,6 +1873,12 @@ public partial class RunSimulator
         if (idx < 0 || idx >= potionsList.Count) return Error($"Invalid potion index {idx}");
         var potion = potionsList[idx];
         if (potion == null) return Error($"No potion at index {idx}");
+        // Events that reference held potions (The Future of Potions, Ranwid, Stone of All Time)
+        // lock them: the popup disables Discard too.
+        if (!player.CanUseOrRemovePotions)
+            return Error("Potions can't be used or discarded right now");
+        if (potion.IsQueued)
+            return Error($"Potion {potion.Id.Entry} is being used");
 
         MegaCrit.Sts2.Core.Commands.PotionCmd.Discard(potion).GetAwaiter().GetResult();
         _syncCtx.Pump();
@@ -1902,34 +1995,14 @@ public partial class RunSimulator
         return DetectDecisionPoint();
     }
 
-    /// <summary>
-    /// Headless mode skips Godot transition callbacks that normally trigger between-act healing
-    /// (AncientEventModel.BeforeEventStarted). Replicates the original sts2.dll formula:
-    ///   healAmount = MaxHp - CurrentHp  (i.e. heal to full)
-    ///   if Ascension >= 2: healAmount *= 0.8
-    /// No-op if the engine already healed (missingHp &lt;= 0), so this is safe alongside any
-    /// future engine path that does fire the callback.
-    /// Adapted from PR #83 commit cf75bec by @tianyumyum.
-    /// </summary>
-    private void HealBetweenActs()
+    private bool IsLastAct() =>
+        _runState != null && _runState.CurrentActIndex >= _runState.Acts.Count - 1;
+
+    /// <summary>Standing on the first boss of a double-boss act (NRewardsScreen.OnProceedButtonPressed).</summary>
+    private bool AtFirstOfDoubleBoss()
     {
-        if (_runState == null) return;
-        var player = _runState.Players[0];
-        if (player.Creature == null) return;
-
-        var currentHp = player.Creature.CurrentHp;
-        var maxHp = player.Creature.MaxHp;
-        var missingHp = maxHp - currentHp;
-        if (missingHp <= 0) return;
-
-        decimal healAmount = missingHp;
-        if (RunManager.Instance.HasAscension((AscensionLevel)2))
-            healAmount *= 0.8m;
-
-        var newHp = currentHp + (int)Math.Ceiling(healAmount);
-        if (newHp > maxHp) newHp = maxHp;
-        SetField(player.Creature, "_currentHp", newHp);
-        Log($"Between-act heal: {currentHp} → {newHp} (missing={missingHp}, ascension2+={RunManager.Instance.HasAscension((AscensionLevel)2)})");
+        var map = _runState?.Map;
+        return map?.SecondBossMapPoint != null && _runState!.CurrentMapCoord == map.BossMapPoint.coord;
     }
 
     private Dictionary<string, object?> DoProceed(Player player)
@@ -1942,18 +2015,25 @@ public partial class RunSimulator
         {
             if (combatRoom.IsPreFinished || !CombatManager.Instance.IsInProgress)
             {
-                // Final act boss → victory (same rule as DetectPostCombatState, #81).
-                if (_runState != null && _runState.CurrentActIndex >= 2)
-                {
-                    Log($"Final boss defeated via Proceed (Act {_runState.CurrentActIndex + 1}), reporting victory");
-                    return GameOverState(true);
-                }
-                // Rewards left on the boss screen don't follow the player into the next act.
+                // Rewards left on the boss screen don't follow the player onwards.
                 _pendingCardReward = null;
                 _pendingRewards = null;
+                // Ascension 10 first boss: the map opens for the second boss (NRewardsScreen).
+                if (AtFirstOfDoubleBoss())
+                {
+                    _rewardsProcessed = true;
+                    ForceToMap();
+                    return MapSelectState();
+                }
+                // Final act boss → victory (same rule as DetectPostCombatState, #81).
+                if (IsLastAct())
+                {
+                    Log($"Final boss defeated via Proceed (Act {_runState!.CurrentActIndex + 1}), reporting victory");
+                    return GameOverState(true);
+                }
+                // No heal here: the next act's Ancient start node heals (AncientEventModel).
                 RunManager.Instance.EnterNextAct().GetAwaiter().GetResult();
                 WaitForActionExecutor();
-                HealBetweenActs();
                 return DetectDecisionPoint();
             }
         }
@@ -2205,72 +2285,27 @@ public partial class RunSimulator
             if (map == null)
                 return Error("No map available");
         }
-        var currentCoord = _runState!.CurrentMapCoord;
+        // Same travelability rules as the game's map screen (NMapScreen.RecalculateTravelability):
+        // the start/Ancient node first, then the current node's children — or the whole next
+        // row while free travel (Winged Boots, Flight) is on — then the boss, then the second boss.
+        var currentPoint = _runState!.CurrentMapPoint;
+        var choices = TravelablePoints(map)
+            .Select(p =>
+            {
+                var c = new Dictionary<string, object?>
+                {
+                    ["col"] = (int)p.coord.col,
+                    ["row"] = (int)p.coord.row,
+                    ["type"] = p.PointType.ToString(),
+                };
+                // Off-path move that spends a Winged Boots charge (WingedBoots.AfterRoomEntered).
+                if (currentPoint?.Children != null && !currentPoint.Children.Contains(p))
+                    c["free_travel"] = true;
+                return c;
+            })
+            .ToList();
 
-        List<Dictionary<string, object?>> choices;
-        if (currentCoord.HasValue)
-        {
-            var currentPoint = map.GetPoint(currentCoord.Value);
-            if (currentPoint == null)
-            {
-                Log($"GetPoint returned null for coord ({currentCoord.Value.col},{currentCoord.Value.row}), falling back to start");
-                // Current coord is invalid (stale after forced room transition); treat as no position
-                choices = new List<Dictionary<string, object?>>();
-                var sp = map.StartingMapPoint;
-                if (sp?.Children != null)
-                {
-                    foreach (var child in sp.Children)
-                    {
-                        choices.Add(new Dictionary<string, object?>
-                        {
-                            ["col"] = (int)child.coord.col,
-                            ["row"] = (int)child.coord.row,
-                            ["type"] = child.PointType.ToString(),
-                        });
-                    }
-                }
-            }
-            else
-            {
-                choices = (currentPoint.Children ?? Enumerable.Empty<MapPoint>())
-                    .Select(child => new Dictionary<string, object?>
-                    {
-                        ["col"] = (int)child.coord.col,
-                        ["row"] = (int)child.coord.row,
-                        ["type"] = child.PointType.ToString(),
-                    })
-                    .ToList();
-            }
-        }
-        else
-        {
-            // Starting point — pick from starting row
-            var startPoint = map.StartingMapPoint;
-            choices = new List<Dictionary<string, object?>>
-            {
-                new()
-                {
-                    ["col"] = (int)startPoint.coord.col,
-                    ["row"] = (int)startPoint.coord.row,
-                    ["type"] = startPoint.PointType.ToString(),
-                }
-            };
-            // Add all children of start point as well since we can travel to them
-            if (startPoint.Children != null)
-            {
-                foreach (var child in startPoint.Children)
-                {
-                    choices.Add(new Dictionary<string, object?>
-                    {
-                        ["col"] = (int)child.coord.col,
-                        ["row"] = (int)child.coord.row,
-                        ["type"] = child.PointType.ToString(),
-                    });
-                }
-            }
-        }
-
-        return new Dictionary<string, object?>
+        var mapState = new Dictionary<string, object?>
         {
             ["type"] = "decision",
             ["decision"] = "map_select",
@@ -2281,6 +2316,37 @@ public partial class RunSimulator
             ["act_name"] = _loc.Act(_runState.Act?.Id.Entry ?? "OVERGROWTH"),
             ["floor"] = _runState.ActFloor,
         };
+        try { if (MegaCrit.Sts2.Core.Hooks.Hook.ShouldAllowFreeTravel(_runState)) mapState["free_travel_available"] = true; }
+        catch { }
+        return mapState;
+    }
+
+    /// <summary>
+    /// Map points the player may travel to now, computed exactly like
+    /// NMapScreen.RecalculateTravelability (keyed on the last visited coord).
+    /// </summary>
+    private List<MapPoint> TravelablePoints(ActMap map)
+    {
+        var visited = _runState!.VisitedMapCoords;
+        if (visited == null || visited.Count == 0)
+            return new List<MapPoint> { map.StartingMapPoint };
+        var last = visited[^1];
+        if (map.SecondBossMapPoint != null && last == map.BossMapPoint.coord)
+            return new List<MapPoint> { map.SecondBossMapPoint };
+        if (map.SecondBossMapPoint != null && last == map.SecondBossMapPoint.coord)
+            return new List<MapPoint>();
+        if (last == map.BossMapPoint.coord)
+            return new List<MapPoint>();
+        if (last.row == map.GetRowCount() - 1)
+            return new List<MapPoint> { map.BossMapPoint };
+        var point = map.GetPoint(last);
+        if (point == null)
+        {
+            Log($"Last visited coord ({last.col},{last.row}) not on the map, falling back to the starting point");
+            return new List<MapPoint> { map.StartingMapPoint };
+        }
+        return MegaCrit.Sts2.Core.Map.MapTravel.GetTravelablePointsFrom(_runState, point)
+            .Where(p => p != null).ToList();
     }
 
     /// <summary>
@@ -2701,18 +2767,27 @@ public partial class RunSimulator
         // map_select. Report victory directly in that case.
         if (combatRoom.RoomType == RoomType.Boss)
         {
-            if (_runState != null && _runState.CurrentActIndex >= 2)
+            // Ascension 10: the first boss of the last act is followed by a second boss
+            // (StandardActMap.SecondBossMapPoint); the run is only won after that one
+            // (CombatManager sets WinTime only on the second boss point).
+            if (AtFirstOfDoubleBoss())
             {
-                Log($"Final boss defeated (Act {_runState.CurrentActIndex + 1}), reporting victory");
+                Log("First of two final bosses defeated, opening the map for the second boss");
+                ForceToMap();
+                return MapSelectState();
+            }
+            if (IsLastAct())
+            {
+                Log($"Final boss defeated (Act {_runState!.CurrentActIndex + 1}), reporting victory");
                 return GameOverState(true);
             }
             Log("Boss defeated, entering next act");
             try
             {
+                // No heal here: the next act's Ancient start node heals (AncientEventModel).
                 RunManager.Instance.EnterNextAct().GetAwaiter().GetResult();
                 _syncCtx.Pump();
                 WaitForActionExecutor();
-                HealBetweenActs();
             }
             catch (Exception ex) { Log($"EnterNextAct: {ex.Message}"); }
             return DetectDecisionPoint();
@@ -2999,12 +3074,40 @@ public partial class RunSimulator
         try { foreach (var dv in r.DynamicVars.Values) vars[dv.Name] = (int)dv.BaseValue; } catch { }
         var info = new Dictionary<string, object?>();
         if (index != null) info["index"] = index;
-        info["name"] = _loc.Relic(r.Id.Entry);
+        info["name"] = RelicName(r);
         info["description"] = RelicText(r);
         var relicTips = Tips(() => RelicExtraTips?.GetValue(r) as IEnumerable<MegaCrit.Sts2.Core.HoverTips.IHoverTip>);
         if (relicTips != null) info["tips"] = relicTips;
         info["vars"] = vars.Count > 0 ? vars : null;
+        AddRelicState(info, r);
         return info;
+    }
+
+    /// <summary>
+    /// What the relic icon shows besides its art (NRelicInventoryHolder / NRelic): the counter
+    /// (ShowCounter/DisplayAmount, e.g. Pen Nib's attack count), the glow/greyed status, and
+    /// the used-up / melted / wax markers. Only non-default values are emitted.
+    /// </summary>
+    /// <summary>
+    /// The relic's title as RelicModel.Title builds it: wax relics (Toy Box) use the
+    /// "TOY_BOX.waxRelicPrefix" template ("Wax {Title}" / "蜡制{Title}").
+    /// </summary>
+    private static string RelicName(RelicModel r)
+    {
+        var title = _loc.Relic(r.Id.Entry);
+        bool wax;
+        try { wax = r.IsWax; } catch { wax = false; }
+        return wax ? _loc.Bilingual("relics", "TOY_BOX.waxRelicPrefix").Replace("{Title}", title) : title;
+    }
+
+    private static void AddRelicState(Dictionary<string, object?> d, RelicModel r)
+    {
+        try { if (r.ShowCounter) d["counter"] = r.DisplayAmount; } catch { }
+        try { if (r.Status != MegaCrit.Sts2.Core.Entities.Relics.RelicStatus.Normal) d["status"] = r.Status.ToString(); } catch { }
+        try { if (r.IsUsedUp) d["used_up"] = true; } catch { }
+        try { if (r.IsMelted) d["melted"] = true; } catch { }
+        try { if (r.IsWax) d["wax"] = true; } catch { }
+        try { if (r.StackCount > 1) d["stack_count"] = r.StackCount; } catch { }
     }
 
     private Dictionary<string, object?> RewardInfo(Reward reward, int index)
@@ -3901,7 +4004,13 @@ public partial class RunSimulator
 
     private static string RelicText(RelicModel r) =>
         GameText(() => r.HoverTip.Description, "relics", r.Id.Entry + ".description",
-                 CacheKey(r, "relic", r.DynamicVars.Values.Select(v => v.BaseValue)));
+                 CacheKey(r, RelicTextState(r), r.DynamicVars.Values.Select(v => v.BaseValue)));
+
+    // HoverTip wraps the description once the relic is used up or melted, so they key the text too.
+    private static string RelicTextState(RelicModel r)
+    {
+        try { return $"relic|{r.IsUsedUp}|{r.IsMelted}"; } catch { return "relic"; }
+    }
 
     private static string PotionText(PotionModel p) =>
         GameText(() => p.HoverTip.Description, "potions", p.Id.Entry + ".description",
@@ -4086,16 +4195,21 @@ public partial class RunSimulator
             ["block"] = player.Creature?.Block ?? 0,
             ["gold"] = player.Gold,
             ["potion_slots"] = player.MaxPotionCount,
+            // False while an event locks potions (no use, no discard).
+            ["can_use_or_remove_potions"] = player.CanUseOrRemovePotions,
             ["relics"] = player.Relics?.Select(r =>
             {
                 var vars = new Dictionary<string, object?>();
                 try { foreach (var dv in r.DynamicVars.Values) vars[dv.Name] = (int)dv.BaseValue; } catch { }
-                return new Dictionary<string, object?>
+                var rd = new Dictionary<string, object?>
                 {
-                    ["name"] = _loc.Relic(r.Id.Entry),
+                    ["id"] = r.Id.Entry,
+                    ["name"] = RelicName(r),
                     ["description"] = RelicText(r),
                     ["vars"] = vars.Count > 0 ? vars : null,
                 };
+                AddRelicState(rd, r);
+                return rd;
             }).ToList(),
             ["potions"] = player.Potions?.Select((p, i) =>
             {
@@ -4112,6 +4226,8 @@ public partial class RunSimulator
                     ["tips"] = Tips(() => p.ExtraHoverTips),
                     // CombatOnly / AnyTime can be used; Automatic (e.g. Fairy in a Bottle) triggers by itself.
                     ["usage"] = p.Usage.ToString(),
+                    // Whether "Use" is enabled right now (in or out of combat), like the potion popup.
+                    ["can_use"] = PotionUsable(player, p, out _),
                 };
             }).Where(x => x != null).ToList(),
             ["deck_size"] = player.Deck?.Cards?.Count(c => c != null) ?? 0,
@@ -4161,25 +4277,44 @@ public partial class RunSimulator
             ["room_type"] = _runState.CurrentRoom?.RoomType.ToString(),
         };
 
-        // Boss encounter info — use BossEncounter?.Id?.Entry
+        // What the top bar shows: ascension level, modifiers, cumulative floor; plus the seed.
+        try { ctx["total_floor"] = _runState.TotalFloor; } catch { }
+        ctx["ascension"] = _runState.AscensionLevel;
+        try { ctx["seed"] = _runState.Rng.StringSeed; } catch { }
         try
         {
-            var bossIdEntry = _runState.Act?.BossEncounter?.Id?.Entry;
-            if (!string.IsNullOrEmpty(bossIdEntry))
-            {
-                var monsterKey = bossIdEntry.EndsWith("_BOSS") ? bossIdEntry[..^5] : bossIdEntry;
-                // Handle special mappings
-                if (monsterKey == "THE_KIN") monsterKey = "KIN_PRIEST";
-                ctx["boss"] = new Dictionary<string, object?>
+            if (_runState.Modifiers.Count > 0)
+                ctx["modifiers"] = _runState.Modifiers.Select(m => new Dictionary<string, object?>
                 {
-                    ["id"] = bossIdEntry,
-                    ["name"] = _loc.Monster(monsterKey),
-                };
-            }
+                    ["id"] = m.Id.Entry,
+                    ["name"] = _loc.Bilingual("modifiers", m.Id.Entry + ".title"),
+                }).ToList();
         }
         catch { }
 
+        // Boss icon(s) of the top bar (NTopBarBossIcon): the encounter titles.
+        var boss = BossInfo(_runState.Act?.BossEncounter);
+        if (boss != null) ctx["boss"] = boss;
+        var secondBoss = BossInfo(_runState.Act?.SecondBossEncounter);
+        if (secondBoss != null) ctx["second_boss"] = secondBoss;
+
         return ctx;
+    }
+
+    /// <summary>{id, name} of a boss encounter, named by its title like the top bar's boss icon.</summary>
+    private static Dictionary<string, object?>? BossInfo(EncounterModel? encounter)
+    {
+        try
+        {
+            var id = encounter?.Id?.Entry;
+            if (string.IsNullOrEmpty(id)) return null;
+            return new Dictionary<string, object?>
+            {
+                ["id"] = id,
+                ["name"] = _loc.Bilingual("encounters", id + ".title"),
+            };
+        }
+        catch { return null; }
     }
 
     private static void EnsureModelDbInitialized()
@@ -4237,6 +4372,9 @@ public partial class RunSimulator
         PatchHeadlessPresentation();
         HeadlessUiGuard.Install(typeof(CombatManager).Assembly);
         MapPruningPatch.Install(new Harmony("sts2headless.mappruning"));
+
+        // Capture the game's own run saves instead of writing them (write_continue_save).
+        ContinueSave.Install();
 
         // Initialize localization system (needed for events, cards, etc.)
         InitLocManager();
@@ -5188,7 +5326,32 @@ public partial class RunSimulator
         var map = _runState.Map;
         var rows = new List<List<Dictionary<string, object?>>>();
         var currentCoord = _runState.CurrentMapCoord;
-        var visited = _runState.VisitedMapCoords;
+        var visited = _runState.VisitedMapCoords ?? (IReadOnlyList<MapCoord>)Array.Empty<MapCoord>();
+        // Same Traveled/Travelable states the map screen draws. Travel is disabled while a
+        // room is open, so nothing is travelable then.
+        var canTravel = _runState.CurrentRoom is MapRoom || _runState.CurrentRoom == null;
+        var travelable = canTravel
+            ? TravelablePoints(map).Select(p => p.coord).ToHashSet()
+            : new HashSet<MapCoord>();
+
+        Dictionary<string, object?> NodeDict(MapPoint point)
+        {
+            var children = point.Children?.Select(ch => new Dictionary<string, object?>
+            {
+                ["col"] = (int)ch.coord.col,
+                ["row"] = (int)ch.coord.row,
+            }).ToList();
+            return new Dictionary<string, object?>
+            {
+                ["col"] = (int)point.coord.col,
+                ["row"] = (int)point.coord.row,
+                ["type"] = point.PointType.ToString(),
+                ["children"] = children,
+                ["visited"] = visited.Contains(point.coord),
+                ["current"] = currentCoord.HasValue && currentCoord.Value == point.coord,
+                ["travelable"] = travelable.Contains(point.coord),
+            };
+        }
 
         for (int row = 0; row < map.GetRowCount(); row++)
         {
@@ -5196,56 +5359,38 @@ public partial class RunSimulator
             foreach (var point in map.GetPointsInRow(row))
             {
                 if (point == null) continue;
-                var children = point.Children?.Select(ch => new Dictionary<string, object?>
-                {
-                    ["col"] = (int)ch.coord.col,
-                    ["row"] = (int)ch.coord.row,
-                }).ToList();
-
-                var isVisited = visited?.Any(v => v.col == point.coord.col && v.row == point.coord.row) ?? false;
-                var isCurrent = currentCoord.HasValue &&
-                    currentCoord.Value.col == point.coord.col && currentCoord.Value.row == point.coord.row;
-
-                rowNodes.Add(new Dictionary<string, object?>
-                {
-                    ["col"] = (int)point.coord.col,
-                    ["row"] = (int)point.coord.row,
-                    ["type"] = point.PointType.ToString(),
-                    ["children"] = children,
-                    ["visited"] = isVisited,
-                    ["current"] = isCurrent,
-                });
+                rowNodes.Add(NodeDict(point));
             }
             if (rowNodes.Count > 0)
                 rows.Add(rowNodes);
         }
 
-        // Boss node
-        var bossNode = new Dictionary<string, object?>
-        {
-            ["col"] = (int)map.BossMapPoint.coord.col,
-            ["row"] = (int)map.BossMapPoint.coord.row,
-            ["type"] = map.BossMapPoint.PointType.ToString(),
-        };
+        // Start (Neow / Ancient) node, the root of the graph; it lives outside the grid.
+        var startNode = NodeDict(map.StartingMapPoint);
 
-        // Add boss name/id — use BossEncounter?.Id?.Entry
-        try
+        var bossNode = NodeDict(map.BossMapPoint);
+        if (BossInfo(_runState.Act?.BossEncounter) is { } boss)
         {
-            var bossIdEntry = _runState.Act?.BossEncounter?.Id?.Entry;
-            if (!string.IsNullOrEmpty(bossIdEntry))
+            bossNode["id"] = boss["id"];
+            bossNode["name"] = boss["name"];
+        }
+
+        Dictionary<string, object?>? secondBossNode = null;
+        if (map.SecondBossMapPoint != null)
+        {
+            secondBossNode = NodeDict(map.SecondBossMapPoint);
+            if (BossInfo(_runState.Act?.SecondBossEncounter) is { } boss2)
             {
-                var monsterKey = bossIdEntry.EndsWith("_BOSS") ? bossIdEntry[..^5] : bossIdEntry;
-                if (monsterKey == "THE_KIN") monsterKey = "KIN_PRIEST";
-                bossNode["id"] = bossIdEntry;
-                bossNode["name"] = _loc.Monster(monsterKey);
+                secondBossNode["id"] = boss2["id"];
+                secondBossNode["name"] = boss2["name"];
             }
         }
-        catch { }
 
-        return new Dictionary<string, object?>
+        var result = new Dictionary<string, object?>
         {
             ["type"] = "map",
             ["context"] = RunContext(),
+            ["start"] = startNode,
             ["rows"] = rows,
             ["boss"] = bossNode,
             ["current_coord"] = currentCoord.HasValue ? new Dictionary<string, object?>
@@ -5253,7 +5398,37 @@ public partial class RunSimulator
                 ["col"] = (int)currentCoord.Value.col,
                 ["row"] = (int)currentCoord.Value.row,
             } : null,
+            ["visited_path"] = visited.Select(v => new Dictionary<string, object?>
+            {
+                ["col"] = (int)v.col,
+                ["row"] = (int)v.row,
+            }).ToList(),
         };
+        if (secondBossNode != null) result["second_boss"] = secondBossNode;
+        try { if (MegaCrit.Sts2.Core.Hooks.Hook.ShouldAllowFreeTravel(_runState)) result["free_travel_available"] = true; }
+        catch { }
+
+        // Top-bar hover tips: the ascension levels in effect (AscensionHelper.GetHoverTip) and
+        // the modifiers with their descriptions; the run timer (NRunTimer, opt-in in the game).
+        var asc = _runState.AscensionLevel;
+        result["ascension_effects"] = Enumerable.Range(1, Math.Max(0, Math.Min(asc, 10))).Select(i => new Dictionary<string, object?>
+        {
+            ["level"] = i,
+            ["name"] = _loc.Bilingual("ascension", $"LEVEL_{i:00}.title"),
+            ["description"] = _loc.Bilingual("ascension", $"LEVEL_{i:00}.description"),
+        }).ToList();
+        try
+        {
+            result["modifiers"] = _runState.Modifiers.Select(m => new Dictionary<string, object?>
+            {
+                ["id"] = m.Id.Entry,
+                ["name"] = _loc.Bilingual("modifiers", m.Id.Entry + ".title"),
+                ["description"] = _loc.Bilingual("modifiers", m.Id.Entry + ".description"),
+            }).ToList();
+        }
+        catch { }
+        try { result["run_time_seconds"] = RunManager.Instance.RunTime; } catch { }
+        return result;
     }
 
     public void CleanUp()
@@ -5397,6 +5572,7 @@ public partial class RunSimulator
         _pendingCardReward = null;
         _rewardsProcessed = false;
         _rewardDone.Clear();
+        ContinueSave.Last = null;
         _treasureFinishPending = null;
         _goldBeforeCombat = 0;
         _lastKnownHp = 0;
