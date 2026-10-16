@@ -145,6 +145,9 @@ class TestEventRewards:
         assert state["decision"] == "rewards"
         assert state["player"]["deck_size"] == deck + 1
         state = game.act("proceed")  # leave the potion
+        # The event's last page (outcome + Proceed), as NEventRoom shows it.
+        assert state["decision"] == "event_choice" and state.get("finished") is True
+        state = game.act("choose_option", option_index=0)
         assert state["decision"] == "map_select"
         assert state["player"]["potions"] == []
 

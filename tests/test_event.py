@@ -20,7 +20,7 @@ class TestNeowEvent:
         for opt in state["options"]:
             if opt.get("vars"):
                 for k, v in opt["vars"].items():
-                    assert isinstance(v, (int, float))
+                    assert isinstance(v, (int, float, str))  # StringVars carry names
 
     def test_choose_neow(self, game):
         state = game.start(seed="ne4")

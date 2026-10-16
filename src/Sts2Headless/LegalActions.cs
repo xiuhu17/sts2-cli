@@ -72,6 +72,10 @@ internal static class LegalActions
                     acts.Add(Act("select_card_reward", ("card_index", c["index"])));
                 if (r.GetValueOrDefault("can_skip") is not false)
                     acts.Add(Act("skip_card_reward"));
+                // Reroll / Sacrifice (Skip is skip_card_reward).
+                foreach (var a in Items(r, "alternatives"))
+                    if (a.GetValueOrDefault("id") as string != "Skip")
+                        acts.Add(Act("select_card_alternative", ("alternative_index", a["index"])));
                 break;
 
             case "card_select":
@@ -114,7 +118,7 @@ internal static class LegalActions
                 foreach (var o in Items(r, "options"))
                     if (o.GetValueOrDefault("is_enabled") is not false)
                         acts.Add(Act("choose_option", ("option_index", o["index"])));
-                if (acts.Count == 0)
+                if (acts.Count == 0 || r.GetValueOrDefault("can_leave") is true)
                     acts.Add(Act("leave_room"));
                 break;
 
@@ -132,8 +136,13 @@ internal static class LegalActions
                     foreach (var c in Items(r, "potions"))
                         if (c.GetValueOrDefault("is_stocked") is true && Int(c, "cost") <= gold)
                             acts.Add(Act("buy_potion", ("potion_index", c["index"])));
-                if (r.GetValueOrDefault("card_removal_cost") is int removal && removal <= gold)
+                if (r.GetValueOrDefault("card_removal_cost") is int removal && removal <= gold
+                    && r.GetValueOrDefault("card_removal_available") is not false)
                     acts.Add(Act("remove_card"));
+                // Fake Merchant: a Foul Potion can be thrown at him.
+                if (r.GetValueOrDefault("throwable_potions") is System.Collections.IEnumerable throwable)
+                    foreach (var pi in throwable)
+                        acts.Add(Act("use_potion", ("potion_index", pi)));
                 acts.Add(Act("leave_room"));
                 break;
             }

@@ -899,6 +899,9 @@ def show_card_reward(state):
         print(f"  [{card['index']}] {c(n(card['name']), type_color)} ({cost}) {c(rarity_label, rarity_color)}{suf_part}")
         print_card_detail_extension(card, indent="      ")
 
+    for alt in state.get("alternatives") or []:
+        if alt.get("id") != "Skip":
+            print(f"  [a{alt['index']}] {alt.get('name', alt.get('id'))}")
     print()
     if cards:
         hi = len(cards) - 1
@@ -966,9 +969,11 @@ def show_rest_site(state):
         enabled = opt.get("is_enabled", True)
         mark = c("●", "green") if enabled else c("○", "dim")
         opt_id = opt.get("option_id", "?")
-        opt_name = t(opt_id, REST_OPTIONS_ZH.get(opt_id, opt_id))
-        opt_desc = opt.get("name", "")
-        print(f"  {mark} [{opt['index']}] {opt_name}" + (f" — {opt_desc}" if opt_desc and opt_desc != opt_id else ""))
+        opt_name = opt.get("name") or t(opt_id, REST_OPTIONS_ZH.get(opt_id, opt_id))
+        opt_desc = (opt.get("description") or "").replace("\n", " ")
+        print(f"  {mark} [{opt['index']}] {opt_name}" + (f" — {c(opt_desc, 'dim')}" if opt_desc else ""))
+    if state.get("can_leave"):
+        print(f"  [leave] {t('Proceed','继续')}")
 
 def _load_loc():
     """Load localization data for resolving event option names."""
@@ -1033,7 +1038,11 @@ def show_event(state):
         print(f"  {c(act, 'dim')} {t('Floor','层')} {floor}")
     event_label = t("Event", "事件")
     print(f"  {c(f'{event_label}: {event_display}', 'bold')}")
-    # event_desc is usually a raw loc key — skip it (event name already in title)
+    for line in state.get("dialogue") or []:
+        who = event_display if line.get("speaker") == "ancient" else t("You", "你")
+        print(f"  {c(who + ':', 'cyan')} {line.get('text', '')}")
+    if event_desc:
+        print(f"  {c(event_desc, 'dim')}")
     show_player(state.get("player", {}))
     print()
     for opt in state.get("options", []):
@@ -1053,7 +1062,10 @@ def show_event(state):
         if opt_vars and opt_desc:
             opt_desc = resolve_template(opt_desc, opt_vars)
         desc_str = f" — {c(opt_desc, 'dim')}" if opt_desc else ""
-        print(f"  {mark} [{opt['index']}] {title}{desc_str}")
+        lethal = c(t(" [LETHAL]", " [致命]"), "red") if opt.get("will_kill") else ""
+        print(f"  {mark} [{opt['index']}] {title}{desc_str}{lethal}")
+        for tip in opt.get("tips") or []:
+            print(f"        {c(tip.get('title', ''), 'yellow')}: {c(tip.get('description', ''), 'dim')}")
 
 # ─── Input handling ───
 
@@ -1785,7 +1797,11 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0, log=True,
                 show_card_reward(state)
                 cards = state.get("cards", [])
                 valid = {str(c["index"]): c for c in cards}
-                valid["s"] = None  # skip
+                if state.get("can_skip", True):
+                    valid["s"] = None  # skip
+                for alt in state.get("alternatives") or []:
+                    if alt.get("id") != "Skip":
+                        valid[f"a{alt['index']}"] = None
 
                 if auto:
                     choice = "0" if cards else "s"
@@ -1796,7 +1812,10 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0, log=True,
                         state=state,
                     )
 
-                if choice == "s":
+                if choice.startswith("a"):
+                    state = send({"cmd": "action", "action": "select_card_alternative",
+                                  "args": {"alternative_index": int(choice[1:])}})
+                elif choice == "s":
                     state = send({"cmd": "action", "action": "skip_card_reward"})
                 else:
                     state = send({"cmd": "action", "action": "select_card_reward",
@@ -1945,6 +1964,8 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0, log=True,
                 options = state.get("options", [])
                 enabled = [o for o in options if o.get("is_enabled")]
                 valid = {str(o["index"]): o for o in enabled}
+                if state.get("can_leave") or not enabled:
+                    valid["leave"] = None
 
                 if auto:
                     hp = state.get("player", {}).get("hp", 1)
@@ -1952,12 +1973,15 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0, log=True,
                     heal = next((o for o in enabled if o.get("option_id") == "HEAL"), None)
                     smith = next((o for o in enabled if o.get("option_id") == "SMITH"), None)
                     pick = (heal if hp < mhp * 0.7 else smith) or (heal or (enabled[0] if enabled else None))
-                    choice = str(pick["index"]) if pick else "0"
+                    choice = "leave" if state.get("can_leave") or not pick else str(pick["index"])
                 else:
                     choice = get_input(t("Choose option [index]", "选择 [编号]"), set(valid.keys()), state=state)
 
-                state = send({"cmd": "action", "action": "choose_option",
-                             "args": {"option_index": int(choice)}})
+                if choice == "leave":
+                    state = send({"cmd": "action", "action": "leave_room"})
+                else:
+                    state = send({"cmd": "action", "action": "choose_option",
+                                 "args": {"option_index": int(choice)}})
                 if state and state.get("type") == "error":
                     state = send({"cmd": "action", "action": "leave_room"})
 
@@ -1966,7 +1990,8 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0, log=True,
                 options = state.get("options", [])
                 unlocked = [o for o in options if not o.get("is_locked")]
                 valid = {str(o["index"]): o for o in unlocked}
-                valid["leave"] = None
+                if not unlocked:
+                    valid["leave"] = None
 
                 # Save state before choice to show diff
                 old_relics = set(n(r.get("name","?")) for r in state.get("player",{}).get("relics",[]))
@@ -2024,6 +2049,19 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0, log=True,
                         changes.append(f"{t('Gold','金')}: {'+' if diff > 0 else ''}{diff}")
                     if changes:
                         print(f"\n  {c(t('Changes:','变化:'), 'yellow')} {'; '.join(changes)}")
+
+            elif dec == "rewards":
+                rewards = state.get("rewards", [])
+                print(f"\n  {c(t('Rewards','奖励'), 'bold')}")
+                for r in rewards:
+                    label = r.get("name") or r.get("description") or r.get("type")
+                    print(f"  [{r['index']}] {r.get('type')}: {label}")
+                valid = {str(r["index"]) for r in rewards} | {"p"}
+                choice = "p" if auto else get_input(t("Claim [index] or (p)roceed", "领取 [编号] 或 (p)继续"), valid, state=state)
+                if choice == "p":
+                    state = send({"cmd": "action", "action": "proceed"})
+                else:
+                    state = send({"cmd": "action", "action": "claim_reward", "args": {"reward_index": int(choice)}})
 
             else:
                 print(f"  {t('Unknown state:','未知状态:')} {dec}")
