@@ -176,6 +176,7 @@ def handle_card_reward(d):
 
     best_idx = -1
     best_score = 0
+    scores = {}
     for c in cards:
         name = c["name"]
         score = priority.get(name, 0)
@@ -193,12 +194,16 @@ def handle_card_reward(d):
         # Reduce score if deck is getting big
         if deck_size > 15 and score < 50:
             score = 0
+        scores[c["index"]] = score
         if score > best_score:
             best_score = score
             best_idx = c["index"]
 
     if not d.get("can_skip", True) and best_idx < 0 and cards:
-        best_idx, best_score = cards[0]["index"], 15  # must take one (Draft): see pick rule below
+        # Must take one (Draft) and nothing scored: take the highest-scoring card, ties broken
+        # by the lowest energy cost, then by name (never "the first card shown").
+        pick = max(cards, key=lambda c: (scores.get(c["index"], 0), -(c.get("cost") or 0), str(c.get("name"))))
+        best_idx, best_score = pick["index"], scores.get(pick["index"], 0)
     if best_idx >= 0 and (best_score >= 15 and deck_size < 18 or not d.get("can_skip", True)):
         print(f"  PICK: {cards[best_idx]['name']['zh']} (score={best_score})")
         return action("select_card_reward", card_index=best_idx)

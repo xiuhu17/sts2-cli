@@ -2866,8 +2866,11 @@ public partial class RunSimulator
             }
             catch (Exception ex)
             {
-                Log($"Generate rewards: {ex.Message}");
+                // Never leave the room as if there had been no rewards: the player would lose
+                // them without being asked.
+                Log($"Generate rewards: {ex}");
                 _pendingRewards = null;
+                return MarkStuck($"combat rewards could not be generated: {ex.Message}");
             }
         }
 
@@ -3829,6 +3832,12 @@ public partial class RunSimulator
             };
         }
         // Nothing to choose from: close the picking session (CompleteWithNoRelics) and leave.
+        // Relics still on offer here (a prompt in front of them) must never be skipped for the
+        // player.
+        IReadOnlyList<RelicModel>? left = null;
+        try { left = RunManager.Instance.TreasureRoomRelicSynchronizer?.CurrentRelics; } catch { }
+        if (left is { Count: > 0 })
+            return MarkStuck("treasure relics are on offer but no treasure_relic decision could be shown");
         return FinishTreasure(treasureRoom, relicIndex: null);
     }
 
@@ -3915,7 +3924,12 @@ public partial class RunSimulator
                 }
             }
         }
-        catch (Exception ex) { Log($"Treasure relic pick: {ex.Message}"); }
+        catch (Exception ex)
+        {
+            // Don't move on as if the pick had worked: the relic would be lost silently.
+            Log($"Treasure relic pick: {ex}");
+            return MarkStuck($"treasure relic could not be resolved: {ex.Message}");
+        }
 
         return CompleteTreasureRoom(treasureRoom);
     }
