@@ -185,12 +185,17 @@ class Game:
             elif dec == "bundle_select" and bundle is not None:
                 state = self.act("select_bundle", bundle_index=bundle)
             elif dec == "card_select" and (cards is not None or cards_if_required is not None):
-                can_skip = bool(self._legal(state, "skip_select"))
+                cancel = bool(self._legal(state, "skip_select"))
+                # A min-0 screen without a cancel button is skipped by confirming nothing.
+                can_skip = cancel or state.get("min_select") == 0
                 pick = cards if (cards != "skip" or can_skip) else cards_if_required
                 if cards_if_required is not None and not can_skip:
                     pick = cards_if_required
                 assert pick is not None, f"this card_select can't be skipped: {state.get('min_select')}"
-                state = self.act("skip_select") if pick == "skip" else self.select(state, pick)
+                if pick == "skip":
+                    state = self.act("skip_select") if cancel else self.act("select_cards", indices="")
+                else:
+                    state = self.select(state, pick)
             elif dec == "rewards" and rewards == "proceed":
                 state = self.act("proceed")
             else:

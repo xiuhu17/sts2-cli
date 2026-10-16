@@ -153,8 +153,11 @@ class TestCardSelectPrefs:
         assert playable
         state = game.act("play_card", card_index=playable[0]["index"])
         assert state["decision"] == "card_select" and state["screen"] == "choose_a_card"
-        assert state["min_select"] == (0 if can_skip else 1)
+        # A card is picked by clicking it (no confirm-with-nothing); leaving is the Skip button.
+        assert state["min_select"] == 1 and state["cancelable"] is can_skip
         assert ("skip_select" in actions(state)) is can_skip
+        assert not any(a.get("args", {}).get("indices") == "" for a in state["legal_actions"])
+        assert game.act("select_cards", indices="")["type"] == "error"
         if not can_skip:
             assert game.act("skip_select")["code"] == "illegal_action"
             state = game.act("select_cards", indices="0")
@@ -169,6 +172,78 @@ class TestCardSelectPrefs:
         assert state["min_select"] == 1
         r = game.act("select_cards", indices="")
         assert r["type"] == "error"
+
+    def test_kifuda_confirms_with_nothing_selected(self, game):
+        """Kifuda.AfterObtained: CardSelectorPrefs(enchant, 0, 3), Cancelable false. The deck
+        enchant screen has no close button, but its confirm button is enabled with nothing
+        selected (MinSelect != MaxSelect, 0 >= MinSelect): select_cards with no index."""
+        to_map(game, "kif1")
+        game.set_player(deck=["STRIKE_IRONCLAD"] * 3 + ["DEFEND_IRONCLAD"] * 3)
+        state = game.set_player(obtain_relic="KIFUDA")
+        assert state["decision"] == "card_select" and state["purpose"] == "enchant"
+        assert state["min_select"] == 0 and state["max_select"] == 3 and state["cancelable"] is False
+        assert state["legal_actions"] == [{"action": "select_cards", "choose": {
+            "from": [c["index"] for c in state["cards"]], "min": 0, "max": 3}}], state["legal_actions"]
+        err = game.act("skip_select")
+        assert err["code"] == "illegal_action" and "select_cards" in err["message"]
+        state = game.act("select_cards", indices=[])  # [] and "" both mean "confirm, nothing chosen"
+        assert state["decision"] == "map_select", state
+        assert not any(c.get("enchantment") for c in game.send({"cmd": "get_deck"})["cards"])
+
+    def test_kifuda_enchants_the_chosen_cards(self, game):
+        to_map(game, "kif2")
+        game.set_player(deck=["STRIKE_IRONCLAD"] * 3 + ["DEFEND_IRONCLAD"] * 3)
+        state = game.set_player(obtain_relic="KIFUDA")
+        state = game.act("select_cards", indices="0,1")
+        assert state["decision"] == "map_select", state
+        assert sum(1 for c in game.send({"cmd": "get_deck"})["cards"] if c.get("enchantment")) == 2
+
+    def test_optional_hand_selection_confirms_nothing(self, game):
+        """Purity: FromHand(prefs 0..N). NPlayerHand's confirm button is enabled once
+        MinSelect (0) cards are picked, and the hand has no cancel button."""
+        to_map(game, "pur1")
+        game.set_player(deck=["PURITY"] * 5 + ["STRIKE_IRONCLAD"] * 5)
+        state = game.enter_room("combat", encounter="SHRINKER_BEETLE_WEAK")
+        purity = next(c for c in state["hand"] if c["name"] == "Purity")
+        hand_before = len(state["hand"])
+        state = game.act("play_card", card_index=purity["index"])
+        assert state["decision"] == "card_select" and state["screen"] == "hand"
+        assert state["min_select"] == 0 and state["cancelable"] is False
+        assert "skip_select" not in actions(state)
+        choose = next(a["choose"] for a in state["legal_actions"] if a["action"] == "select_cards")
+        assert choose["min"] == 0
+        state = game.act("select_cards", indices="")
+        assert state["decision"] == "combat_play"
+        assert len(state["hand"]) == hand_before - 1  # only Purity left the hand
+
+    def test_select_cards_needs_indices(self, game):
+        to_map(game, "kif3")
+        game.set_player(obtain_relic="KIFUDA")
+        r = game.send({"cmd": "action", "action": "select_cards", "args": {"indices": None}})
+        assert r["type"] == "error"
+        r = game.send({"cmd": "action", "action": "select_cards"})
+        assert r["type"] == "error"
+
+
+class TestUpgradePreviewLiveCost:
+    def test_temporary_cost_shows_in_after_upgrade(self, game):
+        """NUpgradePreview upgrades a clone of the card itself (CardScope.CloneCard), so a cost
+        changed this turn (Enlightenment: SetThisTurnOrUntilPlayed(1)) stays on the preview.
+        The deck's Bash (2) was cached first; the hand's Bash costs 1 and must preview 1."""
+        to_map(game, "up1")
+        game.set_player(deck=["ENLIGHTENMENT", "ARMAMENTS", "BASH", "BASH", "STRIKE_IRONCLAD"])
+        state = game.enter_room("combat", encounter="SHRINKER_BEETLE_WEAK")
+        deck_bash = next(c for c in game.send({"cmd": "get_deck", "upgrades": True})["cards"] if c["name"] == "Bash")
+        assert deck_bash["cost"] == 2 and deck_bash["after_upgrade"]["cost"] == 2
+        state = game.act("play_card", card_index=next(c["index"] for c in state["hand"] if c["name"] == "Enlightenment"))
+        assert [c["cost"] for c in state["hand"] if c["name"] == "Bash"] == [1, 1]
+        state = game.act("play_card", card_index=next(c["index"] for c in state["hand"] if c["name"] == "Armaments"))
+        assert state["decision"] == "card_select" and state["purpose"] == "upgrade"
+        bashes = [c for c in state["cards"] if c["name"] == "Bash"]
+        assert [(c["cost"], c["after_upgrade"]["cost"]) for c in bashes] == [(1, 1), (1, 1)], bashes
+        # The deck copy is unchanged (combat costs live on the combat card).
+        deck_bash = next(c for c in game.send({"cmd": "get_deck", "upgrades": True})["cards"] if c["name"] == "Bash")
+        assert deck_bash["after_upgrade"]["cost"] == 2
 
 
 class TestRoomFlow:

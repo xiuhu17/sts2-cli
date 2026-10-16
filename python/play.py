@@ -1896,12 +1896,6 @@ def play(character, seed=None, auto=False, ascension=0, log=True,
 
             dec = state.get("decision", "")
 
-            if state.get("softlocked"):
-                # The game shows no button here: nothing can be done (see force_leave_room).
-                print(f"\n  {c(t('SOFTLOCK','软锁'), 'red')}: {state.get('softlock_reason')}")
-                print(f"  {state.get('message', '')}")
-                break
-
             if dec == "game_over":
                 victory = state.get("victory", False)
                 p = state.get("player", {})
@@ -1968,6 +1962,17 @@ def play(character, seed=None, auto=False, ascension=0, log=True,
                     state = send(potion_command(state, *pkeys[choice]))
                     return True
                 return False
+
+            if state.get("softlocked"):
+                # The game shows no button that moves on (see force_leave_room); only the potion
+                # belt still works there.
+                print(f"\n  {c(t('SOFTLOCK','软锁'), 'red')}: {state.get('softlock_reason')}")
+                print(f"  {state.get('message', '')}")
+                if not pkeys:
+                    break
+                key = get_input(phint + t(" (or quit)", "（或 quit 退出）"), set(pkeys), state=state)
+                _potion_or(key)
+                continue
 
             if dec == "map_select":
                 _writeback_continue_save(send, native_save_path)
@@ -2115,9 +2120,14 @@ def play(character, seed=None, auto=False, ascension=0, log=True,
                 singles = {str(i) for i in _arg_values(state, "select_cards", "indices")}
                 multi = next((a["choose"] for a in _legal_of(state, "select_cards") if "choose" in a), None)
                 can_skip = bool(_legal_of(state, "skip_select"))
+                # min 0 without a cancel button: the confirm button works with nothing selected.
+                can_none = "" in singles or bool(multi and multi.get("min") == 0)
+                singles.discard("")
                 valid = set(singles) | ({str(i) for i in multi["from"]} if multi else set())
                 if can_skip:
                     valid.add("s")
+                if can_none:
+                    valid.add("n")
                 skip_word = t("(s)kip" if not state.get("cancelable") else "(s) cancel",
                               "(s)跳过" if not state.get("cancelable") else "(s)取消")
 
@@ -2131,6 +2141,8 @@ def play(character, seed=None, auto=False, ascension=0, log=True,
                     prompt = t("Card index", "卡牌编号")
                 if can_skip:
                     prompt += t(f", or {skip_word}", f"，或 {skip_word}")
+                if can_none:
+                    prompt += t(", or (n) confirm with none", "，或 (n) 不选直接确认")
                 if phint:
                     prompt += f", {phint}"
                 choice = get_input(prompt, valid | set(pkeys), state=state,
@@ -2140,6 +2152,8 @@ def play(character, seed=None, auto=False, ascension=0, log=True,
                     continue
                 if choice == "s":
                     state = send({"cmd": "action", "action": "skip_select"})
+                elif choice == "n":
+                    state = send({"cmd": "action", "action": "select_cards", "args": {"indices": ""}})
                 else:
                     state = send({"cmd": "action", "action": "select_cards",
                                  "args": {"indices": choice}})

@@ -22,8 +22,9 @@ namespace Sts2Headless;
 /// said so far are serialized as "dialogue".</item>
 /// <item>Softlocks: rooms where the game shows no clickable button (every event option locked,
 /// an unfinished event with no options, a rest site whose options are all disabled before any
-/// was used). The decision is returned with empty legal_actions and "softlocked": true; the
-/// only way out is the non-game <c>force_leave_room</c> command behind STS2_SOFTLOCK_ESCAPE=1.</item>
+/// was used). The decision is returned with "softlocked": true and only the potion belt's actions
+/// in legal_actions (use AnyTime potions, discard); the only way out is the non-game
+/// <c>force_leave_room</c> command behind STS2_SOFTLOCK_ESCAPE=1.</item>
 /// </list>
 /// </summary>
 public partial class RunSimulator
@@ -199,7 +200,8 @@ public partial class RunSimulator
     {
         state["softlocked"] = true;
         state["softlock_reason"] = why;
-        state["message"] = "Softlock: " + why + ". The real game has no button to click here, so the run can't go on. " +
+        state["message"] = "Softlock: " + why + ". The real game has no button here that moves on, so the run can't go on " +
+                           "(the potion belt still works: legal_actions lists the potions you can use or discard). " +
                            (SoftlockEscapeEnabled
                                ? "STS2_SOFTLOCK_ESCAPE=1 is set: {\"cmd\":\"force_leave_room\"} leaves the room (not game behaviour)."
                                : "Start the engine with STS2_SOFTLOCK_ESCAPE=1 to allow {\"cmd\":\"force_leave_room\"} (not game behaviour).");
