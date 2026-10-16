@@ -98,6 +98,15 @@ class Program
         // waits for each result with a deadline. If the engine wedges (a game flow that never
         // completes), the client gets an engine_timeout error instead of blocking forever, and
         // the process refuses further commands so the client restarts it.
+        if (args.Contains("--debug")) EnableDebugCommands();
+        Serve();
+    }
+
+    // Separate from Main so nothing that references game types is JIT-compiled before the
+    // assembly resolver above is installed.
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    static void Serve()
+    {
         var engine = new EngineThread();
         var sim = engine.Run(() => new RunSimulator(), TimeSpan.FromMinutes(5)).Result!;
         WriteLine(new Dictionary<string, object?> { ["type"] = "ready", ["version"] = "0.2.0" });
@@ -121,6 +130,15 @@ class Program
                 continue;
             }
 
+            if (cmd.ValueKind != JsonValueKind.Object || !cmd.TryGetProperty("cmd", out var cmdProp)
+                || cmdProp.ValueKind != JsonValueKind.String)
+            {
+                WriteLine(BadRequest("Each line must be a JSON object with a string 'cmd', e.g. {\"cmd\":\"get_state\"}. " +
+                                     $"Commands: {string.Join(", ", Commands)}"));
+                continue;
+            }
+            var cmdName = cmdProp.GetString() ?? "";
+
             if (wedged)
             {
                 if (IsQuit(cmd))
@@ -138,8 +156,13 @@ class Program
 
             var job = engine.Run(() =>
             {
+                sim.BeforeCommand(cmdName);
                 var r = HandleCommand(sim, cmd);
-                if (r != null) LegalActions.Attach(r);
+                if (r != null)
+                {
+                    LegalActions.Attach(r);
+                    r = sim.AfterCommand(cmdName, r);
+                }
                 return r;
             }, timeout);
 
@@ -156,7 +179,9 @@ class Program
             else if (job.Error != null)
             {
                 var ex = job.Error;
-                result = new Dictionary<string, object?> { ["type"] = "error", ["message"] = $"{ex.GetType().Name}: {ex.Message}", ["stack_trace"] = ex.ToString() };
+                Console.Error.WriteLine($"[ERROR] {line}: {ex}");
+                result = new Dictionary<string, object?> { ["type"] = "error", ["code"] = "exception", ["message"] = $"{ex.GetType().Name}: {ex.Message}" };
+                if (DebugTraces()) result["stack_trace"] = ex.ToString();
             }
             else
             {
@@ -174,6 +199,13 @@ class Program
             }
         }
     }
+
+    // RunSimulator is only touched from methods JIT-compiled after the assembly resolver is set up.
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    static void EnableDebugCommands() => RunSimulator.DebugCommands = true;
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    static bool DebugTraces() => RunSimulator.DebugTraces;
 
     static bool IsQuit(JsonElement cmd) =>
         cmd.ValueKind == JsonValueKind.Object && cmd.TryGetProperty("cmd", out var c)
@@ -218,36 +250,80 @@ class Program
         }
     }
 
+    static readonly string[] Commands =
+    {
+        "start_run", "action", "get_state", "get_deck", "get_relics", "get_potions", "get_piles", "get_card",
+        "get_map", "load_save", "write_continue_save", "help", "quit",
+    };
+
+    static readonly HashSet<string> DebugOnly = new() { "set_player", "enter_room", "set_draw_order", "__debug_sleep" };
+
+    static Dictionary<string, object?> BadRequest(string message) =>
+        new() { ["type"] = "error", ["code"] = "bad_request", ["message"] = message };
+
+    static string? Str(JsonElement cmd, string name, out Dictionary<string, object?>? error)
+    {
+        error = null;
+        if (!cmd.TryGetProperty(name, out var v) || v.ValueKind == JsonValueKind.Null) return null;
+        if (v.ValueKind != JsonValueKind.String) { error = BadRequest($"'{name}' must be a string"); return null; }
+        return v.GetString();
+    }
+
     static Dictionary<string, object?>? HandleCommand(RunSimulator sim, JsonElement cmd)
     {
         var cmdType = cmd.GetProperty("cmd").GetString() ?? "";
+        if (DebugOnly.Contains(cmdType) && !RunSimulator.DebugCommands)
+            return new Dictionary<string, object?>
+            {
+                ["type"] = "error", ["code"] = "debug_disabled",
+                ["message"] = $"'{cmdType}' is a debug command (it changes or reveals state a player can't); " +
+                              "start the engine with STS2_DEBUG=1 or --debug to use it.",
+            };
         switch (cmdType)
         {
             case "start_run":
+            {
+                var ascension = 0;
+                if (cmd.TryGetProperty("ascension", out var asc) && asc.ValueKind != JsonValueKind.Null)
+                {
+                    if (asc.ValueKind != JsonValueKind.Number || !asc.TryGetInt32(out ascension) || ascension < 0 || ascension > 10)
+                        return BadRequest($"'ascension' must be an integer 0-10, got {asc.GetRawText()}");
+                }
+                var character = Str(cmd, "character", out var e1); if (e1 != null) return e1;
+                var seed = Str(cmd, "seed", out var e2); if (e2 != null) return e2;
+                var langArg = Str(cmd, "lang", out var e3); if (e3 != null) return e3;
+                sim.OmitDeck = ReadBool(cmd, "omit_deck");
                 return sim.StartRun(
-                    cmd.TryGetProperty("character", out var ch) ? ch.GetString() ?? "Ironclad" : "Ironclad",
-                    cmd.TryGetProperty("ascension", out var asc) ? asc.GetInt32() : 0,
-                    cmd.TryGetProperty("seed", out var s) ? s.GetString() : null,
-                    cmd.TryGetProperty("lang", out var lang) ? lang.GetString() ?? "en" : "en",
+                    character ?? "Ironclad",
+                    ascension,
+                    seed,
+                    langArg ?? "en",
                     ReadBool(cmd, "manual_rewards"),
                     cmd.TryGetProperty("modifiers", out var mods) && mods.ValueKind == JsonValueKind.Array
                         ? mods.EnumerateArray().Select(m => m.GetString() ?? "").ToList() : null,
                     cmd.TryGetProperty("game_mode", out var gm) ? gm.GetString() : null,
                     cmd.TryGetProperty("profile", out var prof) ? prof.GetString() : null
                 );
+            }
 
             case "action":
             {
-                var action = cmd.GetProperty("action").GetString() ?? "";
+                if (!cmd.TryGetProperty("action", out var actElem) || actElem.ValueKind != JsonValueKind.String)
+                    return BadRequest("'action' must be a string, e.g. {\"cmd\":\"action\",\"action\":\"end_turn\"}; " +
+                                      "send one entry of legal_actions");
+                var action = actElem.GetString() ?? "";
                 Dictionary<string, object?>? actionArgs = null;
-                if (cmd.TryGetProperty("args", out var argsElem))
+                if (cmd.TryGetProperty("args", out var argsElem) && argsElem.ValueKind != JsonValueKind.Null)
                 {
+                    if (argsElem.ValueKind != JsonValueKind.Object)
+                        return BadRequest("'args' must be an object, e.g. {\"card_index\":0}");
                     actionArgs = new Dictionary<string, object?>();
                     foreach (var prop in argsElem.EnumerateObject())
                     {
                         actionArgs[prop.Name] = prop.Value.ValueKind switch
                         {
-                            JsonValueKind.Number => prop.Value.GetInt32(),
+                            // Non-integers are kept as doubles so validation can name the bad arg.
+                            JsonValueKind.Number => prop.Value.TryGetInt32(out var iv) ? (object)iv : prop.Value.GetDouble(),
                             JsonValueKind.String => prop.Value.GetString(),
                             JsonValueKind.True => true,
                             JsonValueKind.False => false,
@@ -257,7 +333,7 @@ class Program
                         };
                     }
                 }
-                return sim.ExecuteAction(action, actionArgs);
+                return sim.Act(action, actionArgs);
             }
 
             case "load_save":
@@ -273,12 +349,52 @@ class Program
                 if (saveJson == null)
                     return new Dictionary<string, object?> { ["type"] = "error", ["message"] = "Provide 'path' or 'json' for load_save" };
                 var loadLang = cmd.TryGetProperty("lang", out var le) ? (le.GetString() ?? "en") : "en";
+                sim.OmitDeck = ReadBool(cmd, "omit_deck");
                 return sim.LoadSave(saveJson, loadLang, ReadBool(cmd, "manual_rewards"));
             }
             case "get_map":
                 return sim.GetFullMap();
 
-            case "__debug_sleep" when Environment.GetEnvironmentVariable("STS2_DEBUG_COMMANDS") == "1":
+            case "get_state":
+            case "state":
+                return sim.GetState();
+
+            case "get_deck":
+                return sim.GetDeck(ReadBool(cmd, "upgrades"));
+
+            case "get_relics":
+                return sim.GetRelics();
+
+            case "get_potions":
+                return sim.GetPotions();
+
+            case "get_piles":
+            {
+                var pile = Str(cmd, "pile", out var pe); if (pe != null) return pe;
+                return sim.GetPiles(pile?.ToLowerInvariant());
+            }
+
+            case "get_card":
+            {
+                var id = Str(cmd, "id", out var ie); if (ie != null) return ie;
+                string? where = null; int? index = null;
+                foreach (var (key, loc) in new[] { ("deck_index", "deck"), ("hand_index", "hand"), ("index", "deck") })
+                {
+                    if (!cmd.TryGetProperty(key, out var iv)) continue;
+                    if (iv.ValueKind != JsonValueKind.Number || !iv.TryGetInt32(out var n))
+                        return BadRequest($"'{key}' must be an integer");
+                    where = loc; index = n;
+                    break;
+                }
+                if (id == null && index == null)
+                    return BadRequest("get_card needs deck_index, hand_index or id");
+                return sim.GetCard(where, index, id, ReadBool(cmd, "upgraded"));
+            }
+
+            case "help":
+                return RunSimulator.Help();
+
+            case "__debug_sleep":
                 // Test hook for the command watchdog: blocks the engine thread.
                 Thread.Sleep(cmd.TryGetProperty("ms", out var ms) ? ms.GetInt32() : 60000);
                 return new Dictionary<string, object?> { ["type"] = "ok" };
@@ -348,7 +464,11 @@ class Program
             }
 
             default:
-                return new Dictionary<string, object?> { ["type"] = "error", ["message"] = $"Unknown command: {cmdType}" };
+                return new Dictionary<string, object?>
+                {
+                    ["type"] = "error", ["code"] = "unknown_command",
+                    ["message"] = $"Unknown command '{cmdType}'. Commands: {string.Join(", ", Commands)}",
+                };
         }
     }
 

@@ -1629,9 +1629,12 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0, log=True,
             if state.get("type") == "error":
                 print(f"  {c(t('Error:','错误:'), 'red')} {state.get('message', '?')}")
                 if state.get("code") in ("engine_stuck", "restart_required"):
-                    # The run can't continue; retrying 'proceed' would loop forever.
+                    # The run can't continue; retrying would loop forever.
                     break
-                state = send({"cmd": "action", "action": "proceed"})
+                # Re-show the current decision (errors don't change the game).
+                state = send({"cmd": "get_state"})
+                if not state or state.get("type") == "error":
+                    break
                 continue
 
             dec = state.get("decision", "")
@@ -1958,15 +1961,16 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0, log=True,
 
                 state = send({"cmd": "action", "action": "choose_option",
                              "args": {"option_index": int(choice)}})
-                if state and state.get("type") == "error":
-                    state = send({"cmd": "action", "action": "leave_room"})
 
             elif dec == "event_choice":
                 show_event(state)
                 options = state.get("options", [])
                 unlocked = [o for o in options if not o.get("is_locked")]
                 valid = {str(o["index"]): o for o in unlocked}
-                valid["leave"] = None
+                # Leaving is only possible when the event offers no choice (as in the game).
+                can_leave = any(a.get("action") == "leave_room" for a in state.get("legal_actions", []))
+                if can_leave:
+                    valid["leave"] = None
 
                 # Save state before choice to show diff
                 old_relics = set(n(r.get("name","?")) for r in state.get("player",{}).get("relics",[]))
@@ -1979,15 +1983,15 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0, log=True,
                 if auto:
                     choice = str(unlocked[0]["index"]) if unlocked else "leave"
                 else:
-                    choice = get_input(t("Choose option [index] or (leave)", "选择 [编号] 或 (leave)离开"), set(valid.keys()), state=state)
+                    prompt = (t("Choose option [index] or (leave)", "选择 [编号] 或 (leave)离开") if can_leave
+                              else t("Choose option [index]", "选择 [编号]"))
+                    choice = get_input(prompt, set(valid.keys()), state=state)
 
                 if choice == "leave":
                     state = send({"cmd": "action", "action": "leave_room"})
                 else:
                     state = send({"cmd": "action", "action": "choose_option",
                                  "args": {"option_index": int(choice)}})
-                    if state and state.get("type") == "error":
-                        state = send({"cmd": "action", "action": "leave_room"})
 
                 # Show what changed
                 if state and state.get("player"):

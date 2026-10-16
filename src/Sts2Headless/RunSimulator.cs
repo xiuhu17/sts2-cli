@@ -263,7 +263,7 @@ internal class LocLookup
 /// through map navigation, combat, events, rest sites, shops, and act transitions.
 /// Drives the engine forward until it hits a "decision point" requiring external input.
 /// </summary>
-public class RunSimulator
+public partial class RunSimulator
 {
     private static int? _expectedSaveSchemaVersion;
     private static bool _expectedSaveSchemaVersionReady;
@@ -314,7 +314,9 @@ public class RunSimulator
             {
                 var m = ResolveModifier(name);
                 if (m == null)
-                    return Error($"Unknown modifier '{name}'. Known: {string.Join(", ", KnownModifiers())}");
+                    return Error(name.Trim().ToUpperInvariant().StartsWith("CHARACTER_CARDS")
+                        ? $"Modifier '{name}' needs a character: CHARACTER_CARDS:<Ironclad|Silent|Defect|Regent|Necrobinder>"
+                        : $"Unknown modifier '{name}'. Known: {string.Join(", ", KnownModifiers())}");
                 modifierModels.Add(m);
             }
             ProgressState? progress = null;
@@ -1106,6 +1108,8 @@ public class RunSimulator
                     var enemies = state.Enemies.Where(e => e != null && e.IsAlive).ToList();
                     if (targetIndex >= 0 && targetIndex < enemies.Count)
                         target = enemies[targetIndex];
+                    else
+                        return Error($"Invalid target_index {targetIndex} (alive enemies: 0-{enemies.Count - 1})");
                 }
             }
             // No target_index given: only auto-target when the choice is unambiguous
@@ -1676,6 +1680,11 @@ public class RunSimulator
 
     private Dictionary<string, object?> DoSkipSelect(Player player)
     {
+        if (!_cardSelector.HasPending)
+            return Error("No pending card selection");
+        if (_cardSelector.PendingMinSelect > 0 && _cardSelector.PendingContext?.Cancelable != true
+            && (_cardSelector.PendingOptions?.Count ?? 0) > 0)
+            return Error($"This selection can't be skipped: choose at least {_cardSelector.PendingMinSelect} card(s) with select_cards");
         if (_cardSelector.HasPending)
         {
             Log("Skipping card selection");
@@ -1729,6 +1738,8 @@ public class RunSimulator
                     var enemies = combatState.Enemies.Where(e => e != null && e.IsAlive).ToList();
                     if (targetIdx >= 0 && targetIdx < enemies.Count)
                         target = enemies[targetIdx];
+                    else
+                        return Error($"Invalid target_index {targetIdx} (alive enemies: 0-{enemies.Count - 1})");
                 }
             }
             // Same single-enemy rule as play_card: only auto-target when unambiguous (#79).
@@ -2083,7 +2094,7 @@ public class RunSimulator
                 };
             }).ToList();
 
-            return new Dictionary<string, object?>
+            var selectState = new Dictionary<string, object?>
             {
                 ["type"] = "decision",
                 ["decision"] = "card_select",
@@ -2093,6 +2104,8 @@ public class RunSimulator
                 ["max_select"] = _cardSelector.PendingMaxSelect,
                 ["player"] = PlayerSummary(player),
             };
+            AugmentCardSelect(selectState, player);
+            return selectState;
         }
 
         // Rewards offered by an event (manual_rewards)
@@ -2802,7 +2815,11 @@ public class RunSimulator
             _syncCtx.Pump();
             ((IAsyncResult)t).AsyncWaitHandle.WaitOne(1);
         }
-        if (t != null && t.IsFaulted) Log($"Event reward claim failed: {t.Exception?.InnerException}");
+        if (t != null && t.IsFaulted)
+        {
+            Log($"Event reward claim failed: {t.Exception?.InnerException}");
+            NoteFlowFault(t.Exception);
+        }
         if (t != null && t.IsCompleted) _eventClaim = null;
     }
 
@@ -3773,7 +3790,10 @@ public class RunSimulator
         if (task != null && task.IsCompleted)
         {
             if (task.IsFaulted)
+            {
                 Log($"Background task failed: {task.Exception?.InnerException}");
+                NoteFlowFault(task.Exception);
+            }
             if (ReferenceEquals(_backgroundTask, task)) _backgroundTask = null;
         }
         return HasPendingPrompt;
@@ -4111,7 +4131,7 @@ public class RunSimulator
                 };
             }).Where(x => x != null).ToList(),
             ["deck_size"] = player.Deck?.Cards?.Count(c => c != null) ?? 0,
-            ["deck"] = player.Deck?.Cards?.Where(c => c != null).Select(c =>
+            ["deck"] = OmitDeck ? null : player.Deck?.Cards?.Where(c => c != null).Select(c =>
             {
                 var dstats = new Dictionary<string, object?>();
                 try { foreach (var dv in c.DynamicVars.Values) dstats[dv.Name.ToLowerInvariant()] = (int)dv.BaseValue; } catch { }
@@ -4232,6 +4252,7 @@ public class RunSimulator
         PatchTalkCmd();
         PatchHeadlessPresentation();
         HeadlessUiGuard.Install(typeof(CombatManager).Assembly);
+        InstallAgentPatches();
 
         // Initialize localization system (needed for events, cards, etc.)
         InitLocManager();
@@ -4296,9 +4317,20 @@ public class RunSimulator
 
     private static ModifierModel? ResolveModifier(string name)
     {
-        var entry = name.Trim().ToUpperInvariant().Replace(' ', '_');
+        // CHARACTER_CARDS needs a character, as in the custom-run screen (one tickbox per
+        // character): "CHARACTER_CARDS:Silent".
+        var parts = name.Split(':', 2);
+        var entry = parts[0].Trim().ToUpperInvariant().Replace(' ', '_');
         var canonical = ModelDb.All.OfType<ModifierModel>().FirstOrDefault(m => m.Id.Entry == entry);
-        return canonical?.ToMutable() as ModifierModel;
+        var mutable = canonical?.ToMutable() as ModifierModel;
+        if (mutable is MegaCrit.Sts2.Core.Models.Modifiers.CharacterCards cc)
+        {
+            var who = parts.Length > 1 ? parts[1].Trim().ToUpperInvariant() : "";
+            var character = ModelDb.AllCharacters.FirstOrDefault(c => c.Id.Entry == who);
+            if (character == null) return null;
+            cc.CharacterModel = character.Id;
+        }
+        return mutable;
     }
 
     private static readonly HashSet<string> KnownCharacters =
@@ -4555,6 +4587,9 @@ public class RunSimulator
         public int PendingMinSelect { get; private set; }
         public int PendingMaxSelect { get; private set; }
         public string PendingPrompt { get; private set; } = "";
+        // What the game's selection screen says about this prompt (purpose, prompt text,
+        // cancel button, ...), captured from CardSelectCmd by SelectPromptPatches.
+        public SelectContext? PendingContext { get; private set; }
         private TaskCompletionSource<IEnumerable<CardModel>>? _pendingTcs;
 
         public bool HasPending => _pendingTcs != null && !_pendingTcs.Task.IsCompleted;
@@ -4563,14 +4598,22 @@ public class RunSimulator
             IEnumerable<CardModel> options, int minSelect, int maxSelect)
         {
             var optList = options.ToList();
+            var ctx = SelectPromptPatches.Take();
             if (optList.Count == 0)
                 return Task.FromResult<IEnumerable<CardModel>>(Array.Empty<CardModel>());
 
-            // If only one option and minSelect requires it, auto-select
-            if (optList.Count == 1 && minSelect >= 1)
+            // If only one option and minSelect requires it, auto-select -- unless the game's
+            // screen has a cancel button (rest-site Smith, shop removal): then backing out is
+            // a real choice.
+            if (optList.Count == 1 && minSelect >= 1 && ctx?.Cancelable != true)
                 return Task.FromResult<IEnumerable<CardModel>>(optList);
+            // A choose-a-card screen without a skip button requires a pick even though the
+            // game asks the selector for 0-1 cards.
+            if (ctx != null && ctx.ForceMinSelect > minSelect)
+                minSelect = Math.Min(ctx.ForceMinSelect, maxSelect);
 
             // Store pending selection and wait
+            PendingContext = ctx;
             PendingOptions = optList;
             PendingMinSelect = minSelect;
             PendingMaxSelect = maxSelect;
@@ -4588,6 +4631,7 @@ public class RunSimulator
             // request the next selection, which must not be wiped by this call.
             var tcs = _pendingTcs;
             PendingOptions = null;
+            PendingContext = null;
             _pendingTcs = null;
             tcs?.TrySetResult(selected);
         }
@@ -4604,6 +4648,7 @@ public class RunSimulator
             if (options == null || tcs == null) return null;
             var selected = indices.Where(i => i >= 0 && i < options.Count).Select(i => options[i]).ToList();
             PendingOptions = null;
+            PendingContext = null;
             _pendingTcs = null;
             return () => tcs.TrySetResult(selected);
         }
@@ -4613,6 +4658,7 @@ public class RunSimulator
         {
             var tcs = _pendingTcs;
             PendingOptions = null;
+            PendingContext = null;
             _pendingTcs = null;
             return tcs == null ? null : () => tcs.TrySetResult(Array.Empty<CardModel>());
         }
@@ -4631,6 +4677,7 @@ public class RunSimulator
         {
             var tcs = _pendingTcs;
             PendingOptions = null;
+            PendingContext = null;
             _pendingTcs = null;
             tcs?.TrySetResult(Array.Empty<CardModel>());
         }
@@ -5167,12 +5214,15 @@ public class RunSimulator
     {
         var inner = ex;
         while (inner.InnerException != null) inner = inner.InnerException;
-        return new Dictionary<string, object?>
+        var err = new Dictionary<string, object?>
         {
             ["type"] = "error",
+            ["code"] = "exception",
             ["message"] = $"{context}: {inner.GetType().Name}: {inner.Message}",
-            ["stack_trace"] = inner.StackTrace,
         };
+        // Stack traces are for engine developers, not agents (STS2_DEBUG=1 to include them).
+        if (DebugTraces) err["stack_trace"] = inner.StackTrace;
+        return err;
     }
 
     public Dictionary<string, object?> GetFullMap()

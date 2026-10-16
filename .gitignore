@@ -1,6 +1,7 @@
 decompiled/
 lib/
 bin/
+!/bin/
 obj/
 *.user
 *.suo

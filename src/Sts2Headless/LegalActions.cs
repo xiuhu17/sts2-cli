@@ -26,7 +26,7 @@ internal static class LegalActions
         }
     }
 
-    private static List<Dictionary<string, object?>> For(Dictionary<string, object?> r)
+    internal static List<Dictionary<string, object?>> For(Dictionary<string, object?> r)
     {
         var acts = new List<Dictionary<string, object?>>();
         var decision = r.GetValueOrDefault("decision") as string;
@@ -89,7 +89,8 @@ internal static class LegalActions
                         ["action"] = "select_cards",
                         ["choose"] = new Dictionary<string, object?> { ["from"] = from, ["min"] = Math.Min(Math.Max(min, 1), max), ["max"] = max },
                     });
-                if (min == 0)
+                // Skipping is selecting nothing (min 0) or the screen's cancel button.
+                if (min == 0 || r.GetValueOrDefault("cancelable") is true)
                     acts.Add(Act("skip_select"));
                 break;
             }

@@ -20,6 +20,8 @@ class Game:
         # Match the interactive launcher's default: resolve dependencies from lib,
         # never silently borrow missing assemblies from the Steam installation.
         env["STS2_GAME_DIR"] = os.path.join(os.path.dirname(os.path.dirname(PROJECT)), "..", "lib")
+        # The suite sets up scenarios with the debug commands (set_player, enter_room, ...).
+        env["STS2_DEBUG"] = "1"
         # stderr is discarded: an undrained PIPE fills up and blocks the engine.
         self.proc = subprocess.Popen(
             engine_command(DOTNET),
