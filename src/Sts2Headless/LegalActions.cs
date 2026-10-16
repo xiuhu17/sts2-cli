@@ -31,6 +31,9 @@ internal static class LegalActions
         var acts = new List<Dictionary<string, object?>>();
         var decision = r.GetValueOrDefault("decision") as string;
         var player = r.GetValueOrDefault("player") as Dictionary<string, object?>;
+        // The game shows nothing clickable here (every event option locked, a rest site with
+        // only disabled options before any was used): no action, "softlocked": true.
+        if (r.GetValueOrDefault("softlocked") is true) return acts;
 
         switch (decision)
         {
@@ -111,8 +114,9 @@ internal static class LegalActions
                 foreach (var o in options)
                     if (o.GetValueOrDefault("is_locked") is not true)
                         acts.Add(Act("choose_option", ("option_index", o["index"])));
-                if (acts.Count == 0)
-                    acts.Add(Act("leave_room"));
+                // NEventRoom has no exit button: with every option locked the event is a softlock.
+                // A modal popup (The Trial's abandon confirmation) covers the potion belt too.
+                if (r.ContainsKey("popup")) return acts;
                 break;
             }
 
@@ -120,7 +124,8 @@ internal static class LegalActions
                 foreach (var o in Items(r, "options"))
                     if (o.GetValueOrDefault("is_enabled") is not false)
                         acts.Add(Act("choose_option", ("option_index", o["index"])));
-                if (acts.Count == 0 || r.GetValueOrDefault("can_leave") is true)
+                // Proceed is shown only with no options left or after one was used (NRestSiteRoom).
+                if (r.GetValueOrDefault("can_leave") is true)
                     acts.Add(Act("leave_room"));
                 break;
 

@@ -17,7 +17,7 @@ def non_potion(state):
 
 
 def to_map(game, seed, **kw):
-    return game.skip_neow(game.send({"cmd": "start_run", "character": "Ironclad", "seed": seed, **kw}))
+    return game.neow(game.send({"cmd": "start_run", "character": "Ironclad", "seed": seed, **kw}), 0, cards=[0], rewards="proceed", bundle=0)
 
 
 def random_step(game, state, rng):
@@ -207,7 +207,7 @@ class TestRoomFlow:
 
     def test_hoarder_disables_card_removal(self, game):
         state = game.send({"cmd": "start_run", "character": "Ironclad", "seed": "flow4", "modifiers": ["HOARDER"]})
-        game.skip_neow(state)
+        game.neow(state, 0)
         game.set_player(gold=500)
         state = game.enter_room("shop")
         assert state["card_removal_available"] is False and "remove_card" not in actions(state)

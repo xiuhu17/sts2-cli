@@ -5,7 +5,7 @@ import pytest
 class TestRestSiteStructure:
     def test_rest_site_fields(self, game):
         state = game.start(seed="rs1")
-        game.skip_neow(state)
+        game.neow(state, 0)
         state = game.enter_room("rest_site")
         assert state["decision"] == "rest_site"
         for opt in state["options"]:
@@ -15,7 +15,7 @@ class TestRestSiteStructure:
 
     def test_has_heal_and_smith(self, game):
         state = game.start(seed="rs2")
-        game.skip_neow(state)
+        game.neow(state, 0)
         state = game.enter_room("rest_site")
         ids = {o["option_id"] for o in state["options"]}
         assert "HEAL" in ids
@@ -25,7 +25,7 @@ class TestRestSiteStructure:
 class TestRestSiteActions:
     def test_heal_restores_hp(self, game):
         state = game.start(seed="rsa1")
-        game.skip_neow(state)
+        game.neow(state, 0, rewards="proceed")
         game.set_player(hp=30, max_hp=80)
         state = game.enter_room("rest_site")
         heal = next((o for o in state["options"] if o["option_id"] == "HEAL" and o["is_enabled"]), None)
@@ -37,7 +37,7 @@ class TestRestSiteActions:
 
     def test_heal_caps_at_max(self, game):
         state = game.start(seed="rsa2")
-        game.skip_neow(state)
+        game.neow(state, 0)
         game.set_player(hp=79, max_hp=80)
         state = game.enter_room("rest_site")
         heal = next((o for o in state["options"] if o["option_id"] == "HEAL" and o["is_enabled"]), None)
@@ -48,7 +48,7 @@ class TestRestSiteActions:
 
     def test_smith_triggers_card_select(self, game):
         state = game.start(seed="rsa3")
-        game.skip_neow(state)
+        game.neow(state, 0)
         state = game.enter_room("rest_site")
         smith = next((o for o in state["options"] if o["option_id"] == "SMITH" and o["is_enabled"]), None)
         assert smith, "SMITH not available"

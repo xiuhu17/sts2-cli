@@ -1064,8 +1064,16 @@ def show_event(state):
     for line in state.get("dialogue") or []:
         who = event_display if line.get("speaker") == "ancient" else t("You", "你")
         print(f"  {c(who + ':', 'cyan')} {line.get('text', '')}")
+    pool = state.get("dialogue_pool") or []
+    if state.get("dialogue_random") and len(pool) > 1:
+        # The game draws the dialogue at random (unseeded): the line above is one of these.
+        print(c("  " + t(f"(the game shows one of {len(pool)} dialogues at random)",
+                         f"（游戏会从 {len(pool)} 段对话中随机显示一段）"), "dim"))
     if event_desc:
         print(f"  {c(event_desc, 'dim')}")
+    popup = state.get("popup")
+    if isinstance(popup, dict):
+        print(f"  {c(popup.get('header', ''), 'bold')} {popup.get('body', '')}")
     show_player(state.get("player", {}))
     print()
     for opt in state.get("options", []):
@@ -1857,6 +1865,12 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0, log=True,
                 continue
 
             dec = state.get("decision", "")
+
+            if state.get("softlocked"):
+                # The game shows no button here: nothing can be done (see force_leave_room).
+                print(f"\n  {c(t('SOFTLOCK','软锁'), 'red')}: {state.get('softlock_reason')}")
+                print(f"  {state.get('message', '')}")
+                break
 
             if dec == "game_over":
                 victory = state.get("victory", False)

@@ -14,50 +14,22 @@ def _legal(state, action):
 
 
 def _to_map(game, state):
-    state = game.skip_neow(state)
+    state = game.neow(state, 0, cards="skip", rewards="proceed")
     assert state["decision"] == "map_select", state
     return state
 
 
-def _finish_rooms(game, state, max_steps=400):
-    """Play / skip through rooms until the next map_select or game_over."""
+def _finish_rooms(game, state, max_steps=400, seen=None):
+    """Play the rooms out with HeuristicPolicy('tests') (python/policy.py) until the next
+    map_select or game_over."""
+    policy = game.policy()
     for _ in range(max_steps):
         d = state.get("decision")
         if d in ("map_select", "game_over"):
             return state
-        if d == "combat_play":
-            hand = [c for c in state["hand"] if c["can_play"] and c["cost"] <= state["energy"]
-                    and "Gambit" not in c["name"]]
-            if hand:
-                args = {"card_index": hand[0]["index"]}
-                if hand[0].get("target_type") == "AnyEnemy":
-                    args["target_index"] = state["enemies"][0]["index"]
-                state = game.act("play_card", **args)
-            else:
-                state = game.act("end_turn")
-        elif d == "card_reward":
-            state = game.act("skip_card_reward")
-        elif d == "event_choice":
-            opts = [o for o in state["options"] if not o.get("is_locked")]
-            state = (game.act("choose_option", option_index=opts[0]["index"]) if opts
-                     else game.act("leave_room"))
-        elif d == "card_select":
-            state = game.select_first(state)
-        elif d == "bundle_select":
-            state = game.act("select_bundle", bundle_index=0)
-        elif d == "rest_site":
-            en = [o for o in state["options"] if o.get("is_enabled", True)]
-            state = (game.act("choose_option", option_index=en[0]["index"]) if en
-                     else game.act("leave_room"))
-        elif d == "treasure_relic":
-            state = game.act("select_treasure_relic", relic_index=0)
-        elif d == "crystal_sphere":
-            x, y = state["hidden_cells"][0]
-            state = game.act("crystal_sphere_click", x=x, y=y, tool="big")
-        elif d == "shop":
-            state = game.act("leave_room")
-        else:
-            state = game.act("proceed")
+        if seen is not None:
+            seen.append((d, state.get("event_id")))
+        state = game.step(state, policy)
         assert state.get("type") != "error", state
     raise RuntimeError("room did not finish")
 
@@ -252,7 +224,7 @@ class TestContinueSave:
         try:
             state = _to_map(g, g.start(seed="e2"))
             c = state["choices"][0]
-            state = g.auto_play_combat(g.act("select_map_node", col=c["col"], row=c["row"]))
+            state = g.fight(g.act("select_map_node", col=c["col"], row=c["row"]))
             assert state["decision"] == "rewards"
             rewards = [(r["type"], r.get("amount"), r.get("id")) for r in state["rewards"]]
             state = g.open_card_reward(state)
@@ -288,7 +260,7 @@ class TestDoubleBoss:
         state = game.start(seed="x1", ascension=10)
         state = _to_map(game, state)
         game.set_player(max_hp=2000, hp=2000, deck=["BLUDGEON"] * 6 + ["DEMON_FORM"] * 2)
-        bosses = []
+        bosses, seen = [], []
         for _ in range(80):
             if state["decision"] == "game_over":
                 break
@@ -308,8 +280,10 @@ class TestDoubleBoss:
             state = game.act("select_map_node", col=pick["col"], row=pick["row"])
             if ctx["floor"] == 0:
                 assert abs(state["player"]["hp"] - (1000 + (mx - 1000) * 0.8)) <= 1, state["player"]["hp"]
-            state = _finish_rooms(game, state)
+            state = _finish_rooms(game, state, seen=seen)
         assert state["decision"] == "game_over" and state["victory"] is True, state
+        # The run is won through The Architect's event after the second boss (EnterNextAct).
+        assert seen[-1] == ("event_choice", "THE_ARCHITECT"), seen[-5:]
         assert state["context"]["second_boss"]["id"]
         act3 = [row for act, row in bosses if act == 3]
         assert len(act3) == 2 and act3[1] == act3[0] + 1, bosses

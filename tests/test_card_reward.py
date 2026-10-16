@@ -5,9 +5,9 @@ import pytest
 class TestCardReward:
     def test_card_reward_after_combat(self, game):
         state = game.start(seed="cr1")
-        game.skip_neow(state)
+        game.neow(state, 0, rewards="proceed")
         state = game.enter_room("combat", encounter="SHRINKER_BEETLE_WEAK")
-        state = game.auto_play_combat(state)
+        state = game.fight(state)
         # After combat the rewards screen lists the card reward; claiming it opens the cards.
         assert state["decision"] == "rewards"
         assert any(r["type"] == "card" for r in state["rewards"])
@@ -16,9 +16,9 @@ class TestCardReward:
 
     def test_card_reward_structure(self, game):
         state = game.start(seed="cr2")
-        game.skip_neow(state)
+        game.neow(state, 0, rewards="proceed")
         state = game.enter_room("combat", encounter="SHRINKER_BEETLE_WEAK")
-        state = game.open_card_reward(game.auto_play_combat(state))
+        state = game.open_card_reward(game.fight(state))
         if state["decision"] != "card_reward":
             pytest.skip("No card_reward after this fight")
         assert len(state["cards"]) > 0
@@ -29,9 +29,9 @@ class TestCardReward:
 
     def test_select_card_adds_to_deck(self, game):
         state = game.start(seed="cr3")
-        game.skip_neow(state)
+        game.neow(state, 0, rewards="proceed")
         state = game.enter_room("combat", encounter="SHRINKER_BEETLE_WEAK")
-        state = game.open_card_reward(game.auto_play_combat(state))
+        state = game.open_card_reward(game.fight(state))
         if state["decision"] != "card_reward":
             pytest.skip("No card_reward")
         deck_before = state["player"]["deck_size"]
@@ -41,9 +41,9 @@ class TestCardReward:
 
     def test_skip_card(self, game):
         state = game.start(seed="cr4")
-        game.skip_neow(state)
+        game.neow(state, 0)
         state = game.enter_room("combat", encounter="SHRINKER_BEETLE_WEAK")
-        state = game.open_card_reward(game.auto_play_combat(state))
+        state = game.open_card_reward(game.fight(state))
         if state["decision"] != "card_reward":
             pytest.skip("No card_reward")
         deck_before = state["player"]["deck_size"]

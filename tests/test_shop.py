@@ -5,7 +5,7 @@ import pytest
 class TestShopStructure:
     def test_shop_fields(self, game):
         state = game.start(seed="ss1")
-        game.skip_neow(state)
+        game.neow(state, 0)
         state = game.enter_room("shop")
         assert state["decision"] == "shop"
         assert "cards" in state
@@ -15,7 +15,7 @@ class TestShopStructure:
 
     def test_shop_cards_have_description(self, game):
         state = game.start(seed="ss2")
-        game.skip_neow(state)
+        game.neow(state, 0)
         state = game.enter_room("shop")
         for card in state["cards"]:
             assert isinstance(card["name"], str)
@@ -26,14 +26,14 @@ class TestShopStructure:
 
     def test_shop_cards_have_upgrade_preview(self, game):
         state = game.start(seed="ss3")
-        game.skip_neow(state)
+        game.neow(state, 0)
         state = game.enter_room("shop")
         has_upgrade = any(c.get("after_upgrade") for c in state["cards"])
         assert has_upgrade
 
     def test_shop_relics_have_description(self, game):
         state = game.start(seed="ss4")
-        game.skip_neow(state)
+        game.neow(state, 0, cards="skip")
         state = game.enter_room("shop")
         for r in state["relics"]:
             assert isinstance(r["name"], str)
@@ -41,7 +41,7 @@ class TestShopStructure:
 
     def test_shop_potions_have_description(self, game):
         state = game.start(seed="ss5")
-        game.skip_neow(state)
+        game.neow(state, 0, bundle=0)
         state = game.enter_room("shop")
         for p in state["potions"]:
             assert isinstance(p["name"], str)
@@ -51,7 +51,7 @@ class TestShopStructure:
 class TestShopBuy:
     def test_buy_card_reduces_gold(self, game):
         state = game.start(seed="sb1")
-        game.skip_neow(state)
+        game.neow(state, 0, cards="skip")
         game.set_player(gold=999)
         state = game.enter_room("shop")
         gold_before = state["player"]["gold"]
@@ -66,7 +66,7 @@ class TestShopBuy:
 
     def test_buy_insufficient_gold(self, game):
         state = game.start(seed="sb2")
-        game.skip_neow(state)
+        game.neow(state, 0, cards=[0])
         game.set_player(gold=0)
         state = game.enter_room("shop")
         stocked = [c for c in state["cards"] if c.get("is_stocked")]
@@ -76,7 +76,7 @@ class TestShopBuy:
 
     def test_leave_shop(self, game):
         state = game.start(seed="sb3")
-        game.skip_neow(state)
+        game.neow(state, 0)
         state = game.enter_room("shop")
         state = game.act("leave_room")
         assert state["decision"] == "map_select"
@@ -85,7 +85,7 @@ class TestShopBuy:
 class TestShopRemove:
     def test_remove_card_flow(self, game):
         state = game.start(seed="sr1")
-        game.skip_neow(state)
+        game.neow(state, 0)
         game.set_player(gold=999)
         state = game.enter_room("shop")
         deck_before = state["player"]["deck_size"]

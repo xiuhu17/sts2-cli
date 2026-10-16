@@ -577,12 +577,24 @@ public partial class RunSimulator
         catch (Exception ex) { return ErrorWithTrace("SetPlayer failed", ex); }
     }
 
-    public Dictionary<string, object?> EnterRoom(string roomType, string? encounter, string? eventId)
+    public Dictionary<string, object?> EnterRoom(string roomType, string? encounter, string? eventId, int? act = null)
     {
         try
         {
             if (_runState == null) return Error("No run in progress");
             var runState = _runState;
+            // Debug "act" (1-based): move to that act first (RunManager.EnterAct), e.g. to fight
+            // the last act's boss.
+            if (act != null)
+            {
+                if (act < 1 || act > runState.Acts.Count) return Error($"act must be 1..{runState.Acts.Count}");
+                if (act - 1 != runState.CurrentActIndex)
+                {
+                    RunManager.Instance.EnterAct(act.Value - 1, doTransition: false).GetAwaiter().GetResult();
+                    _syncCtx.Pump();
+                    WaitForActionExecutor();
+                }
+            }
             Log($"EnterRoom: type={roomType} encounter={encounter} event={eventId}");
 
             AbstractRoom room;
@@ -2054,6 +2066,9 @@ public partial class RunSimulator
             var localEvent = eventSync?.GetLocalEvent();
             if (localEvent is MegaCrit.Sts2.Core.Models.Events.FakeMerchant fakeMerchant && FakeMerchantOpen(fakeMerchant))
                 return Error("The Fake Merchant has no options: use buy_relic, use_potion or leave_room");
+            // The Trial's abandon-run popup is up: its Yes / No are the only buttons.
+            if (AbandonPopupOpen(localEvent))
+                return DoAbandonPopup(optionIndex);
             if (localEvent != null && localEvent.IsFinished)
             {
                 // The outcome page's only option is Proceed (NEventRoom.SetOptions).
@@ -2106,15 +2121,19 @@ public partial class RunSimulator
             var ev = RunManager.Instance.EventSynchronizer?.GetLocalEvent();
             if (ev is MegaCrit.Sts2.Core.Models.Events.FakeMerchant)
                 _finishedEventAcked = ev;
-            else if (ev != null && !ev.IsFinished && ev.CurrentOptions?.Any(o => !o.IsLocked) == true)
-                return Error("The event isn't over: choose one of its options");
+            else if (ev != null && !ev.IsFinished)
+                return Error(ev.CurrentOptions?.Any(o => !o.IsLocked) == true
+                    ? "The event isn't over: choose one of its options"
+                    : "The event isn't over and the game shows no way out (softlock); see force_leave_room");
             else
                 _finishedEventAcked = ev;
         }
         // NRestSiteRoom enables Proceed only once an option has been used (or none is left).
         if (_runState?.CurrentRoom is RestSiteRoom restRoom && !ReferenceEquals(_restChoiceRoom, restRoom)
-            && restRoom.Options?.Any(o => o.IsEnabled) == true)
-            return Error("Choose a rest site option first: the rest site can be left only after one is used");
+            && restRoom.Options?.Count > 0)
+            return Error(restRoom.Options.Any(o => o.IsEnabled)
+                ? "Choose a rest site option first: the rest site can be left only after one is used"
+                : "Every rest site option is disabled and the game shows no Proceed (softlock); see force_leave_room");
         try { RunManager.Instance.ProceedFromTerminalRewardsScreen().GetAwaiter().GetResult(); }
         catch { }
         _syncCtx.Pump();
@@ -2166,14 +2185,12 @@ public partial class RunSimulator
                     ForceToMap();
                     return MapSelectState();
                 }
-                // Final act boss → victory (same rule as DetectPostCombatState, #81).
-                if (IsLastAct())
-                {
-                    Log($"Final boss defeated via Proceed (Act {_runState!.CurrentActIndex + 1}), reporting victory");
-                    return GameOverState(true);
-                }
                 // No heal here: the next act's Ancient start node heals (AncientEventModel).
+                // After the last act's boss EnterNextAct enters The Architect's event room
+                // (RunManager.EnterNextAct); its Proceed wins the run (TheArchitect.WinRun).
+                if (IsLastAct()) Log($"Final boss defeated via Proceed (Act {_runState!.CurrentActIndex + 1}), entering The Architect");
                 RunManager.Instance.EnterNextAct().GetAwaiter().GetResult();
+                _syncCtx.Pump();
                 WaitForActionExecutor();
                 return DetectDecisionPoint();
             }
@@ -2195,10 +2212,11 @@ public partial class RunSimulator
 
         var player = _runState.Players[0];
 
-        // Check game over (death)
+        // Check game over (death). RunManager.WinRun also kills the player, in The Architect's
+        // room: that is the victory.
         if (player.Creature != null && player.Creature.IsDead)
         {
-            return GameOverState(false);
+            return GameOverState(WonAtArchitect());
         }
 
         // Crystal Sphere minigame waiting for cell clicks
@@ -2922,10 +2940,8 @@ public partial class RunSimulator
         _pendingRewards = null;
         _rewardsProcessed = true;
 
-        // Boss → next act, OR final victory after the last act's boss (#81). Act index is
-        // 0-based and STS2 has 3 acts (0/1/2); killing the Act-3 (index 2) boss has no next
-        // act — EnterNextAct NREs and DetectDecisionPoint falls through to an empty
-        // map_select. Report victory directly in that case.
+        // Boss → next act; after the last act's boss EnterNextAct enters The Architect's
+        // event room (RunManager.EnterNextAct), whose Proceed wins the run (TheArchitect.WinRun).
         if (combatRoom.RoomType == RoomType.Boss)
         {
             // Ascension 10: the first boss of the last act is followed by a second boss
@@ -2937,12 +2953,7 @@ public partial class RunSimulator
                 ForceToMap();
                 return MapSelectState();
             }
-            if (IsLastAct())
-            {
-                Log($"Final boss defeated (Act {_runState!.CurrentActIndex + 1}), reporting victory");
-                return GameOverState(true);
-            }
-            Log("Boss defeated, entering next act");
+            Log(IsLastAct() ? "Final boss defeated, entering The Architect" : "Boss defeated, entering next act");
             try
             {
                 // No heal here: the next act's Ancient start node heals (AncientEventModel).
@@ -3548,6 +3559,10 @@ public partial class RunSimulator
         if (localEvent is MegaCrit.Sts2.Core.Models.Events.FakeMerchant fm && FakeMerchantOpen(fm))
             return FakeMerchantState(fm);
 
+        // The Trial's abandon-run popup over the event page.
+        if (AbandonPopupOpen(localEvent))
+            return AbandonPopupState(localEvent!);
+
         // A finished event shows its outcome page with a Proceed button first (NEventRoom.SetOptions).
         if (localEvent != null && localEvent.IsFinished && !ReferenceEquals(_finishedEventAcked, localEvent))
             return FinishedEventState(localEvent);
@@ -3572,7 +3587,7 @@ public partial class RunSimulator
         }
 
         // An unfinished event without options is shown as it is (never skipped for the player);
-        // legal_actions then offers leave_room as the only way on.
+        // the game has no button then either, so it is reported as a softlock.
         var currentOptions = localEvent.CurrentOptions ?? (IReadOnlyList<EventOption>)Array.Empty<EventOption>();
         if (currentOptions.Count == 0)
             Log($"[WARN] Event {localEvent.GetType().Name} is not finished but has no options");
@@ -3710,7 +3725,23 @@ public partial class RunSimulator
         };
         // An ancient's opening dialogue (e.g. Neow's speech), shown above the first options.
         if (AncientDialogue(localEvent) is { } dialogue)
+        {
             state["dialogue"] = dialogue;
+            // The game draws the dialogue from Rng.Chaotic (cosmetic, unseeded): every line set
+            // it could have shown for this profile and character.
+            if (_dialoguePool != null)
+            {
+                state["dialogue_pool"] = _dialoguePool;
+                state["dialogue_random"] = _dialoguePool.Count > 1;
+            }
+        }
+        // The Architect's lines so far (speech bubbles), one per Respond / Continue.
+        if (localEvent is MegaCrit.Sts2.Core.Models.Events.TheArchitect arch && ArchitectDialogue(arch) is { } archLines)
+            state["dialogue"] = archLines;
+        if (currentOptions.Count == 0)
+            MarkSoftlock(state, "this event is not finished but shows no options");
+        else if (currentOptions.All(o => o.IsLocked))
+            MarkSoftlock(state, "every option of this event is locked");
         return state;
     }
 
@@ -3725,7 +3756,7 @@ public partial class RunSimulator
         var optionList = (options ?? (IReadOnlyList<RestSiteOption>)Array.Empty<RestSiteOption>())
             .Select((opt, i) => RestOptionInfo(opt, i, player)).ToList();
 
-        return new Dictionary<string, object?>
+        var state = new Dictionary<string, object?>
         {
             ["type"] = "decision",
             ["decision"] = "rest_site",
@@ -3735,6 +3766,10 @@ public partial class RunSimulator
             ["can_leave"] = ReferenceEquals(_restChoiceRoom, restRoom) || optionList.Count == 0,
             ["player"] = PlayerSummary(player),
         };
+        // Disabled options can't be clicked (NRestSiteButton) and Proceed isn't shown yet.
+        if (state["can_leave"] is false && options!.All(o => !o.IsEnabled))
+            MarkSoftlock(state, "every rest site option is disabled and Proceed is not shown before one is used");
+        return state;
     }
 
     private Dictionary<string, object?> ShopState(MerchantRoom merchantRoom, Player player)
@@ -3993,6 +4028,8 @@ public partial class RunSimulator
             ["decision"] = "game_over",
             ["context"] = RunContext(),
             ["victory"] = isVictory,
+            // Abandoned runs (The Trial's Double Down) end as a loss (RunManager.AbandonInternal).
+            ["abandoned"] = RunManager.Instance.IsAbandoned,
             ["player"] = summary,
             ["act"] = _runState.CurrentActIndex + 1,
             ["floor"] = _runState.ActFloor,
@@ -4640,6 +4677,8 @@ public partial class RunSimulator
         HeadlessUiGuard.Install(typeof(CombatManager).Assembly);
         // Real-game (TestMode off) behaviour for the TestMode branches that are game logic.
         ParityPatches.Install(new Harmony("sts2headless.parity"));
+        // Trial's abandon popup, the Architect's speaker (EventFlow.cs).
+        InstallEventFlowPatches();
         MapPruningPatch.Install(new Harmony("sts2headless.mappruning"));
         AnimationDelayPatch.Install(new Harmony("sts2headless.animationdelay"));
 

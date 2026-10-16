@@ -1,4 +1,5 @@
 """Room parity with the real game: events, shop, rest site, rewards, game over."""
+import os
 import re
 
 import pytest
@@ -34,7 +35,7 @@ class TestEventText:
                                        "DARV", "WELCOME_TO_WONGOS", "LOST_WISP"])
     def test_string_vars_are_names_not_zero(self, game, event):
         """StringVars (relic/card/enchantment names) are filled in as NEventOptionButton does."""
-        game.skip_neow(game.start(seed="evt_" + event))
+        game.neow(game.start(seed="evt_" + event), 0, rewards="proceed", cards=[0], bundle=0)
         game.set_player(gold=300)
         state = game.enter_room("event", event=event)
         assert state["decision"] == "event_choice", state
@@ -46,7 +47,7 @@ class TestEventText:
                 assert isinstance(v, (int, float, str))
 
     def test_option_hover_tips_and_flags(self, game):
-        game.skip_neow(game.start(seed="tips1"))
+        game.neow(game.start(seed="tips1"), 0, cards=[0])
         state = game.enter_room("event", event="SUNKEN_STATUE")
         sword = state["options"][0]
         assert "Sword of Stone" in sword["description"]
@@ -56,14 +57,14 @@ class TestEventText:
             assert isinstance(opt["will_kill"], bool)
 
     def test_lethal_option_is_flagged(self, game):
-        game.skip_neow(game.start(seed="tips2"))
+        game.neow(game.start(seed="tips2"), 0, cards=[0])
         game.set_player(hp=2)
         state = game.enter_room("event", event="DENSE_VEGETATION")
         trudge = next(o for o in state["options"] if "HP" in (o.get("description") or "") and "Lose" in o["description"])
         assert trudge["will_kill"] is True
 
     def test_card_preview_tip(self, game):
-        game.skip_neow(game.start(seed="tips3"))
+        game.neow(game.start(seed="tips3"), 0)
         state = game.enter_room("event", event="BUGSLAYER")
         tip = state["options"][0]["tips"][0]
         assert tip["card"].startswith("CARD.") and tip["description"]
@@ -71,13 +72,13 @@ class TestEventText:
     def test_keyword_tips_follow_language_in_a_reused_process(self, game):
         # The game caches keyword tips process-wide; an en run must not leak into a zh one.
         for lang in ("en", "zh"):
-            game.skip_neow(game.start(seed="tips4", lang=lang))
+            game.neow(game.start(seed="tips4", lang=lang), 0)
             state = game.enter_room("event", event="TEA_MASTER")
             titles = [t["title"] for o in state["options"] for t in (o.get("tips") or [])]
         assert titles and not any(re.fullmatch(r"[A-Za-z ]+", t) for t in titles), titles
 
     def test_bbcode_with_parameters_is_stripped(self, game):
-        game.skip_neow(game.start(seed="bb1"))
+        game.neow(game.start(seed="bb1"), 0)
         state = game.enter_room("event", event="AROMA_OF_CHAOS")
         assert "[" not in state["description"] and "rainbow" not in state["description"]
 
@@ -99,7 +100,7 @@ class TestEventText:
 
 class TestEventFinalPage:
     def test_outcome_page_then_proceed(self, game):
-        game.skip_neow(game.start(seed="fin1"))
+        game.neow(game.start(seed="fin1"), 0, cards="skip")
         state = game.enter_room("event", event="BYRDONIS_NEST")
         max_hp = state["player"]["max_hp"]
         state = game.act("choose_option", option_index=0)
@@ -112,14 +113,14 @@ class TestEventFinalPage:
         assert state["decision"] == "map_select"
 
     def test_cannot_leave_an_unfinished_event(self, game):
-        game.skip_neow(game.start(seed="fin2"))
+        game.neow(game.start(seed="fin2"), 0)
         game.enter_room("event", event="BYRDONIS_NEST")
         assert game.act("leave_room")["type"] == "error"
 
 
 class TestShop:
     def test_card_removal_once_per_visit(self, game):
-        game.skip_neow(game.start(seed="a1"))
+        game.neow(game.start(seed="a1"), 0)
         game.set_player(gold=400)
         state = game.enter_room("shop")
         assert state["card_removal_available"] is True
@@ -138,7 +139,7 @@ class TestShop:
         assert state["card_removal_cost"] == cost + 25
 
     def test_item_ids_rarity_tips_and_sold_out(self, game):
-        game.skip_neow(game.start(seed="shopid"))
+        game.neow(game.start(seed="shopid"), 0)
         game.set_player(gold=999)
         state = game.enter_room("shop")
         for r in state["relics"]:
@@ -155,7 +156,7 @@ class TestShop:
 
 class TestRestSite:
     def test_options_have_text_and_heal_amount(self, game):
-        game.skip_neow(game.start(seed="rs1"))
+        game.neow(game.start(seed="rs1"), 0)
         game.set_player(hp=30, relics=["REGAL_PILLOW"])
         state = game.enter_room("rest_site")
         heal = next(o for o in state["options"] if o["option_id"] == "HEAL")
@@ -165,7 +166,7 @@ class TestRestSite:
         assert smith["name"] == "Smith" and smith["description"]
 
     def test_miniature_tent_allows_more_options(self, game):
-        game.skip_neow(game.start(seed="rs2"))
+        game.neow(game.start(seed="rs2"), 0)
         game.set_player(hp=30, relics=["MINIATURE_TENT"])
         state = game.enter_room("rest_site")
         assert state["can_leave"] is False
@@ -178,7 +179,7 @@ class TestRestSite:
         assert state["decision"] == "map_select"
 
     def test_without_tent_one_option(self, game):
-        game.skip_neow(game.start(seed="rs3"))
+        game.neow(game.start(seed="rs3"), 0, cards=[0])
         game.set_player(hp=30)
         state = game.enter_room("rest_site")
         state = game.act("choose_option", option_index=0)
@@ -191,7 +192,7 @@ class TestRestSite:
         assert state["decision"] == "map_select"
 
     def test_cannot_leave_before_a_choice(self, game):
-        game.skip_neow(game.start(seed="rs4"))
+        game.neow(game.start(seed="rs4"), 0)
         state = game.enter_room("rest_site")
         assert "leave_room" not in actions(state)
         assert game.act("leave_room")["type"] == "error"
@@ -206,7 +207,7 @@ class TestRestSite:
 class TestEventCombatResume:
     def test_battleworn_dummy_returns_to_the_event(self, game):
         # The fight resumes its event (shouldResumeAfterCombat): outcome page and potion reward.
-        game.skip_neow(game.start(seed="dum1"))
+        game.neow(game.start(seed="dum1"), 0, rewards="proceed")
         game.send({"cmd": "set_player", "hp": 999, "max_hp": 999, "deck": ["BLUDGEON"] * 10})
         state = game.enter_room("event", event="BATTLEWORN_DUMMY")
         state = fight(game, game.act("choose_option", option_index=0))
@@ -225,7 +226,7 @@ class TestEventCombatResume:
 
 class TestCardRewardAlternatives:
     def test_driftwood_reroll(self, game):
-        game.skip_neow(game.start(seed="cr1"))
+        game.neow(game.start(seed="cr1"), 0, rewards="proceed")
         game.set_player(relics=["DRIFTWOOD"], hp=80)
         state = game.open_card_reward(fight(game, game.enter_room("combat", encounter="SHRINKER_BEETLE_WEAK")))
         assert state["decision"] == "card_reward" and state["from_event"] is False
@@ -239,8 +240,8 @@ class TestCardRewardAlternatives:
         assert [c["id"] for c in state["cards"]] != before
 
     def test_manual_skip_keeps_reward_and_sacrifice(self, game):
-        game.skip_neow(game.send({"cmd": "start_run", "character": "Ironclad", "seed": "cr2",
-                                  "manual_rewards": True}))
+        game.neow(game.send({"cmd": "start_run", "character": "Ironclad", "seed": "cr2",
+                                  "manual_rewards": True}), 0, rewards="proceed")
         game.set_player(relics=["PAELS_WING"], hp=80)
         state = fight(game, game.enter_room("combat", encounter="SHRINKER_BEETLE_WEAK"))
         card = next(r for r in state["rewards"] if r["type"] == "card")
@@ -268,7 +269,7 @@ class TestCardRewardAlternatives:
 class TestSpecialRewards:
     def test_card_removal_reward_is_offered(self, game):
         """Forbidden Grimoire's CardRemovalReward used to be dropped with automatic rewards."""
-        game.skip_neow(game.start(seed="sp1"))
+        game.neow(game.start(seed="sp1"), 0)
         game.set_player(deck=["FORBIDDEN_GRIMOIRE"] + ["STRIKE_IRONCLAD"] * 5, hp=80)
         state = fight(game, game.enter_room("combat", encounter="SHRINKER_BEETLE_WEAK"), prefer="GRIMOIRE")
         assert state["decision"] == "rewards"
@@ -283,8 +284,8 @@ class TestSpecialRewards:
         assert state["player"]["deck_size"] == 5
 
     def test_manual_reward_types(self, game):
-        game.skip_neow(game.send({"cmd": "start_run", "character": "Ironclad", "seed": "sp2",
-                                  "manual_rewards": True}))
+        game.neow(game.send({"cmd": "start_run", "character": "Ironclad", "seed": "sp2",
+                                  "manual_rewards": True}), 0)
         game.set_player(deck=["FORBIDDEN_GRIMOIRE"] + ["STRIKE_IRONCLAD"] * 5, hp=80)
         state = fight(game, game.enter_room("combat", encounter="SHRINKER_BEETLE_WEAK"), prefer="GRIMOIRE")
         removal = next(r for r in state["rewards"] if r["type"] == "card_removal")
@@ -311,7 +312,7 @@ class TestNestedEventRewards:
         assert state["decision"] == "rewards"
         assert [r.get("id") for r in state["rewards"]] == [other]
         state = game.act("claim_reward", reward_index=state["rewards"][0]["index"])
-        state = game.skip_neow(state)
+        state = game.neow(state, 0)
         assert state["decision"] == "map_select"
         relics = [r["name"] for r in state["player"]["relics"]]
         assert "Lost Coffer" in relics
@@ -320,7 +321,7 @@ class TestNestedEventRewards:
 
 class TestFakeMerchant:
     def test_shop_and_foul_potion_fight(self, game):
-        game.skip_neow(game.start(seed="fm1"))
+        game.neow(game.start(seed="fm1"), 0, cards=[0])
         game.set_player(gold=300, potions=["FOUL_POTION"], hp=80, max_hp=500)
         state = game.enter_room("event", event="FAKE_MERCHANT")
         assert state["decision"] == "shop" and state["event"] == "FAKE_MERCHANT"
@@ -346,7 +347,7 @@ class TestFakeMerchant:
         assert len(relics) >= 1 + 1 + 1 + 5
 
     def test_leave(self, game):
-        game.skip_neow(game.start(seed="fm2"))
+        game.neow(game.start(seed="fm2"), 0, rewards="proceed")
         game.set_player(gold=300)
         state = game.enter_room("event", event="FAKE_MERCHANT")
         assert state["decision"] == "shop"
@@ -361,14 +362,14 @@ class TestModifiers:
         assert "DEPRECATED_MODIFIER" not in err["message"]
         state = game.send({"cmd": "start_run", "character": "Silent", "seed": "m1",
                            "modifiers": ["CHARACTER_CARDS:DEFECT"]})
-        game.skip_neow(state)
+        game.neow(state, 0)
         state = game.enter_room("shop")
         assert state["decision"] == "shop"
 
 
 class TestGameOver:
     def test_run_stats(self, game):
-        state = game.skip_neow(game.start(seed="go1"))
+        state = game.neow(game.start(seed="go1"), 0, rewards="proceed")
         state = game.act("select_map_node", col=state["choices"][0]["col"], row=state["choices"][0]["row"])
         game.set_player(hp=1)
         for _ in range(50):
@@ -383,7 +384,7 @@ class TestGameOver:
 
 class TestCrystalSphere:
     def test_partial_items_hide_extent(self, game):
-        game.skip_neow(game.start(seed="cs9"))
+        game.neow(game.start(seed="cs9"), 0)
         game.set_player(gold=500)
         state = game.enter_room("event", event="CRYSTAL_SPHERE")
         opt = next(o for o in state["options"] if not o.get("is_locked"))
@@ -396,3 +397,99 @@ class TestCrystalSphere:
                 assert "width" not in item and "x" not in item
             else:
                 assert "width" in item
+
+
+PARITY_PROFILE = os.environ.get("STS2_PARITY_PROFILE", "")
+
+
+class TestAncientDialoguePool:
+    """NEventRoom.SetupLayout draws the ancient's dialogue with Rng.Chaotic (unseeded) among
+    AncientDialogueSet.GetValidDialogues(char, visits as char, total visits, allowAny): the CLI
+    keeps a seeded pick as "dialogue" and lists every candidate in "dialogue_pool"."""
+
+    @staticmethod
+    def _ids(state):
+        return [p["id"] for p in state["dialogue_pool"]]
+
+    @pytest.mark.skipif(not os.path.isfile(PARITY_PROFILE), reason="STS2_PARITY_PROFILE not set")
+    def test_neow_pool_for_the_recorded_profile(self, game):
+        state = game.send({"cmd": "start_run", "character": "Ironclad", "seed": "dp1", "profile": PARITY_PROFILE})
+        assert state["event_id"] == "NEOW"
+        ids = self._ids(state)
+        # Ironclad has 24 Neow visits: past every VisitIndex, so the repeating pool applies.
+        assert "NEOW.talk.ANY.2-0r" in ids and "NEOW.talk.ANY.3-0r" in ids, ids
+        assert state["dialogue_random"] is True
+        assert state["dialogue"] in [p["lines"] for p in state["dialogue_pool"]]
+        for p in state["dialogue_pool"]:
+            assert p["lines"] and all(ln["text"] and "[" not in ln["text"] for ln in p["lines"]), p
+
+    @pytest.mark.skipif(not os.path.isfile(PARITY_PROFILE), reason="STS2_PARITY_PROFILE not set")
+    def test_tezcatara_pool_has_the_ironclad_line(self, game):
+        game.send({"cmd": "start_run", "character": "Ironclad", "seed": "dp2", "profile": PARITY_PROFILE, "lang": "zh"})
+        state = game.enter_room("event", event="TEZCATARA")
+        ids = self._ids(state)
+        assert "TEZCATARA.talk.IRONCLAD.1-0r" in ids, ids
+        line = next(p for p in state["dialogue_pool"] if p["id"] == "TEZCATARA.talk.IRONCLAD.1-0r")["lines"][0]
+        assert line["text"].startswith("你是个多么强壮的男孩啊") and line["speaker"] == "ancient"
+        assert state["dialogue_random"] is True
+
+    def test_first_visit_ever_without_profile(self, game):
+        state = game.start(seed="dp3")
+        assert self._ids(state) == ["NEOW.talk.firstVisitEver.0-0"]
+        assert state["dialogue_random"] is False
+        assert state["dialogue"] == state["dialogue_pool"][0]["lines"]
+
+    def test_pool_is_gone_after_the_first_choice(self, game):
+        state = game.start(seed="dp4")
+        state = game.choose(state, 0)
+        assert "dialogue_pool" not in state and "dialogue" not in state
+
+
+class TestSoftlock:
+    """The game shows nothing clickable: NEventRoom has no exit while options are shown, and
+    NRestSiteRoom shows Proceed only with no options or after one was used."""
+
+    @staticmethod
+    def _stone_softlock(game):
+        # Stone of All Time: Lift needs a potion, Push a card Vigorous can enchant.
+        game.start(seed="sl1")
+        game.set_player(deck=["DEFEND_IRONCLAD"] * 5, potions=[])
+        return game.enter_room("event", event="STONE_OF_ALL_TIME")
+
+    def test_all_locked_event_is_softlocked(self, game):
+        state = self._stone_softlock(game)
+        assert state["decision"] == "event_choice"
+        assert all(o["is_locked"] for o in state["options"]), state["options"]
+        assert state["softlocked"] is True and state["legal_actions"] == []
+        assert "locked" in state["softlock_reason"]
+        assert game.act("leave_room")["type"] == "error"
+        err = game.send({"cmd": "force_leave_room"})
+        assert err["type"] == "error" and err["code"] == "softlock_escape_disabled"
+
+    def test_force_leave_room_behind_the_flag(self, monkeypatch):
+        from conftest import Game
+        monkeypatch.setenv("STS2_SOFTLOCK_ESCAPE", "1")
+        g = Game()
+        try:
+            state = self._stone_softlock(g)
+            assert state["softlocked"] is True and state["legal_actions"] == []
+            assert "force_leave_room" in state["message"]
+            state = g.send({"cmd": "force_leave_room"})
+            assert state["decision"] == "map_select", state
+            # Only a softlocked decision can be escaped.
+            assert g.send({"cmd": "force_leave_room"})["type"] == "error"
+        finally:
+            g.close()
+
+    def test_rest_site_with_smith_disabled_needs_rest(self, game):
+        # Every card upgraded: Smith is disabled (NRestSiteButton is unclickable), Rest is not.
+        game.start(seed="sl2")
+        game.set_player(hp=30, deck=["BASH+", "STRIKE_IRONCLAD+", "DEFEND_IRONCLAD+"])
+        state = game.enter_room("rest_site")
+        enabled = {o["option_id"]: o["is_enabled"] for o in state["options"]}
+        assert enabled == {"HEAL": True, "SMITH": False}, enabled
+        assert actions(state) == ["choose_option"] and not state.get("softlocked")
+        assert game.act("leave_room")["type"] == "error"
+        heal = next(o for o in state["options"] if o["option_id"] == "HEAL")
+        state = game.choose(state, heal["index"])
+        assert state["can_leave"] is True and "leave_room" in actions(state)

@@ -8,14 +8,14 @@ import pytest
 def start_manual(game, seed):
     state = game.send({"cmd": "start_run", "character": "Ironclad", "seed": seed,
                        "manual_rewards": True})
-    return game.skip_neow(state)
+    return game.neow(state, 0, cards="skip", cards_if_required=[0], rewards="proceed", bundle=0)
 
 
 def win_combat(game, seed):
     start_manual(game, seed)
     game.set_player(hp=999, max_hp=999)
     state = game.enter_room("combat")
-    state = game.auto_play_combat(state)
+    state = game.fight(state)
     assert state["decision"] == "rewards", state.get("decision")
     return state
 
@@ -87,10 +87,10 @@ class TestCombatRewards:
         pytest.skip("no potion drop / slot setup in the sampled seeds")
 
     def test_without_flag_rewards_are_still_a_decision(self, game):
-        state = game.skip_neow(game.start(seed="mr6"))
+        state = game.neow(game.start(seed="mr6"), 0)
         game.set_player(hp=999, max_hp=999)
         gold_before = state["player"]["gold"]
-        state = game.auto_play_combat(game.enter_room("combat"))
+        state = game.fight(game.enter_room("combat"))
         assert state["decision"] == "rewards"
         assert state["player"]["gold"] == gold_before  # nothing taken for the player
         assert {"gold", "card"} <= {r["type"] for r in state["rewards"]}
@@ -98,9 +98,9 @@ class TestCombatRewards:
     def test_manual_rewards_false_is_ignored(self, game):
         state = game.send({"cmd": "start_run", "character": "Ironclad", "seed": "mr7",
                            "manual_rewards": False})
-        game.skip_neow(state)
+        game.neow(state, 0, cards="skip")
         game.set_player(hp=999, max_hp=999)
-        state = game.auto_play_combat(game.enter_room("combat"))
+        state = game.fight(game.enter_room("combat"))
         assert state["decision"] == "rewards"
 
     def test_skipped_card_reward_stays_claimable(self, game):
@@ -231,7 +231,7 @@ class TestTreasureOrder:
     def test_chest_gold_comes_before_the_relic_choice(self, game):
         """NTreasureRoom.OpenChest: gold (DoNormalRewards) is given when the chest opens, before
         the relic is picked or skipped."""
-        state = game.skip_neow(game.start(seed="mt5"))
+        state = game.neow(game.start(seed="mt5"), 0, cards="skip")
         gold = state["player"]["gold"]
         state = game.enter_room("treasure")
         assert state["decision"] == "treasure_relic"

@@ -520,7 +520,8 @@ class Program
                 var roomType = cmd.TryGetProperty("type", out var rt) ? rt.GetString() ?? "" : "";
                 var encounter = cmd.TryGetProperty("encounter", out var enc) ? enc.GetString() : null;
                 var eventId = cmd.TryGetProperty("event", out var ev) ? ev.GetString() : null;
-                return sim.EnterRoom(roomType, encounter, eventId);
+                int? act = cmd.TryGetProperty("act", out var actEl) && actEl.ValueKind == JsonValueKind.Number ? actEl.GetInt32() : null;
+                return sim.EnterRoom(roomType, encounter, eventId, act);
             }
 
             case "set_draw_order":
@@ -531,6 +532,10 @@ class Program
                         cards.Add(c.GetString() ?? "");
                 return sim.SetDrawOrder(cards);
             }
+
+            // Not game behaviour: leaves a softlocked room (STS2_SOFTLOCK_ESCAPE=1 only).
+            case "force_leave_room":
+                return sim.ForceLeaveRoom();
 
             case "write_continue_save":
             {

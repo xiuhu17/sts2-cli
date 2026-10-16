@@ -94,6 +94,10 @@ def main():
             decisions[state["decision"]] += 1
             if state["decision"] == "game_over":
                 break
+            if state.get("softlocked"):
+                # The game has no button here (no legal action): terminal, not an engine failure.
+                decisions["softlocked"] += 1
+                break
             legal = state.get("legal_actions") or []
             if not legal:
                 failures.append((seed, step, "no legal actions", state["decision"]))

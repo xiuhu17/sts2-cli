@@ -432,8 +432,9 @@ _KNOWN_KEYS = {
                     "enchantment", "cards", "combat"},
     "card_reward": {"cards", "can_skip", "alternatives", "from_event", "gold_earned"},
     "bundle_select": {"bundles"},
-    "event_choice": {"event_name", "event_id", "description", "options", "dialogue", "finished"},
-    "rest_site": {"options", "can_leave"},
+    "event_choice": {"event_name", "event_id", "description", "options", "dialogue", "finished", "popup",
+                     "dialogue_pool", "dialogue_random", "softlocked", "softlock_reason", "message"},
+    "rest_site": {"options", "can_leave", "softlocked", "softlock_reason", "message"},
     "shop": {"cards", "relics", "potions", "card_removal_cost", "card_removal_available"},
     "rewards": {"rewards", "potion_slots_full", "gold_earned", "source"},
     "treasure_relic": {"relics", "can_skip"},
@@ -488,6 +489,17 @@ def dialogue_lines(st):
             continue
         who = t("You", "你") if d.get("speaker") == "character" else (st.get("event_name") or t("Ancient", "先古之民"))
         out.append(f"  {who}: {_one_line(d['text'])}")
+    pool = st.get("dialogue_pool") or []
+    if st.get("dialogue_random") and len(pool) > 1:
+        # The game draws the ancient's dialogue at random (unseeded): any of these could show.
+        out.append("  " + t(f"[the game picks one of {len(pool)} dialogues at random; the others:]",
+                            f"[游戏会从 {len(pool)} 段对话中随机挑一段；其余几段：]"))
+        shown = [d.get("key") for d in st.get("dialogue") or [] if isinstance(d, dict)]
+        for p in pool:
+            lines = [ln for ln in p.get("lines") or [] if isinstance(ln, dict)]
+            if [ln.get("key") for ln in lines] == shown:
+                continue
+            out.append("    - " + " / ".join(_one_line(ln.get("text") or "") for ln in lines))
     return out
 
 
@@ -586,6 +598,9 @@ def render_body(st, gl):
         body.extend(dialogue_lines(st))
         if st.get("description"):
             body.append(f"  {_one_line(st['description'])}")
+        if isinstance(st.get("popup"), dict):
+            pop = st["popup"]
+            body.append(f"  [{pop.get('header')}] {_one_line(pop.get('body') or '')}")
         for o in st.get("options") or []:
             lock = t(" [locked]", " [锁定]") if o.get("is_locked") else ""
             body.append(f" {o.get('index')}) {o.get('title')}{lock}{_desc(o.get('description'))}")
@@ -659,6 +674,9 @@ def render_decision(st, numbered, extra_events=None, prefix=None):
     actions = render_actions(st, numbered) if numbered else []
     if not numbered and st.get("decision") == "game_over":
         actions = [t("No actions: the run is over.", "没有可选操作：本局已结束。")]
+    elif not numbered and st.get("softlocked"):
+        actions = [t(f"No actions: softlock ({st.get('softlock_reason')}); the game shows no button here.",
+                     f"没有可选操作：软锁（{st.get('softlock_reason')}），游戏在这里没有可点的按钮。")]
     budget = MAX_OUT - 200
     if _size(prefix + head + actions) + _size(body) > budget and numbered:
         actions = render_actions(st, numbered, compact=True)
@@ -862,7 +880,10 @@ def parse_verb(text, st, numbered):
         if not numbered:
             raise VerbError(t("no legal actions: the run is over (sts2 start ... for a new run)",
                               "没有可选操作：本局已结束（sts2 start ... 开始新一局）")
-                            if dec == "game_over" else f"no legal actions at {dec}")
+                            if dec == "game_over" else
+                            t(f"softlock: {st.get('softlock_reason')} (the game shows no button here)",
+                              f"软锁：{st.get('softlock_reason')}（游戏在这里没有可点的按钮）")
+                            if (st or {}).get("softlocked") else f"no legal actions at {dec}")
         for num, act in numbered:
             if num == n:
                 if "choose" in act or "choose_cell" in act:

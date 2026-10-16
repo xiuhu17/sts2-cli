@@ -119,3 +119,26 @@ def test_concurrent_first_calls_start_one_daemon():
         assert len(pids) == 1, pids
     finally:
         subprocess.run([STS2, "stop"], env=env, capture_output=True, timeout=60)
+
+
+def test_render_softlock_popup_and_dialogue_pool():
+    import sys
+    sys.path.insert(0, os.path.join(ROOT, "python"))
+    import sts2_daemon
+    soft = {"type": "decision", "decision": "event_choice", "event_name": "Stone of All Time",
+            "options": [{"index": 0, "title": "Locked", "is_locked": True}], "legal_actions": [],
+            "softlocked": True, "softlock_reason": "every option of this event is locked"}
+    out = sts2_daemon.render_decision(soft, [])
+    assert "softlock (every option of this event is locked)" in out and "softlocked:" not in out
+    with pytest.raises(sts2_daemon.VerbError, match="softlock"):
+        sts2_daemon.parse_verb("1", soft, [])
+    pop = {"type": "decision", "decision": "event_choice", "event_name": "Neow",
+           "dialogue": [{"speaker": "ancient", "text": "first", "key": "k1"}],
+           "dialogue_pool": [{"id": "a", "lines": [{"text": "first", "key": "k1"}]},
+                             {"id": "b", "lines": [{"text": "second", "key": "k2"}]}],
+           "dialogue_random": True, "popup": {"header": "Are you sure?", "body": "A loss."},
+           "options": [{"index": 0, "title": "Yes"}],
+           "legal_actions": [{"action": "choose_option", "args": {"option_index": 0}}]}
+    out = sts2_daemon.render_decision(pop, list(enumerate(pop["legal_actions"], 1)))
+    assert "one of 2 dialogues at random" in out and "- second" in out
+    assert "[Are you sure?] A loss." in out and "dialogue_pool:" not in out
