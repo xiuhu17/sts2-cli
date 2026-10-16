@@ -247,8 +247,10 @@ class TestPileContents:
     def test_draw_pile_is_sorted_not_in_draw_order(self, game):
         state = game.start(seed="piles2")
         state = game.enter_room("combat")
-        names = [c["name"] for c in state["draw_pile"]]
-        assert names == sorted(names)
+        # Sorted like the game's draw pile screen: by rarity, then id.
+        order = {"Basic": 0, "Common": 1, "Uncommon": 2, "Rare": 3}
+        keys = [(order.get(c["rarity"], 9), c["id"]) for c in state["draw_pile"]]
+        assert keys == sorted(keys)
 
     def test_discard_pile_after_playing_a_card(self, game):
         state = game.start(seed="piles3")

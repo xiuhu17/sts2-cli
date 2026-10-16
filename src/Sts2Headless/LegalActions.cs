@@ -41,12 +41,11 @@ internal static class LegalActions
 
             case "combat_play":
             {
-                var energy = Int(r, "energy");
                 var enemies = Items(r, "enemies").Select(e => e["index"]).ToList();
                 foreach (var card in Items(r, "hand"))
                 {
+                    // can_play is the game's CardModel.CanPlay (energy, stars, hooks, card logic).
                     if (card.GetValueOrDefault("can_play") is not true) continue;
-                    if (Int(card, "cost") > energy) continue;
                     if (card.GetValueOrDefault("target_type") as string == "AnyEnemy")
                         foreach (var e in enemies)
                             acts.Add(Act("play_card", ("card_index", card["index"]), ("target_index", e)));
