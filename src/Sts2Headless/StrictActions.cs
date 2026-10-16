@@ -81,6 +81,12 @@ public partial class RunSimulator
         if (entries.Any(e => e.ContainsKey("choose") || e.ContainsKey("choose_cell"))) return null;
 
         var given = args ?? new Dictionary<string, object?>();
+        // "indices" " 0" / "0 " name the same card as the listed "0" (DoSelectCards trims too).
+        if (given.TryGetValue("indices", out var idxObj) && idxObj is string idxStr && idxStr.Contains(' '))
+            given = new Dictionary<string, object?>(given)
+            {
+                ["indices"] = string.Join(",", idxStr.Split(',').Select(p => p.Trim())),
+            };
         // target_id (an enemy's stable combat_id) names the same target as its target_index.
         if (given.TryGetValue("target_id", out var tid) && tid != null)
         {

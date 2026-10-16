@@ -535,17 +535,16 @@ public partial class RunSimulator
         if (cur == null || why != null)
         {
             cur = SafeCurrentDecision();
-            if (cur != null)
-            {
-                _lastDecision = cur = Viewed(cur);
-                if (cur.GetValueOrDefault("type") as string == "decision")
-                {
-                    var (a1, args1) = Canonical(cur, action, args);
-                    why = CheckLegal(cur, a1, ref args1);
-                    if (why != null) return IllegalAction(cur, action, why);
-                    action = a1; args = args1;
-                }
-            }
+            // No decision to check the action against: never run it unvalidated.
+            if (cur == null) return Error($"'{action}' rejected: the current decision could not be determined");
+            if (cur.GetValueOrDefault("type") as string != "decision")
+                return cur.GetValueOrDefault("type") as string == "error" ? cur
+                    : Error($"'{action}' rejected: no decision is waiting ({cur.GetValueOrDefault("type")})");
+            _lastDecision = cur = Viewed(cur);
+            var (a1, args1) = Canonical(cur, action, args);
+            why = CheckLegal(cur, a1, ref args1);
+            if (why != null) return IllegalAction(cur, action, why);
+            action = a1; args = args1;
         }
 
         _flowFault = null;

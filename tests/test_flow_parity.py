@@ -1,5 +1,6 @@
 """Room flow, card-selection constraints, strict actions and save/load (no choice is made for
 the player, nothing the game doesn't offer is accepted)."""
+import json
 import random
 
 import pytest
@@ -75,6 +76,35 @@ class TestContinueSaveTwice:
                 state = save_load(g, tmp_path / "b.save")
                 assert state["decision"] == "combat_play", state.get("decision")
                 assert state["context"]["floor"] == floor and state["legal_actions"]
+        finally:
+            g.close()
+
+
+    def test_mid_room_save_is_frozen_at_the_game_save(self, tmp_path):
+        """The continue save is what the game wrote when it saved (after the won fight), not
+        the live run: a card picked afterwards must not leak into its map history."""
+        g = Game()
+        try:
+            state = to_map(g, "rv4", manual_rewards=True)
+            g.set_player(hp=9999, max_hp=9999)
+            node = next(c for c in state["choices"] if c["type"] == "Monster")
+            state = g.act("select_map_node", col=node["col"], row=node["row"])
+            rng = random.Random(1)
+            while state["decision"] == "combat_play":
+                entry = rng.choice([a for a in state["legal_actions"] if a["action"] == "play_card"]
+                                   or [a for a in state["legal_actions"] if a["action"] == "end_turn"])
+                state = g.act(entry["action"], **(entry.get("args") or {}))
+            assert state["decision"] == "rewards"
+            first = tmp_path / "a.save"
+            assert g.send({"cmd": "write_continue_save", "path": str(first)})["success"] is True
+            card = next(r for r in state["rewards"] if r["type"] == "card")
+            state = g.act("claim_reward", reward_index=card["index"])
+            assert state["decision"] == "card_reward"
+            state = g.act("select_card_reward", card_index=rng.choice([c["index"] for c in state["cards"]]))
+            assert state["decision"] == "rewards"
+            second = tmp_path / "b.save"
+            assert g.send({"cmd": "write_continue_save", "path": str(second)})["success"] is True
+            assert json.loads(first.read_text()) == json.loads(second.read_text())
         finally:
             g.close()
 
@@ -211,6 +241,19 @@ class TestStrictActions:
         strike = next(c for c in state["hand"] if c["name"] == "Strike")
         state = game.act("play_card", card_index=strike["index"])
         assert state["decision"] == "combat_play" and state["energy"] == 2
+
+    def test_single_pick_indices_formats(self, game):
+        """A listed single pick may be sent as "0", " 0", 0 or [0]; other picks are rejected."""
+        to_map(game, "st5")
+        for value in (" 0", [0], 0):
+            game.set_player(gold=500)
+            state = game.enter_room("shop")
+            assert game.act("remove_card")["decision"] == "card_select"
+            r = game.act("select_cards", indices="0,1")
+            assert r["code"] == "illegal_action"
+            state = game.act("select_cards", indices=value)
+            assert state["decision"] == "shop" and "remove_card" not in actions(state), value
+            game.act("leave_room")
 
     def test_unlisted_map_node_and_option(self, game):
         state = to_map(game, "st3")

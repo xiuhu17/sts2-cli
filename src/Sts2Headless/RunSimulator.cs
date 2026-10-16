@@ -701,10 +701,9 @@ public partial class RunSimulator
             RunManager.Instance.Launch();
             Log("Run launched");
             // RunState.FromSerializable shares the save's inner per-act history lists with the
-            // live run, so re-entering the node would grow `save` too. Keep an independent copy
-            // of what is on disk (the game's Continue does not save again: saveGame=false).
-            var onDisk = ContinueSave.Snapshot(saveJson) ?? save;
-            ContinueSave.Last = onDisk;
+            // live run, so re-entering the node would grow `save` too. Keep what is on disk, as
+            // JSON (the game's Continue does not save again: saveGame=false).
+            ContinueSave.Capture(saveJson);
 
             if (ContinueSave.ShouldReenterLatestCoord(save))
             {
@@ -724,7 +723,7 @@ public partial class RunSimulator
                     WaitForActionExecutor();
                 }
                 finally { ContinueSave.SuppressRoomEndRewards = false; }
-                ContinueSave.Last = onDisk;
+                ContinueSave.Capture(saveJson);
             }
             else if (savedRoom is MapRoom || savedRoom == null)
             {
@@ -5909,7 +5908,7 @@ public partial class RunSimulator
         _pendingCardReward = null;
         _rewardsProcessed = false;
         _rewardDone.Clear();
-        ContinueSave.Last = null;
+        ContinueSave.Capture(null);
         ResetRoomParityState();
         _treasureFinishPending = null;
         _goldBeforeCombat = 0;
