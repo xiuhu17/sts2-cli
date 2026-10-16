@@ -50,6 +50,9 @@ def main():
     ap.add_argument("--stderr", help="append engine stderr (logs) to this file")
     ap.add_argument("--trace", help="write the action/response trace (JSONL) to this file")
     args = ap.parse_args()
+    if args.immortal:
+        # set_player is a debug command: the engine only accepts it with STS2_DEBUG=1.
+        os.environ["STS2_DEBUG"] = "1"
 
     failures, used, decisions = [], Counter(), Counter()
     total_steps = 0
@@ -73,7 +76,9 @@ def main():
             log.write(f"=== start {json.dumps(start)}\n")
         state = engine.send(start)
         if args.immortal:
-            engine.send({"cmd": "set_player", "hp": 99999, "max_hp": 99999})
+            r = engine.send({"cmd": "set_player", "hp": 99999, "max_hp": 99999})
+            if r.get("type") == "error":
+                sys.exit(f"--immortal: set_player failed: {r.get('message')}")
         last_key, repeats = None, 0
         for step in range(args.steps):
             if state.get("type") == "decision":
