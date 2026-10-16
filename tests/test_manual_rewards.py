@@ -282,6 +282,6 @@ class TestRewardScreenLifecycle:
         state = win_combat(game, "mr7")
         state = game.act("proceed")
         assert state["decision"] == "map_select"
-        state = game.auto_play_combat(game.enter_room("combat"))
+        state = game.fight(game.enter_room("combat"))
         assert state["decision"] == "rewards"
         assert any(r["type"] == "gold" for r in state["rewards"])

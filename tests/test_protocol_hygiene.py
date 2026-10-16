@@ -11,8 +11,9 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def to_combat(game, seed, deck=None):
-    game.skip_neow(game.start(seed=seed))
+def to_combat(game, seed, deck=None, **neow):
+    """Neow option 0 (its follow-ups answered by the caller via **neow), then a debug fight."""
+    game.neow(game.start(seed=seed), 0, **neow)
     game.set_player(hp=80, max_hp=80, deck=deck or ["STRIKE_IRONCLAD"] * 5 + ["DEFEND_IRONCLAD"] * 5)
     state = game.enter_room("combat", encounter="SHRINKER_BEETLE_WEAK")
     assert state["decision"] == "combat_play"
@@ -91,7 +92,7 @@ class TestArgs:
         state = to_combat(game, "na1")
         r = game.act("end_turn", target_index=None)
         assert r["type"] == "decision", r
-        state = game.skip_neow(game.start(seed="na2"))
+        state = game.neow(game.start(seed="na2"), 0)
         assert state["decision"] == "map_select"
         ch = state["choices"][0]
         r = game.act("select_map_node", col=ch["col"], row=ch["row"], target_index=None)
@@ -114,7 +115,7 @@ class TestArgs:
 
 class TestErrorShape:
     def test_every_error_has_code_decision_and_legal_actions(self, game):
-        state = to_combat(game, "es1")
+        state = to_combat(game, "es1", rewards="proceed")
         assert_full_error(game.act("fly"), "unknown_action")
         assert_full_error(game.act("play_card", card_index="abc"), "bad_request")
         assert_full_error(game.act("play_card", card_index=99), "illegal_action")
@@ -130,7 +131,7 @@ class TestErrorShape:
 
     def test_select_cards_errors_have_codes(self, game):
         # Single pick: each card is its own legal entry; anything else is not one of them.
-        state = to_combat(game, "es3", ["BURNING_PACT"] * 7 + ["DEFEND_IRONCLAD"] * 3)
+        state = to_combat(game, "es3", ["BURNING_PACT"] * 7 + ["DEFEND_IRONCLAD"] * 3, cards=[0])
         state = game.act("play_card", card_index=[c["name"] for c in state["hand"]].index("Burning Pact"))
         assert state["decision"] == "card_select" and state["max_select"] == 1
         assert_full_error(game.act("select_cards", indices="x"), "illegal_action")

@@ -75,8 +75,8 @@ def _win(game, state, max_steps=400):
     raise RuntimeError("combat did not end")
 
 
-def _card_reward_after_fight(game, seed, relics):
-    game.skip_neow(game.start(seed=seed))
+def _card_reward_after_fight(game, seed, relics, **neow):
+    game.neow(game.start(seed=seed), 0, **neow)
     game.set_player(deck=["BLUDGEON"] * 10, relics=relics, hp=999, max_hp=999)
     state = _win(game, game.enter_room("Monster", encounter="SHRINKER_BEETLE_WEAK"))
     assert state["decision"] == "rewards"
@@ -88,7 +88,7 @@ class TestCardRewardAlternatives:
     SACRIFICE (Pael's Wing). The screen shows the latest Generate (RefreshOptions after a reroll)."""
 
     def test_driftwood_rerolls_once(self, game):
-        state = _card_reward_after_fight(game, "t1", ["BURNING_BLOOD", "DRIFTWOOD"])
+        state = _card_reward_after_fight(game, "t1", ["BURNING_BLOOD", "DRIFTWOOD"], bundle=0)
         assert [a["id"] for a in state["alternatives"]] == ["Skip", "REROLL"]
         before = [c["id"] for c in state["cards"]]
         state = game.act("select_card_alternative", alternative_index=1)
@@ -130,7 +130,7 @@ class TestCardRewardAlternatives:
             assert [a["id"] for a in state["alternatives"]] == ["Skip", "SACRIFICE"]
             return game.act("select_card_alternative", alternative_index=1)
 
-        game.skip_neow(game.start(seed="PAEL1"))
+        game.neow(game.start(seed="PAEL1"), 0)
         game.set_player(deck=["BLUDGEON"] * 10, relics=["BURNING_BLOOD", "PAELS_WING"],
                         hp=999, max_hp=999)
         state = sacrifice(game.enter_room("Monster", encounter="SHRINKER_BEETLE_WEAK"))
@@ -155,7 +155,7 @@ class TestCardRewardAcrossRuns:
         assert state["decision"] == "card_reward"
         state = game.start(seed="rr2")
         assert state["type"] == "decision" and state["decision"] != "card_reward"
-        state = game.skip_neow(state)
+        state = game.neow(state, 0)
         assert state["decision"] == "map_select"
         assert game.act("select_card_reward", card_index=0)["type"] == "error"
         # The new run's own rewards work as usual.

@@ -102,7 +102,7 @@ class TestLordsParasol:
     def test_free_removal_uses_the_shop_removal(self, game):
         """Lord's Parasol buys everything, including the card removal (ignoreCost). The game marks
         the removal used (NMerchantCardRemoval.OnCardRemovalUsed): no second, paid removal."""
-        game.skip_neow(game.start(seed="p1"))
+        game.neow(game.start(seed="p1"), 0)
         game.set_player(gold=500, relics=["LORDS_PARASOL"])
         state = game.enter_room("Shop")
         assert state["decision"] == "card_select"
@@ -118,7 +118,7 @@ class TestLordsParasol:
         assert state["player"]["gold"] == 500
 
     def test_paid_removal_once_per_visit(self, game):
-        game.skip_neow(game.start(seed="sr2"))
+        game.neow(game.start(seed="sr2"), 0, rewards="proceed")
         game.set_player(gold=999)
         state = game.enter_room("shop")
         state = game.act("remove_card")
