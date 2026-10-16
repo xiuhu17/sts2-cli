@@ -4394,8 +4394,14 @@ public partial class RunSimulator
                         if (o.IsPlayer && o.Player?.Character != null) ls.Add("OwnerName", o.Player.Character.Title);
                         else if (o.Monster != null) ls.Add("OwnerName", o.Monster.Title);
                     }
+                    // PowerModel.HoverTips: a monster applier/target is named by its title, a player one by
+                    // the platform player name (Steam persona name in the game; offline we use the character's
+                    // title). Loc entries such as BARRICADE_POWER branch on ApplierName being non-empty and
+                    // then print {OwnerName}, so the value mainly has to be present.
                     if (pw.Applier?.Monster != null) ls.Add("ApplierName", pw.Applier.Monster.Title.GetFormattedText());
+                    else if (pw.Applier?.Player?.Character != null) ls.Add("ApplierName", pw.Applier.Player.Character.Title.GetFormattedText());
                     if (pw.Target?.IsMonster == true && pw.Target.Monster != null) ls.Add("TargetName", pw.Target.Monster.Title);
+                    else if (pw.Target?.Player?.Character != null) ls.Add("TargetName", pw.Target.Player.Character.Title.GetFormattedText());
                 }
                 catch { }
             }
