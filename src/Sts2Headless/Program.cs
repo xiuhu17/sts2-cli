@@ -12,7 +12,36 @@ class Program
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
         WriteIndented = false,
+        // WhenWritingNull only applies to object properties; this also drops null values of
+        // nested dictionaries (e.g. a card's "keywords": null), which make up most of them.
+        Converters = { new SkipNullValuesConverter() },
     };
+
+    private sealed class SkipNullValuesConverter : JsonConverter<Dictionary<string, object?>>
+    {
+        public override Dictionary<string, object?>? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+            throw new NotSupportedException();
+
+        public override void Write(Utf8JsonWriter writer, Dictionary<string, object?> value, JsonSerializerOptions options)
+        {
+            // A response's own top-level fields are its schema and always present; nested
+            // objects (cards, relics, powers, ...) omit their null fields.
+            var skipNulls = writer.CurrentDepth > 0;
+            writer.WriteStartObject();
+            foreach (var (k, v) in value)
+            {
+                if (v == null)
+                {
+                    if (skipNulls) continue;
+                    writer.WriteNull(k);
+                    continue;
+                }
+                writer.WritePropertyName(k);
+                JsonSerializer.Serialize(writer, v, v.GetType(), options);
+            }
+            writer.WriteEndObject();
+        }
+    }
 
     /// <summary>
     /// Locate the directory containing sts2.dll: STS2_LIB env, walk up from BaseDirectory, then BaseDirectory/lib.
@@ -41,14 +70,18 @@ class Program
 
     // stdout carries only protocol JSON. Console.Out is pointed at stderr so that output
     // from game/library code (e.g. Sentry's startup notice) can't interleave with it.
-    private static TextWriter ProtocolOut = Console.Out;
+    // Responses are written as raw UTF-8, one write() per line (Console.Out would flush every
+    // 256 chars and wake the reader on partial lines).
+    private static Stream ProtocolOut = Stream.Null;
     private static readonly object ProtocolLock = new();
+    private static System.Buffers.ArrayBufferWriter<byte> ProtocolBuf = new(1 << 16);
+    private static Utf8JsonWriter? ProtocolJson;
 
     static void Main(string[] args)
     {
         // Assigned here, not only in the initializer: static field initializers may run
         // lazily (beforefieldinit), i.e. after SetOut below.
-        ProtocolOut = Console.Out;
+        ProtocolOut = Console.OpenStandardOutput();
         Console.SetOut(Console.Error);
 
         // An unhandled exception on a non-main thread terminates the process. Tell the
@@ -94,35 +127,172 @@ class Program
             return null;
         };
 
-        // All game logic runs on one dedicated engine thread; this thread only reads commands and
-        // waits for each result with a deadline. If the engine wedges (a game flow that never
-        // completes), the client gets an engine_timeout error instead of blocking forever, and
-        // the process refuses further commands so the client restarts it.
-        var engine = new EngineThread();
-        var sim = engine.Run(() => new RunSimulator(), TimeSpan.FromMinutes(5)).Result!;
-        WriteLine(new Dictionary<string, object?> { ["type"] = "ready", ["version"] = "0.2.0" });
-
+        // All game logic runs on one dedicated engine thread, which also reads the commands and
+        // writes the responses, so a normal command costs no cross-thread handoff. This thread
+        // is the watchdog: if a command runs past its deadline (a game flow that never
+        // completes), it answers engine_timeout itself and takes over stdin, refusing further
+        // commands so the client restarts the process.
         var timeout = TimeSpan.FromSeconds(
             double.TryParse(Environment.GetEnvironmentVariable("STS2_COMMAND_TIMEOUT"), out var secs) && secs > 0 ? secs : 30);
-        var wedged = false;
+        var loop = new EngineLoop(timeout);
+        var engineThread = new Thread(loop.Run) { IsBackground = true, Name = "sts2-engine" };
+        engineThread.Start();
+        loop.Watch(engineThread);
+    }
 
-        string? line;
-        while ((line = Console.ReadLine()) != null)
+    static bool IsQuit(JsonElement cmd) =>
+        cmd.ValueKind == JsonValueKind.Object && cmd.TryGetProperty("cmd", out var c)
+        && c.ValueKind == JsonValueKind.String && c.GetString() == "quit";
+
+    /// <summary>
+    /// The engine thread's read/execute/write loop plus the watchdog that runs on the main
+    /// thread. The watchdog never sits on the per-command path: it only polls a timestamp.
+    /// </summary>
+    private sealed class EngineLoop
+    {
+        private const int Idle = 0, Running = 1, TimedOut = 2;
+        private int _state = Idle;
+        private long _started;          // Stopwatch timestamp of the running work item
+        private long _deadlineTicks;    // its allowed duration, in Stopwatch ticks
+        private string _what = "";      // the command line (for the log)
+        private readonly TimeSpan _timeout;
+
+        public EngineLoop(TimeSpan timeout) => _timeout = timeout;
+
+        private void Begin(string what, TimeSpan limit)
         {
-            line = line.Trim();
-            if (string.IsNullOrEmpty(line)) continue;
+            _what = what;
+            Volatile.Write(ref _deadlineTicks, (long)(limit.TotalSeconds * System.Diagnostics.Stopwatch.Frequency));
+            Volatile.Write(ref _started, System.Diagnostics.Stopwatch.GetTimestamp());
+            Volatile.Write(ref _state, Running);
+        }
 
-            Dictionary<string, object?>? result;
-            JsonElement cmd;
-            try { cmd = JsonSerializer.Deserialize<JsonElement>(line); }
-            catch (JsonException ex)
+        /// <summary>False if the watchdog already gave up on this work item (it then owns stdin/stdout).</summary>
+        private bool End() => Interlocked.CompareExchange(ref _state, Idle, Running) == Running;
+
+        public void Run()
+        {
+            // Constructing the simulator and the one-time engine warm-up get a generous
+            // deadline of their own; a command read meanwhile simply waits in the pipe.
+            var initLimit = _timeout > TimeSpan.FromMinutes(5) ? _timeout : TimeSpan.FromMinutes(5);
+            Begin("<startup>", initLimit);
+            RunSimulator sim;
+            try { sim = new RunSimulator(); }
+            catch (Exception ex)
             {
-                WriteLine(new Dictionary<string, object?> { ["type"] = "error", ["message"] = $"Invalid JSON: {ex.Message}" });
-                continue;
+                Console.Error.WriteLine($"[FATAL] RunSimulator init: {ex}");
+                if (End()) WriteLine(new Dictionary<string, object?> { ["type"] = "fatal", ["message"] = $"{ex.GetType().Name}: {ex.Message}", ["stack_trace"] = ex.ToString() });
+                Environment.Exit(1);
+                return;
+            }
+            if (!End()) Park();
+            WriteLine(new Dictionary<string, object?> { ["type"] = "ready", ["version"] = "0.2.0" });
+
+            // Do the one-time engine initialisation (Harmony patches, localization, ModelDb, ...)
+            // now instead of inside the client's first start_run/load_save. It has no inputs,
+            // so the result is identical; a command sent meanwhile waits for it.
+            if (Environment.GetEnvironmentVariable("STS2_NO_WARMUP") != "1")
+            {
+                Begin("<warmup>", initLimit);
+                try { RunSimulator.Warmup(); }
+                catch (Exception ex) { Console.Error.WriteLine($"[WARN] warmup: {ex}"); }
+                if (!End()) Park();
             }
 
-            if (wedged)
+            string? line;
+            while ((line = Console.ReadLine()) != null)
             {
+                line = line.Trim();
+                if (string.IsNullOrEmpty(line)) continue;
+
+                JsonElement cmd;
+                try { cmd = JsonSerializer.Deserialize<JsonElement>(line); }
+                catch (JsonException ex)
+                {
+                    WriteLine(new Dictionary<string, object?> { ["type"] = "error", ["message"] = $"Invalid JSON: {ex.Message}" });
+                    continue;
+                }
+
+                Dictionary<string, object?>? result;
+                Begin(line, _timeout);
+                try
+                {
+                    result = HandleCommand(sim, cmd);
+                    if (result != null) LegalActions.Attach(result);
+                }
+                catch (Exception ex)
+                {
+                    result = new Dictionary<string, object?> { ["type"] = "error", ["message"] = $"{ex.GetType().Name}: {ex.Message}", ["stack_trace"] = ex.ToString() };
+                }
+                RunSimulator.AfterCommand();
+                if (!End()) Park();  // too late: the client already got engine_timeout
+
+                if (result != null)
+                {
+                    WriteLine(result);
+                    if (result.TryGetValue("type", out var resultTypeObj) &&
+                        string.Equals(resultTypeObj as string, "quit_result", StringComparison.Ordinal))
+                        return;
+                }
+            }
+        }
+
+        // A work item finished after the watchdog answered for it. Stay off stdin/stdout for good.
+        private static void Park() => Thread.Sleep(Timeout.Infinite);
+
+        /// <summary>Main thread: wait for the engine thread to exit, answering for it if it wedges.</summary>
+        public void Watch(Thread engineThread)
+        {
+            var pollMs = (int)Math.Clamp(_timeout.TotalMilliseconds / 10, 5, 100);
+            while (true)
+            {
+                var wait = pollMs;
+                if (Volatile.Read(ref _state) == Running)
+                {
+                    var elapsed = System.Diagnostics.Stopwatch.GetTimestamp() - Volatile.Read(ref _started);
+                    var left = Volatile.Read(ref _deadlineTicks) - elapsed;
+                    if (left <= 0)
+                    {
+                        if (Interlocked.CompareExchange(ref _state, TimedOut, Running) == Running)
+                        {
+                            Wedged();
+                            return;
+                        }
+                        continue;
+                    }
+                    wait = (int)Math.Min(pollMs, left * 1000 / System.Diagnostics.Stopwatch.Frequency + 1);
+                }
+                if (engineThread.Join(wait)) return;
+            }
+        }
+
+        private void Wedged()
+        {
+            var startup = _what.StartsWith('<');
+            if (startup)
+                Console.Error.WriteLine($"[ERROR] Engine {_what.Trim('<', '>')} did not finish; refusing commands");
+            else
+            {
+                Console.Error.WriteLine($"[ERROR] Command timed out after {_timeout.TotalSeconds}s: {_what}");
+                WriteLine(new Dictionary<string, object?>
+                {
+                    ["type"] = "error", ["code"] = "engine_timeout",
+                    ["message"] = $"Command did not finish within {_timeout.TotalSeconds}s; the engine is stuck. Restart the process.",
+                });
+            }
+            // The engine thread is stuck inside a work item, not in ReadLine, so stdin is ours now.
+            string? line;
+            while ((line = Console.ReadLine()) != null)
+            {
+                line = line.Trim();
+                if (string.IsNullOrEmpty(line)) continue;
+                JsonElement cmd;
+                try { cmd = JsonSerializer.Deserialize<JsonElement>(line); }
+                catch (JsonException ex)
+                {
+                    WriteLine(new Dictionary<string, object?> { ["type"] = "error", ["message"] = $"Invalid JSON: {ex.Message}" });
+                    continue;
+                }
                 if (IsQuit(cmd))
                 {
                     WriteLine(new Dictionary<string, object?> { ["type"] = "quit_result", ["success"] = true, ["save"] = null });
@@ -133,88 +303,7 @@ class Program
                     ["type"] = "error", ["code"] = "restart_required",
                     ["message"] = "A previous command timed out and the engine is stuck; restart the process.",
                 });
-                continue;
             }
-
-            var job = engine.Run(() =>
-            {
-                var r = HandleCommand(sim, cmd);
-                if (r != null) LegalActions.Attach(r);
-                return r;
-            }, timeout);
-
-            if (!job.Completed)
-            {
-                wedged = true;
-                Console.Error.WriteLine($"[ERROR] Command timed out after {timeout.TotalSeconds}s: {line}");
-                result = new Dictionary<string, object?>
-                {
-                    ["type"] = "error", ["code"] = "engine_timeout",
-                    ["message"] = $"Command did not finish within {timeout.TotalSeconds}s; the engine is stuck. Restart the process.",
-                };
-            }
-            else if (job.Error != null)
-            {
-                var ex = job.Error;
-                result = new Dictionary<string, object?> { ["type"] = "error", ["message"] = $"{ex.GetType().Name}: {ex.Message}", ["stack_trace"] = ex.ToString() };
-            }
-            else
-            {
-                result = job.Result;
-            }
-
-            if (result != null)
-            {
-                WriteLine(result);
-                if (result.TryGetValue("type", out var resultTypeObj) &&
-                    string.Equals(resultTypeObj as string, "quit_result", StringComparison.Ordinal))
-                {
-                    break;
-                }
-            }
-        }
-    }
-
-    static bool IsQuit(JsonElement cmd) =>
-        cmd.ValueKind == JsonValueKind.Object && cmd.TryGetProperty("cmd", out var c)
-        && c.ValueKind == JsonValueKind.String && c.GetString() == "quit";
-
-    /// <summary>A single thread that executes engine work items one at a time.</summary>
-    private sealed class EngineThread
-    {
-        private readonly System.Collections.Concurrent.BlockingCollection<Action> _work = new();
-
-        public EngineThread()
-        {
-            var t = new Thread(() => { foreach (var a in _work.GetConsumingEnumerable()) a(); })
-            {
-                IsBackground = true,  // never keeps the process alive
-                Name = "sts2-engine",
-            };
-            t.Start();
-        }
-
-        public sealed class Job<T>
-        {
-            public bool Completed;
-            public T? Result;
-            public Exception? Error;
-        }
-
-        /// <summary>Run <paramref name="f"/> on the engine thread; wait at most <paramref name="timeout"/>.</summary>
-        public Job<T> Run<T>(Func<T> f, TimeSpan timeout)
-        {
-            var job = new Job<T>();
-            using var done = new ManualResetEventSlim(false);
-            var signal = done;
-            _work.Add(() =>
-            {
-                try { job.Result = f(); }
-                catch (Exception ex) { job.Error = ex; }
-                finally { try { signal.Set(); } catch (ObjectDisposedException) { } }
-            });
-            job.Completed = done.Wait(timeout);
-            return job;
         }
     }
 
@@ -357,11 +446,18 @@ class Program
 
     static void WriteLine(Dictionary<string, object?> data)
     {
-        var json = JsonSerializer.Serialize(data, JsonOpts);
         lock (ProtocolLock)
         {
-            ProtocolOut.WriteLine(json);
+            ProtocolBuf.Clear();
+            var w = ProtocolJson ??= new Utf8JsonWriter(ProtocolBuf, new JsonWriterOptions { Encoder = JsonOpts.Encoder });
+            w.Reset(ProtocolBuf);
+            try { JsonSerializer.Serialize(w, data, JsonOpts); }
+            finally { w.Flush(); }
+            System.Buffers.BuffersExtensions.Write(ProtocolBuf, "\n"u8);
+            ProtocolOut.Write(ProtocolBuf.WrittenSpan);
             ProtocolOut.Flush();
+            // Don't keep a multi-MB buffer alive after one huge response.
+            if (ProtocolBuf.Capacity > 1 << 22) ProtocolBuf = new(1 << 16);
         }
     }
 }

@@ -263,7 +263,7 @@ internal class LocLookup
 /// through map navigation, combat, events, rest sites, shops, and act transitions.
 /// Drives the engine forward until it hits a "decision point" requiring external input.
 /// </summary>
-public class RunSimulator
+public partial class RunSimulator
 {
     private static int? _expectedSaveSchemaVersion;
     private static bool _expectedSaveSchemaVersionReady;
@@ -2800,7 +2800,7 @@ public class RunSimulator
                && _pendingBundles == null && sw.ElapsedMilliseconds < 3000)
         {
             _syncCtx.Pump();
-            ((IAsyncResult)t).AsyncWaitHandle.WaitOne(1);
+            WaitFlow(t);
         }
         if (t != null && t.IsFaulted) Log($"Event reward claim failed: {t.Exception?.InnerException}");
         if (t != null && t.IsCompleted) _eventClaim = null;
@@ -2840,7 +2840,7 @@ public class RunSimulator
         _eventRewardDone.Add(idx);
         Log($"Claiming event reward {idx}: {reward.GetType().Name}");
         var synchronizer = RunManager.Instance.RewardsSetSynchronizer;
-        _eventClaim = Task.Run(() => RunWithHostContext(() => synchronizer.SelectLocalReward(reward)));
+        _eventClaim = StartFlow(() => synchronizer.SelectLocalReward(reward));
         AwaitEventClaim();
         WaitForActionExecutor();
         return DetectDecisionPoint();
@@ -2959,13 +2959,13 @@ public class RunSimulator
         // The last click completes the minigame, which resumes the event flow (rewards) on this
         // task; run it off the main thread so a reward prompt there can't block us.
         var cell = grid.cells[x, y];
-        var click = Task.Run(() => RunWithHostContext(() => grid.CellClicked(cell)));
+        var click = StartFlow(() => grid.CellClicked(cell));
         var sw = System.Diagnostics.Stopwatch.StartNew();
         while (!click.IsCompleted && sw.ElapsedMilliseconds < 3000)
         {
             _syncCtx.Pump();
             if (_cardSelector.HasPending || _cardSelector.HasPendingReward || _pendingBundles != null) break;
-            ((IAsyncResult)click).AsyncWaitHandle.WaitOne(1);
+            WaitFlow(click);
         }
         if (click.IsFaulted)
             Log($"Crystal Sphere click failed: {click.Exception?.InnerException}");
@@ -3699,7 +3699,7 @@ public class RunSimulator
             else
                 Log("A timed-out background flow is still running; starting a new one anyway");
         }
-        _backgroundTask = Task.Run(() => RunWithHostContext(work));
+        _backgroundTask = StartFlow(work);
         return AwaitBackground(timeoutMs);
     }
 
@@ -3720,10 +3720,10 @@ public class RunSimulator
             _syncCtx.Pump();
             return;
         }
-        var t = Task.Run(() => RunWithHostContext(() => { complete(); return Task.CompletedTask; }));
+        var t = StartFlow(() => { complete(); return Task.CompletedTask; });
         var sw = System.Diagnostics.Stopwatch.StartNew();
         while (!t.IsCompleted && !HasPendingPrompt && sw.ElapsedMilliseconds < 3000)
-            ((IAsyncResult)t).AsyncWaitHandle.WaitOne(1);
+            WaitFlow(t);
     }
 
     /// <summary>
@@ -3766,8 +3766,8 @@ public class RunSimulator
                 }
                 return HasPendingPrompt;
             }
-            // Wakes as soon as the task completes; never throws on a faulted task.
-            ((IAsyncResult)task).AsyncWaitHandle.WaitOne(1);
+            // Wakes as soon as the task completes or parks; never throws on a faulted task.
+            WaitFlow(task);
         }
         _syncCtx.Pump();
         if (task != null && task.IsCompleted)
@@ -5253,6 +5253,7 @@ public class RunSimulator
 
     public void CleanUp()
     {
+        ReleaseRunLeftovers();
         try
         {
             if (RunManager.Instance.IsInProgress)
@@ -5268,6 +5269,7 @@ public class RunSimulator
         // stuck combat). The combat then survives, and the next SetUpCombat throws "Make sure
         // to reset the combat before setting up a new one." Drop it explicitly.
         ForceResetCombat();
+        ReleaseRunLeftoversAfterCleanUp();
     }
 
     private void ForceResetCombat()

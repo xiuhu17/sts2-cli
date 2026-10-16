@@ -32,7 +32,9 @@ VOLATILE_KEYS = {"stack_trace", "ts"}
 
 def _strip(obj):
     if isinstance(obj, dict):
-        return {k: _strip(v) for k, v in obj.items() if k not in VOLATILE_KEYS}
+        # None-valued keys are dropped so a build that omits null fields hashes the
+        # same as one that emits them ("key": null and a missing key read the same).
+        return {k: _strip(v) for k, v in obj.items() if k not in VOLATILE_KEYS and v is not None}
     if isinstance(obj, list):
         return [_strip(v) for v in obj]
     return obj
@@ -121,6 +123,8 @@ def run_one(job):
         "max_ms": round(1000 * lat[-1], 1) if lat else None,
         "per_cmd_ms": {k: round(1000 * sum(v) / len(v), 2) for k, v in lg.per_cmd.items()},
         "per_cmd_total_s": {k: round(sum(v), 3) for k, v in lg.per_cmd.items()},
+        "start_run_ms": [round(1000 * v, 2) for v in lg.per_cmd.get("start_run", [])],
+        "step_ms": [round(1000 * v, 3) for k, vs in lg.per_cmd.items() if k != "start_run" for v in vs],
     }
 
 
@@ -168,6 +172,17 @@ def main():
     steps = sum(r["steps"] or 0 for r in results)
     print(f"\n{len(results)} runs, {steps} steps, total wall {total:.1f}s, "
           f"{steps / total:.1f} steps/s overall")
+
+    def pct(xs, q):
+        return xs[min(len(xs) - 1, int(q * len(xs)))] if xs else None
+
+    sr = [v for r in results for v in r["start_run_ms"]]
+    first, warm = sr[:1], sorted(sr[1:])
+    st = sorted(v for r in results for v in r["step_ms"])
+    print(f"start_run: first {first[0] if first else None}ms, warm p50 {pct(warm, .5)}ms "
+          f"max {warm[-1] if warm else None}ms | steps (excl. start_run): p50 {pct(st, .5)}ms "
+          f"p90 {pct(st, .9)}ms p99 {pct(st, .99)}ms max {st[-1] if st else None}ms "
+          f"mean {round(sum(st) / len(st), 3) if st else None}ms")
 
     summary = {"total_wall_s": round(total, 2), "jobs": args.jobs, "reuse": args.reuse,
                "results": results}
