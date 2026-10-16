@@ -123,11 +123,16 @@ public partial class RunSimulator
     /// "cost" itself stays an int (0 for X cards) for existing clients.
     /// </summary>
     private static void AddCardMeta(Dictionary<string, object?> d, CardModel c, IReadOnlySet<CardKeyword>? keywords = null,
-        int? rawEnergyCost = null)
+        int? rawEnergyCost = null, string energyCostKey = "cost")
     {
         try
         {
-            if (c.EnergyCost?.CostsX == true) d["costs_x"] = true;
+            if (c.EnergyCost?.CostsX == true)
+            {
+                d["costs_x"] = true;
+                // NCard draws "X"; GetResolved would return the stale X of the last play.
+                if (d.ContainsKey(energyCostKey)) d[energyCostKey] = 0;
+            }
             else if (c.EnergyCost != null && (rawEnergyCost ?? c.EnergyCost.GetWithModifiers(CostModifiers.All)) < 0) d["unplayable"] = true;
             if (!d.ContainsKey("unplayable") && (keywords ?? c.Keywords)?.Contains(CardKeyword.Unplayable) == true)
                 d["unplayable"] = true;
@@ -201,7 +206,12 @@ public partial class RunSimulator
 
     private static bool PotionUsable(Player player, PotionModel p)
     {
-        try { return player.CanUseOrRemovePotions && PassesUsabilityCheck(p); }
+        try
+        {
+            if (p.Usage == MegaCrit.Sts2.Core.Entities.Potions.PotionUsage.CombatOnly && !CombatManager.Instance.IsInProgress)
+                return false;
+            return player.CanUseOrRemovePotions && PassesUsabilityCheck(p);
+        }
         catch { return true; }
     }
 

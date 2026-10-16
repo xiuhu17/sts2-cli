@@ -270,3 +270,38 @@ class TestPotionUse:
         r = game.act("use_potion", potion_index=0)
         assert r["type"] == "error"
         assert game.send({"cmd": "get_map"}).get("type") != "error"
+
+    def test_combat_only_potion_outside_combat(self, game):
+        # NPotionPopup.RefreshButtons: CombatOnly potions can't be used outside combat.
+        game.start(seed="cp-flex-ooc")
+        r = game.set_player(potions=["FLEX_POTION"])
+        assert r["player"]["potions"][0]["usable"] is False
+        r = game.act("use_potion", potion_index=0)
+        assert r["type"] == "error" and "combat" in r["message"]
+        state = game.enter_room("combat", encounter="SHRINKER_BEETLE_WEAK")
+        assert state["player"]["potions"][0]["usable"] is True
+        state = game.act("use_potion", potion_index=0)
+        assert state["player"]["potions"] == []
+
+    def test_event_locks_potions(self, game):
+        # Ranwid the Elder sets Player.CanUseOrRemovePotions = false: no Use, no Discard.
+        game.start(seed="cp-ranwid")
+        game.set_player(potions=["FLEX_POTION"])
+        state = game.enter_room("event", event="RANWID_THE_ELDER")
+        assert state["decision"] == "event_choice"
+        assert state["player"]["potions_locked"] is True
+        assert not [a for a in state["legal_actions"] if "potion" in a["action"]]
+        r = game.act("discard_potion", potion_index=0)
+        assert r["type"] == "error"
+
+
+class TestShopCardMeta:
+    def test_x_cost_meta_keeps_gold_price(self, game):
+        # Card meta must not touch the shop's gold "cost" (energy cost is "card_cost").
+        for seed in ("cp-shop1", "cp-shop2", "cp-shop3", "cp-shop4"):
+            game.start(character="Ironclad", seed=seed)
+            state = game.enter_room("shop")
+            for c in state["cards"]:
+                assert c["cost"] > 0, c
+                if c.get("costs_x"):
+                    assert c["card_cost"] == 0

@@ -177,8 +177,9 @@ internal static class LegalActions
         }
 
         // Discarding a potion is allowed at any decision point.
-        foreach (var p in Potions(player))
-            acts.Add(Act("discard_potion", ("potion_index", p["index"])));
+        if (player?.GetValueOrDefault("potions_locked") is not true)
+            foreach (var p in Potions(player))
+                acts.Add(Act("discard_potion", ("potion_index", p["index"])));
         return acts;
     }
 

@@ -1781,6 +1781,9 @@ public partial class RunSimulator
         // the one UsePotionAction makes before cancelling (IsValidTarget).
         if (!player.CanUseOrRemovePotions)
             return Error("Potions can't be used right now");
+        // NPotionPopup.RefreshButtons: CombatOnly potions are only usable while a combat is running.
+        if (potion.Usage == MegaCrit.Sts2.Core.Entities.Potions.PotionUsage.CombatOnly && !CombatManager.Instance.IsInProgress)
+            return Error($"Potion {potion.Id.Entry} can only be used in combat");
         if (!PassesUsabilityCheck(potion))
             return Error($"Potion {potion.Id.Entry} can't be used here");
         if (!potion.IsValidTarget(target))
@@ -1827,6 +1830,8 @@ public partial class RunSimulator
         if (idx < 0 || idx >= potionsList.Count) return Error($"Invalid potion index {idx}");
         var potion = potionsList[idx];
         if (potion == null) return Error($"No potion at index {idx}");
+        // NPotionPopup disables Discard too while potions are locked (e.g. Ranwid the Elder).
+        if (!player.CanUseOrRemovePotions) return Error("Potions can't be discarded right now");
 
         MegaCrit.Sts2.Core.Commands.PotionCmd.Discard(potion).GetAwaiter().GetResult();
         _syncCtx.Pump();
@@ -2357,7 +2362,7 @@ public partial class RunSimulator
             {
                 // Energy cost hooks are evaluated once per card (they're the expensive part).
                 var ec = c.EnergyCost;
-                int rawCost = ec == null ? 0 : ec.CostsX ? ec.CapturedXValue : ec.GetWithModifiers(CostModifiers.All);
+                int rawCost = ec == null || ec.CostsX ? 0 : ec.GetWithModifiers(CostModifiers.All);
                 var cost = Math.Max(0, rawCost);
                 var key = $"{c.Id}|{c.CurrentUpgradeLevel}|{cost}|{c.Enchantment?.Id}|{c.Affliction?.Id}";
                 if (grouped && groups.TryGetValue(key, out var g))
@@ -3547,7 +3552,8 @@ public partial class RunSimulator
                     ["is_stocked"] = e.IsStocked,
                     ["on_sale"] = e.IsOnSale,
                 };
-                if (card != null) AddCardMeta(shopCard, card);
+                // The shop's "cost" is the gold price; the energy cost is "card_cost".
+                if (card != null) AddCardMeta(shopCard, card, energyCostKey: "card_cost");
                 return shopCard;
             }).ToList();
 
@@ -4162,7 +4168,7 @@ public partial class RunSimulator
             };
             try
             {
-                if (clone.EnergyCost?.CostsX == true) upInfo["costs_x"] = true;
+                if (clone.EnergyCost?.CostsX == true) { upInfo["costs_x"] = true; upInfo["cost"] = 0; }
                 if (clone.HasStarCostX) upInfo["star_cost_x"] = true;
                 else if (clone.CurrentStarCost >= 0) upInfo["star_cost"] = clone.CurrentStarCost;
             }
@@ -4182,6 +4188,9 @@ public partial class RunSimulator
             ["block"] = player.Creature?.Block ?? 0,
             ["gold"] = player.Gold,
             ["potion_slots"] = player.MaxPotionCount,
+            // Player.CanUseOrRemovePotions: some events (Ranwid the Elder, Stone of All Time, ...)
+            // lock potions; the game greys out both Use and Discard.
+            ["potions_locked"] = player.CanUseOrRemovePotions ? null : true,
             ["relics"] = player.Relics?.Select(r =>
             {
                 var vars = new Dictionary<string, object?>();
