@@ -43,8 +43,8 @@ uniform within a verb, never discards potions) or `heuristic` (used by `play.py 
 card while one is legal and aims at the lowest-HP enemy, rests below 70% HP else smiths,
 removes Strike/Defend first, claims every reward then proceeds, otherwise random). The
 docstring of `python/policy.py` lists every rule. A run is reproducible from (seed, policy).
-Rewards screens and treasure chests are always decisions: the clients send
-`"manual_rewards": true` and handle `rewards` / `treasure_relic`.
+Rewards screens and treasure chests are always decisions: the clients handle `rewards` /
+`treasure_relic` (they still send `"manual_rewards": true`, which the engine now ignores).
 
 ## Play
 
@@ -268,7 +268,7 @@ Silent、Defect、Regent、Necrobinder。“完成”指正常胜利或死亡；
 的默认值：按种子随机，按操作类型加权，同类型内均匀选择，从不丢弃药水）或 `heuristic`（`play.py --auto`
 使用：只要有能打的牌就打，攻击生命最低的敌人；生命低于 70% 休息，否则升级；优先移除打击/防御；
 领取全部奖励后继续；其余随机）。所有规则见 `python/policy.py` 的文档字符串。同一种子加同一策略可以完全复现。
-奖励界面和宝箱永远是决策：客户端会发送 `"manual_rewards": true` 并处理 `rewards` / `treasure_relic`。
+奖励界面和宝箱永远是决策：客户端会处理 `rewards` / `treasure_relic`（仍会发送 `"manual_rewards": true`，引擎现在会忽略它）。
 
 ## 玩
 
