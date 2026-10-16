@@ -5,6 +5,17 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RollForward>LatestMajor</RollForward>
+    <!-- Most game code runs once per path; PGO instrumentation costs more than it returns. -->
+    <TieredPGO>false</TieredPGO>
+  </PropertyGroup>
+
+  <!-- ReadyToRun build (setup.sh: dotnet publish -c Release -r <rid> -p:PublishReadyToRun=true
+       -o bin/R2R/net9.0). It bundles precompiled copies of the game DLLs instead of loading lib/.
+       No inlining in the precompiled code: an inlined copy of a game method would bypass the
+       Harmony patches the engine installs on it; hot methods are still re-JIT'd (with inlining,
+       patch-aware) at tier 1, exactly as in the plain build. -->
+  <PropertyGroup Condition="'$(PublishReadyToRun)' == 'true'">
+    <PublishReadyToRunCrossgen2ExtraArgs>--codegenopt:JitNoInline=1</PublishReadyToRunCrossgen2ExtraArgs>
   </PropertyGroup>
 
   <ItemGroup>
@@ -16,35 +27,35 @@
   <ItemGroup>
     <Reference Include="sts2">
       <HintPath>..\..\lib\sts2.dll</HintPath>
-      <Private>false</Private>
+      <Private Condition="'$(PublishReadyToRun)' != 'true'">false</Private>
     </Reference>
     <Reference Include="SmartFormat">
       <HintPath>..\..\lib\SmartFormat.dll</HintPath>
-      <Private>false</Private>
+      <Private Condition="'$(PublishReadyToRun)' != 'true'">false</Private>
     </Reference>
     <Reference Include="SmartFormat.ZString">
       <HintPath>..\..\lib\SmartFormat.ZString.dll</HintPath>
-      <Private>false</Private>
+      <Private Condition="'$(PublishReadyToRun)' != 'true'">false</Private>
     </Reference>
     <Reference Include="Sentry">
       <HintPath>..\..\lib\Sentry.dll</HintPath>
-      <Private>false</Private>
+      <Private Condition="'$(PublishReadyToRun)' != 'true'">false</Private>
     </Reference>
     <Reference Include="Steamworks.NET">
       <HintPath>..\..\lib\Steamworks.NET.dll</HintPath>
-      <Private>false</Private>
+      <Private Condition="'$(PublishReadyToRun)' != 'true'">false</Private>
     </Reference>
     <Reference Include="MonoMod.Backports">
       <HintPath>..\..\lib\MonoMod.Backports.dll</HintPath>
-      <Private>false</Private>
+      <Private Condition="'$(PublishReadyToRun)' != 'true'">false</Private>
     </Reference>
     <Reference Include="MonoMod.ILHelpers">
       <HintPath>..\..\lib\MonoMod.ILHelpers.dll</HintPath>
-      <Private>false</Private>
+      <Private Condition="'$(PublishReadyToRun)' != 'true'">false</Private>
     </Reference>
     <Reference Include="0Harmony">
       <HintPath>..\..\lib\0Harmony.dll</HintPath>
-      <Private>false</Private>
+      <Private Condition="'$(PublishReadyToRun)' != 'true'">false</Private>
     </Reference>
   </ItemGroup>
 </Project>

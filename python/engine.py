@@ -1,7 +1,7 @@
 """
 Shared helpers for launching and talking to the headless engine (src/Sts2Headless).
 
-- engine_command(): runs the already-built Sts2Headless.dll directly with `dotnet`,
+- engine_command(): runs the already-built Sts2Headless.dll (see find_engine_dll) directly with `dotnet`,
   which skips MSBuild project evaluation (~0.25s per launch vs `dotnet run`).
   Falls back to `dotnet run --no-build --project ...` when the dll isn't built yet,
   or when STS2_USE_DOTNET_RUN=1.
@@ -19,7 +19,40 @@ import threading
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROJECT = os.path.join(ROOT, "src", "Sts2Headless", "Sts2Headless.csproj")
-ENGINE_DLL = os.path.join(ROOT, "src", "Sts2Headless", "bin", "Debug", "net9.0", "Sts2Headless.dll")
+_BIN = os.path.join(ROOT, "src", "Sts2Headless", "bin")
+# Debug is what `dotnet build` produces; R2R is the ReadyToRun (precompiled) build setup.sh
+# publishes, which starts faster and steps ~30% faster. It must stay 5 levels below the repo.
+ENGINE_DLL = os.path.join(_BIN, "Debug", "net9.0", "Sts2Headless.dll")
+ENGINE_CANDIDATES = [
+    os.path.join(_BIN, "R2R", "net9.0", "Sts2Headless.dll"),
+    os.path.join(_BIN, "Release", "net9.0", "Sts2Headless.dll"),
+    ENGINE_DLL,
+]
+LIB_STS2 = os.path.join(ROOT, "lib", "sts2.dll")
+
+
+def find_engine_dll():
+    """The engine to launch: $STS2_ENGINE_DLL, else the most recently built of R2R/Release/Debug.
+
+    A build older than lib/sts2.dll is skipped when it carries its own copy of the game DLL
+    (R2R), since it would run the previous game code. Newest-wins means a plain `dotnet build`
+    after a source change is picked up even if an older R2R build exists.
+    """
+    env = os.environ.get("STS2_ENGINE_DLL")
+    if env:
+        return env
+    lib_mtime = os.path.getmtime(LIB_STS2) if os.path.isfile(LIB_STS2) else 0
+    best, best_mtime = None, -1.0
+    for dll in ENGINE_CANDIDATES:
+        if not os.path.isfile(dll):
+            continue
+        mtime = os.path.getmtime(dll)
+        bundled = os.path.join(os.path.dirname(dll), "sts2.dll")
+        if os.path.isfile(bundled) and os.path.getmtime(bundled) < lib_mtime:
+            continue  # stale copy of the game DLL
+        if mtime > best_mtime:
+            best, best_mtime = dll, mtime
+    return best
 
 
 def find_dotnet():
@@ -39,8 +72,9 @@ def find_dotnet():
 
 def engine_command(dotnet=None):
     dotnet = dotnet or find_dotnet() or "dotnet"
-    if os.path.isfile(ENGINE_DLL) and os.environ.get("STS2_USE_DOTNET_RUN") != "1":
-        return [dotnet, ENGINE_DLL]
+    dll = find_engine_dll()
+    if dll and os.path.isfile(dll) and os.environ.get("STS2_USE_DOTNET_RUN") != "1":
+        return [dotnet, dll]
     return [dotnet, "run", "--no-build", "--project", PROJECT]
 
 

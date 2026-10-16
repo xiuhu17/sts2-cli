@@ -108,9 +108,8 @@ internal class LocLookup
 
     public LocLookup()
     {
-        var baseDir = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..");
-        Load(Path.Combine(baseDir, "localization_eng"), _eng);
-        Load(Path.Combine(baseDir, "localization_zhs"), _zhs);
+        Load(DataDirs.Localization("localization_eng"), _eng);
+        Load(DataDirs.Localization("localization_zhs"), _zhs);
     }
 
     private static void Load(string dir, Dictionary<string, Dictionary<string, string>> target)
@@ -4796,7 +4795,7 @@ public partial class RunSimulator
                 System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
             var tables = new Dictionary<string, LocTable>();
 
-            var locDir = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "localization_eng");
+            var locDir = DataDirs.Localization("localization_eng");
             if (Directory.Exists(locDir))
             {
                 foreach (var file in Directory.GetFiles(locDir, "*.json"))

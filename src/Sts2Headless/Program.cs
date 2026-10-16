@@ -186,7 +186,13 @@ class Program
                 return;
             }
             if (!End()) Park();
-            WriteLine(new Dictionary<string, object?> { ["type"] = "ready", ["version"] = "0.2.0" });
+            var ready = new Dictionary<string, object?> { ["type"] = "ready", ["version"] = "0.2.0", ["localization"] = DataDirs.LocalizationFound };
+            if (!DataDirs.LocalizationFound)
+            {
+                ready["warning"] = $"Localization tables not found ({DataDirs.Localization("localization_eng")}); names and descriptions will be raw keys. Set STS2_DATA_DIR to the folder containing localization_eng/.";
+                Console.Error.WriteLine($"[WARN] {ready["warning"]}");
+            }
+            WriteLine(ready);
 
             // Do the one-time engine initialisation (Harmony patches, localization, ModelDb, ...)
             // now instead of inside the client's first start_run/load_save. It has no inputs,
