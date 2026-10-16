@@ -21,12 +21,14 @@ using MegaCrit.Sts2.Core.Rewards;
 using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Models.Powers;
 using MegaCrit.Sts2.Core.GameActions.Multiplayer;
+using MegaCrit.Sts2.Core.Random;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.TestSupport;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Localization;
 using MegaCrit.Sts2.Core.Multiplayer.Serialization;
 using MegaCrit.Sts2.Core.Saves;
+using MegaCrit.Sts2.Core.Saves.Validation;
 using MegaCrit.Sts2.Core.Unlocks;
 
 namespace Sts2Headless;
@@ -290,7 +292,8 @@ public class RunSimulator
     private TaskCompletionSource<IEnumerable<CardModel>>? _pendingBundleTcs;
 
     public Dictionary<string, object?> StartRun(string character, int ascension = 0, string? seed = null, string lang = "en",
-        bool manualRewards = false, IReadOnlyList<string>? modifiers = null, string? gameMode = null)
+        bool manualRewards = false, IReadOnlyList<string>? modifiers = null, string? gameMode = null,
+        string? profilePath = null)
     {
         try
         {
@@ -314,25 +317,34 @@ public class RunSimulator
                     return Error($"Unknown modifier '{name}'. Known: {string.Join(", ", KnownModifiers())}");
                 modifierModels.Add(m);
             }
+            ProgressState? progress = null;
+            if (profilePath != null)
+            {
+                try { progress = LoadProgress(profilePath); }
+                catch (Exception ex) { return Error($"Cannot read profile '{profilePath}': {ex.Message}"); }
+            }
+            var unlocks = progress != null ? new UnlockState(progress) : UnlockState.all;
             if (!ResetForNewRun())
                 return RestartRequired();
             _loc.Lang = lang;
             ManualRewards = manualRewards;
 
-            var player = CreatePlayer(character);
+            var player = CreatePlayer(character, unlocks);
             if (player == null)
                 return Error($"Unknown character: {character}");
 
-            var seedStr = seed ?? "headless_" + DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            // Same seed handling as the game's lobby: typed seeds are canonicalized, and the acts
+            // are drawn from the seed ("act_selection" stream), so a seed reproduces the real game's run.
+            var seedStr = seed != null ? SeedHelper.CanonicalizeSeed(seed) : SeedHelper.GetRandomSeed();
             Log($"Creating RunState with seed={seedStr}");
 
-            // Use CreateForTest which properly handles mutable copies internally
-            _runState = RunState.CreateForTest(
-                players: new[] { player },
-                modifiers: modifierModels,
-                gameMode: mode.Value,
-                ascensionLevel: ascension,
-                seed: seedStr
+            _runState = RunState.CreateForNewRun(
+                new[] { player },
+                SelectActs(seedStr, unlocks, progress).Select(a => a.ToMutable()).ToList(),
+                modifierModels,
+                mode.Value,
+                ascension,
+                seedStr
             );
 
             // Set up RunManager with test mode
@@ -4292,15 +4304,53 @@ public class RunSimulator
     private static readonly HashSet<string> KnownCharacters =
         new() { "ironclad", "silent", "defect", "regent", "necrobinder" };
 
-    private Player? CreatePlayer(string characterName)
+    /// <summary>
+    /// StartRunLobby.BeginRunLocally / ActModel.GetRandomList: one act per slot from the seed's
+    /// "act_selection" stream; an unlocked but never-discovered act is forced, as in the game.
+    /// </summary>
+    private static List<ActModel> SelectActs(string seed, UnlockState unlocks, ProgressState? progress)
+    {
+        var rng = new Rng(StringHelper.GetDeterministicHashCode(seed), "act_selection");
+        var acts = new List<ActModel>();
+        foreach (var candidates in ModelDb.ActsByIndex)
+        {
+            ActModel? forced = null;
+            var unlocked = new List<ActModel>();
+            foreach (var act in candidates)
+            {
+                if (!act.IsUnlocked(unlocks)) continue;
+                if (progress != null && !act.IsDefault && !progress.DiscoveredActs.Contains(act.Id))
+                {
+                    forced = act;
+                    break;
+                }
+                unlocked.Add(act);
+            }
+            acts.Add(forced ?? rng.NextItem(unlocked) ?? throw new InvalidOperationException("No unlocked act"));
+        }
+        return acts;
+    }
+
+    /// <summary>Reads a game profile's progress.save (unlocked epochs, seen encounters, discovered acts).</summary>
+    private static ProgressState LoadProgress(string path)
+    {
+        var json = File.ReadAllText(Environment.ExpandEnvironmentVariables(
+            path.StartsWith("~/") ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), path[2..]) : path));
+        var result = SaveManager.FromJson<SerializableProgress>(json);
+        if (result.SaveData == null)
+            throw new InvalidDataException($"unreadable progress save ({result.Status})");
+        return ProgressState.FromSerializable(result.SaveData, new DeserializationContext());
+    }
+
+    private Player? CreatePlayer(string characterName, UnlockState unlocks)
     {
         return characterName.ToLowerInvariant() switch
         {
-            "ironclad" => Player.CreateForNewRun<Ironclad>(UnlockState.all, 1uL),
-            "silent" => Player.CreateForNewRun<Silent>(UnlockState.all, 1uL),
-            "defect" => Player.CreateForNewRun<Defect>(UnlockState.all, 1uL),
-            "regent" => Player.CreateForNewRun<Regent>(UnlockState.all, 1uL),
-            "necrobinder" => Player.CreateForNewRun<Necrobinder>(UnlockState.all, 1uL),
+            "ironclad" => Player.CreateForNewRun<Ironclad>(unlocks, 1uL),
+            "silent" => Player.CreateForNewRun<Silent>(unlocks, 1uL),
+            "defect" => Player.CreateForNewRun<Defect>(unlocks, 1uL),
+            "regent" => Player.CreateForNewRun<Regent>(unlocks, 1uL),
+            "necrobinder" => Player.CreateForNewRun<Necrobinder>(unlocks, 1uL),
             _ => null
         };
     }

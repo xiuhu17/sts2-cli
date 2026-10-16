@@ -232,7 +232,8 @@ class Program
                     ReadBool(cmd, "manual_rewards"),
                     cmd.TryGetProperty("modifiers", out var mods) && mods.ValueKind == JsonValueKind.Array
                         ? mods.EnumerateArray().Select(m => m.GetString() ?? "").ToList() : null,
-                    cmd.TryGetProperty("game_mode", out var gm) ? gm.GetString() : null
+                    cmd.TryGetProperty("game_mode", out var gm) ? gm.GetString() : null,
+                    cmd.TryGetProperty("profile", out var prof) ? prof.GetString() : null
                 );
 
             case "action":
