@@ -207,9 +207,20 @@ def header(st):
         if pots or slots:
             lines.append(f"{t('Potions', '药水')} ({len(pots)}/{slots}):" + ("" if pots else f" {t('none', '无')}"))
             for x in pots:
-                use = x.get("usage")
-                lines.append(f"  P{x.get('index')} {x.get('name')} [{x.get('target_type')}, {use}]{_desc(x.get('description'))}")
+                lines.append(f"  P{x.get('index')} {x.get('name')} [{potion_tags(x)}]{_desc(x.get('description'))}")
     return lines
+
+
+_POTION_USAGE = {"CombatOnly": ("combat only", "仅限战斗"), "AnyTime": ("any time", "随时可用"),
+                 "Automatic": ("automatic, not used by hand", "自动触发，不能手动使用"), "None": ("not usable", "不能使用")}
+
+
+def potion_tags(x):
+    """'targets one enemy, combat only': a potion's target and when it can be used."""
+    tt = _TARGET_TEXT.get(x.get("target_type"))
+    us = _POTION_USAGE.get(x.get("usage"))
+    bits = [t(*tt) if tt else x.get("target_type"), t(*us) if us else x.get("usage")]
+    return t(", ", "，").join(str(b) for b in bits if b)
 
 
 _PILE_NAMES = {"hand": ("hand", "手牌"), "draw": ("draw pile", "抽牌堆"), "discard": ("discard pile", "弃牌堆"),
@@ -346,6 +357,8 @@ def action_label(a, st):
     if act == "leave_room":
         return t("leave", "离开")
     if act == "proceed":
+        if st.get("decision") == "rewards" and st.get("rewards"):
+            return t("proceed (skips the rewards not claimed)", "继续（放弃未领取的奖励）")
         return t("proceed", "继续")
     if act == "skip_card_reward":
         return t("skip the card reward", "跳过卡牌奖励")
@@ -416,7 +429,8 @@ def render_combat_core(st, gl, hand_title=None):
     out.append(hand_title or t("Hand: (H#/E# renumber as cards/enemies leave; within one `do` chain they mean this view)",
                                "手牌：（卡牌/敌人离场后 H#/E# 会重新编号；同一条 do 指令链里它们指本视图中的牌和敌人）"))
     for c in hand:
-        flag = "" if c.get("can_play", True) else t(" [unplayable]", " [不可打出]")
+        why = _one_line(c.get("unplayable_message") or ", ".join(c.get("unplayable_reasons") or [])).rstrip("。.")
+        flag = "" if c.get("can_play", True) else (t(" [unplayable", " [不可打出") + (t(": ", "：") + why if why else "") + "]")
         dmg = ""
         # Per-target damage (what hovering each enemy shows), even with one enemy: Vulnerable,
         # Weak and other modifiers change it from the card text.
@@ -481,7 +495,7 @@ _KNOWN_KEYS = {
                      "dialogue_pool", "dialogue_random", "softlocked", "softlock_reason", "message"},
     "rest_site": {"options", "can_leave", "softlocked", "softlock_reason", "message"},
     "shop": {"cards", "relics", "potions", "card_removal_cost", "card_removal_available"},
-    "rewards": {"rewards", "potion_slots_full", "gold_earned", "source"},
+    "rewards": {"rewards", "potion_slots_full", "gold_earned", "source", "can_skip"},
     "treasure_relic": {"relics", "can_skip"},
     "map_select": {"act", "act_name", "choices", "floor"},
     "crystal_sphere": {"divinations_left", "width", "height", "rows", "hidden_cells", "items_seen", "tools"},
@@ -495,7 +509,8 @@ _CARD_KEYS = {"index", "uid", "id", "name", "cost", "cost_x", "star_cost", "type
               "affliction_amount", "after_upgrade", "after_enchant", "transforms_to", "transform_options", "stats",
               "can_play", "unplayable", "target_type", "damage_by_target", "vars", "count", "price", "on_sale",
               "is_stocked", "energy_cost", "card_cost", "reason", "upgradable", "base_cost", "cost_changed",
-              "unplayable_reasons", "blocked_by", "costs_x", "x_value", "colorless"}
+              "unplayable_reasons", "blocked_by", "costs_x", "x_value", "colorless", "unplayable_message",
+              "cost_crossed", "uid", "play_count"}
 
 
 def _short_json(v, limit=400):
@@ -638,7 +653,8 @@ def render_body(st, gl):
         for c in st.get("cards") or []:
             body.append(card_line(c, gl, prefix=f" {c.get('index')}) ") + card_extras(c))
         for a in st.get("alternatives") or []:
-            if isinstance(a, dict):
+            # Skip is the skip action (skip_card_reward), not an alternative to pick.
+            if isinstance(a, dict) and a.get("id") != "Skip":
                 body.append(f" {t('alternative', '其他选项')} {a.get('index')}) {a.get('name') or a.get('id')}{_desc(a.get('description'))}")
     elif d == "bundle_select":
         body.append(t("CHOOSE A PACK", "选择卡包"))
@@ -695,8 +711,13 @@ def render_body(st, gl):
                                                "（药水栏已满：丢弃药水后才能领取药水）") if st.get("potion_slots_full") else "")
                     + t("  (claim N: these numbers stay fixed; claiming one does not renumber the rest)",
                         "（claim N：编号固定，领取后其余奖励不会重新编号）"))
+        if st.get("can_skip") is False and st.get("rewards"):
+            # RewardsSet.WithSkippingDisallowed (Neow's Bones): no Proceed until all are taken.
+            body.append("  " + t("Every reward must be taken: there is no proceed until all are claimed.",
+                                 "必须领取全部奖励：全部领取之前不能继续。"))
         for w in st.get("rewards") or []:
-            body.append(f" {w.get('index')}) {reward_text(w)}")
+            nos = t(" (cannot be skipped)", "（不可跳过）") if w.get("type") == "card" and w.get("can_skip") is False else ""
+            body.append(f" {w.get('index')}) {reward_text(w)}{nos}")
     elif d == "treasure_relic":
         body.append(t("TREASURE", "宝箱"))
         for r in st.get("relics") or []:
@@ -978,11 +999,6 @@ class Refs:
     def screen(self, key, i, st, what):
         if self.first:
             return i
-        sd, cd = self.snap.get("decision"), (st or {}).get("decision")
-        if sd != cd:
-            raise StopStep(t(f"'{what} {i}' would pick from a {cd} screen this chain has not shown you "
-                             f"(it started at {sd}); look at it first",
-                             f"'{what} {i}' 会在指令链未显示过的 {cd} 界面上选择（链开始于 {sd}）；请先查看"))
         self.same_screen(f"{what} {i}", st)
         old = next((x for x in self.snap.get(key) or [] if isinstance(x, dict) and x.get("index") == i), None)
         new = next((x for x in (st or {}).get(key) or [] if isinstance(x, dict) and x.get("index") == i), None)
@@ -998,15 +1014,18 @@ class Refs:
                              f"{what} {i} 现在是 {_item_label(new)}（指令链开始时是 {_item_label(old)}）"))
         return i
 
-    def same_screen(self, step, st):
-        """Stop unless `st` is the screen instance the chain started on."""
+    def same_screen(self, step, st, verb=("pick from", "选择")):
+        """Stop unless `st` is the screen instance the chain started on, saying what differs."""
         if self.first or same_screen(self.snap, st):
             return
-        raise StopStep(t(f"'{step}' would pick from a different {(st or {}).get('decision')} screen than the one "
-                         f"this chain started on (now: {screen_desc(st)}; shown: {screen_desc(self.snap)}); "
+        dec = (st or {}).get("decision")
+        diff = screen_diff(self.snap, st)
+        if dec != self.snap.get("decision"):
+            raise StopStep(t(f"'{step}' would {verb[0]} a {dec} screen this chain has not shown you: {diff}; look at it first",
+                             f"'{step}' 会在指令链未显示过的 {dec} 界面上{verb[1]}：{diff}；请先查看"))
+        raise StopStep(t(f"'{step}' would {verb[0]} a different {dec} screen than the one this chain started on: {diff}; "
                          "look at it first",
-                         f"'{step}' 会在另一个 {(st or {}).get('decision')} 界面上选择，而不是指令链开始时的那个"
-                         f"（现在：{screen_desc(st)}；当时显示：{screen_desc(self.snap)}）；请先查看"))
+                         f"'{step}' 会在另一个 {dec} 界面上{verb[1]}，而不是指令链开始时的那个：{diff}；请先查看"))
 
     def numbered_action(self, n, st, act):
         """The action numbered n in the shown list, its references resolved against `st`."""
@@ -1014,6 +1033,12 @@ class Refs:
         args = dict(act.get("args") or {})
         if self.first:
             return {"action": a, **({"args": args} if args else {})}
+        # Every action number belongs to the list printed with the state the chain started
+        # from: it only runs on that very screen instance (rewards / shop: the items left of
+        # it, see same_screen), never on a screen that opened since - even one that looks the
+        # same (the removal screen closed by 'skip' and opened again by 'remove').
+        self.same_screen(f"{n}", st, (f"run action {n} ({action_label(act, self.snap)}) on",
+                                      f"执行操作 {n}（{action_label(act, self.snap)}）"))
         if a == "play_card":
             args["card_index"] = self.hand(args.get("card_index"), st)
         if a in ("use_potion", "discard_potion"):
@@ -1024,9 +1049,6 @@ class Refs:
             for x in str(args["indices"]).split(","):
                 if x.strip().isdigit():
                     self.screen("cards", int(x), st, "select")
-        if a == "select_map_node" and not same_screen(self.snap, st):
-            raise StopStep(t(f"action {n} was a move on the map you saw; the game is now at {screen_desc(st)}",
-                             f"操作 {n} 是你看到的地图上的移动；游戏现在处于 {screen_desc(st)}"))
         if a in self._SCREEN:
             key, arg, what = self._SCREEN[a]
             self.screen(key, args.get(arg), st, what)
@@ -1112,7 +1134,96 @@ def screen_desc(st):
             f"{o.get('index')} {o.get('title')}" for o in st.get("options") or [] if isinstance(o, dict))
     if d == "map_select":
         return f"{d} " + ", ".join(f"go {c.get('col')} {c.get('row')}" for c in st.get("choices") or [] if isinstance(c, dict))
+    if d == "rewards":
+        return f"{d}: {_items_text(st, 'rewards')}"
+    if d == "treasure_relic":
+        return f"{d}: {_items_text(st, 'relics')}"
     return str(d)
+
+
+_SELECT_SCREEN = {"remove": ("removal screen", "移除界面"), "upgrade": ("upgrade screen", "升级界面"),
+                  "transform": ("transform screen", "变化界面"), "enchant": ("enchant screen", "附魔界面"),
+                  "discard": ("discard screen", "丢弃界面"), "exhaust": ("exhaust screen", "消耗界面")}
+_SCREEN_NAME = {"card_select": ("card selection screen", "选牌界面"), "card_reward": ("card reward screen", "卡牌奖励界面"),
+                "bundle_select": ("pack selection screen", "卡包选择界面"), "event_choice": ("event page", "事件页面"),
+                "rest_site": ("rest site", "休息处"), "shop": ("shop", "商店"), "rewards": ("rewards screen", "奖励界面"),
+                "treasure_relic": ("treasure chest", "宝箱"), "map_select": ("map", "地图"),
+                "combat_play": ("combat turn", "战斗回合"), "crystal_sphere": ("Crystal Sphere", "水晶球")}
+
+
+def screen_name(st):
+    """'the removal screen' / '移除界面': what one screen is, for messages."""
+    st = st or {}
+    d = st.get("decision")
+    if d == "card_select" and st.get("purpose") in _SELECT_SCREEN:
+        en, zh = _SELECT_SCREEN[st["purpose"]]
+    else:
+        en, zh = _SCREEN_NAME.get(d, (str(d), str(d)))
+    return t(f"the {en}", zh)
+
+
+def _items_text(st, key):
+    return ", ".join(f"{x.get('index')} {_item_label(x).strip(chr(39))}" for x in (st or {}).get(key) or []
+                     if isinstance(x, dict) and x.get("is_stocked") is not False) or t("none", "无")
+
+
+def screen_diff(a, b):
+    """What differs between the screen a chain was shown (a) and the one the game is at (b):
+    the reason a step written for `a` does not run on `b`."""
+    a, b = a or {}, b or {}
+    da, db = a.get("decision"), b.get("decision")
+    now_shown = t(f"now: {screen_desc(b)}; shown: {screen_desc(a)}", f"现在：{screen_desc(b)}；当时显示：{screen_desc(a)}")
+    if da != db:
+        return t(f"the game is now at {screen_desc(b)}, the chain started at {screen_desc(a)}",
+                 f"游戏现在处于 {screen_desc(b)}，指令链开始于 {screen_desc(a)}")
+    ca, cb = a.get("context") or {}, b.get("context") or {}
+    if (ca.get("act"), ca.get("floor")) != (cb.get("act"), cb.get("floor")):
+        return t(f"this is another room (act {cb.get('act')} floor {cb.get('floor')}; the chain started on floor "
+                 f"{ca.get('floor')})", f"这是另一个房间（第{cb.get('act')}幕 楼层 {cb.get('floor')}；指令链开始于楼层 {ca.get('floor')}）")
+    strip = lambda st: {k: v for k, v in st.items() if k != "selection_id"}
+    if a.get("selection_id") != b.get("selection_id") and same_screen(strip(a), strip(b)):
+        return t(f"{screen_name(b)} was closed and opened again (new selection) - it was not shown to you",
+                 f"{screen_name(b)}已关闭并重新打开（新的选择）——它没有显示给你")
+    bits = []
+    src = lambda st: (st.get("source") or {}).get("name") if isinstance(st.get("source"), dict) else st.get("source")
+    if src(a) != src(b):
+        bits.append(t(f"it is from {src(b) or '?'} (the one shown was from {src(a) or '?'})",
+                      f"它来自 {src(b) or '?'}（显示的那个来自 {src(a) or '?'}）"))
+    if a.get("purpose") != b.get("purpose") or _one_line(a.get("prompt")) != _one_line(b.get("prompt")):
+        bits.append(t(f"it asks '{_one_line(b.get('prompt')) or b.get('purpose')}' (shown: "
+                      f"'{_one_line(a.get('prompt')) or a.get('purpose')}')",
+                      f"它要求“{_one_line(b.get('prompt')) or b.get('purpose')}”（显示的是“{_one_line(a.get('prompt')) or a.get('purpose')}”）"))
+    if da == "event_choice" and _one_line(a.get("description")) != _one_line(b.get("description")):
+        bits.append(t("the event moved on to another page", "事件已进入另一页"))
+    for key, (en, zh) in (("cards", ("cards", "卡牌")), ("options", ("options", "选项")), ("rewards", ("rewards", "奖励")),
+                          ("relics", ("relics", "遗物")), ("potions", ("potions", "药水")), ("bundles", ("packs", "卡包")),
+                          ("alternatives", ("alternatives", "其他选项")), ("choices", ("map choices", "地图选项"))):
+        if key not in a and key not in b:
+            continue
+        if da in ("rewards", "shop"):
+            shown = {x.get("index"): _item_key(x) for x in a.get(key) or [] if isinstance(x, dict)}
+            new = [x for x in b.get(key) or [] if isinstance(x, dict) and x.get("is_stocked") is not False
+                   and shown.get(x.get("index")) != _item_key(x)]
+            if new:
+                bits.append(t(f"it lists {en} that were not shown: " + ", ".join(f"{x.get('index')} {_item_label(x)}" for x in new),
+                              f"它列出了没有显示过的{zh}：" + "，".join(f"{x.get('index')} {_item_label(x)}" for x in new)))
+            continue
+        ids = lambda st: [_opt_id(x) for x in st.get(key) or []] if key != "choices" else \
+            [(c.get("col"), c.get("row")) for c in st.get(key) or [] if isinstance(c, dict)]
+        if ids(a) != ids(b):
+            if key == "choices":
+                bits.append(t("the map choices differ", "地图选项不同"))
+            elif [_item_key(x) for x in a.get(key) or [] if isinstance(x, dict)] == \
+                    [_item_key(x) for x in b.get(key) or [] if isinstance(x, dict)]:
+                bits.append(t(f"the same {en}, but other instances (another screen)", f"{zh}相同，但不是同一批（另一个界面）"))
+            else:
+                bits.append(t(f"other {en} ({_items_text(b, key)}; shown: {_items_text(a, key)})",
+                              f"{zh}不同（{_items_text(b, key)}；当时显示：{_items_text(a, key)}）"))
+    if not bits and a.get("selection_id") != b.get("selection_id"):
+        bits.append(t("another selection (new selection id)", "另一个选择（新的 selection_id）"))
+    if LANG["lang"] == "zh":
+        return "；".join(bits) + (f"（{now_shown}）" if bits else now_shown)
+    return "; ".join(bits) + (f" ({now_shown})" if bits else now_shown)
 
 
 def _item_key(x):
@@ -1147,7 +1258,7 @@ def legal_now(st, limit=12):
     if not labels:
         return t("none", "无")
     more = len(labels) - limit
-    return "; ".join(labels[:limit]) + (t(f"; ... ({more} more: sts2 state)", f"；……（另有 {more} 项：sts2 state）") if more > 0 else "")
+    return t("; ", "；").join(labels[:limit]) + (t(f"; ... ({more} more: sts2 state)", f"；……（另有 {more} 项：sts2 state）") if more > 0 else "")
 
 
 # verb -> (decisions it picks from, what it picks: en, zh)
@@ -1178,6 +1289,10 @@ def _needs_screen(verb, step, st):
                       f"'{step}' 用于选择{zh}，但当前决策是 {dec}：现在这里没有这类选项。现在可选：{legal_now(st)}"))
 
 
+_WHAT_ZH = {"card": "牌", "enemy": "敌人", "potion": "药水", "option": "选项", "choice": "地图选项", "index": "编号",
+            "reward": "奖励", "alternative": "其他选项", "bundle": "卡包", "relic": "遗物", "col": "列号", "row": "行号"}
+
+
 def _int(s, what):
     s = str(s).strip()
     if s[:1].upper() in ("H", "E", "P") and s[1:].isdigit():
@@ -1185,7 +1300,7 @@ def _int(s, what):
     try:
         return int(s)
     except ValueError:
-        raise VerbError(f"{what} must be a number, got '{s}'") from None
+        raise VerbError(t(f"{what} must be a number, got '{s}'", f"{_WHAT_ZH.get(what, what)}必须是数字，收到的是“{s}”")) from None
 
 
 def _strip_quotes(s):
@@ -1216,7 +1331,8 @@ def _find_by_name(items, ref, what, prefix, remap=_ident):
     pref = exact or [x for x in items if str(x.get("name", "")).lower().startswith(low)]
     if not pref:
         names = ", ".join(f"{prefix}{x.get('index')} {x.get('name')}" for x in items)
-        raise VerbError(f"no {what} matching '{ref_s}' (have: {names or t('none', '无')})")
+        raise VerbError(t(f"no {what} matching '{ref_s}' (have: {names or 'none'})",
+                          f"没有与“{ref_s}”匹配的{_WHAT_ZH.get(what, what)}（现有：{names or '无'}）"))
     # Every match counts, playable or not: picking the playable one would play a card the
     # player did not name. Enemies with the same name are different targets; identical cards
     # (same text, cost and playability) are the same play.
@@ -1224,7 +1340,8 @@ def _find_by_name(items, ref, what, prefix, remap=_ident):
         names = ", ".join(f"{prefix}{x.get('index')} {x.get('name')}"
                           + ("" if what != "card" or x.get("can_play", True) else t(" (not playable)", "（不能打出）"))
                           for x in pref)
-        raise VerbError(f"'{ref_s}' matches several {what}s ({names}); use the {prefix} number")
+        raise VerbError(t(f"'{ref_s}' matches several {what}s ({names}); use the {prefix} number",
+                          f"“{ref_s}”匹配到多个{_WHAT_ZH.get(what, what)}（{names}）；请用 {prefix} 编号"))
     if what == "card" and not pref[0].get("can_play", True):
         why = pref[0].get("unplayable_message") or ", ".join(pref[0].get("unplayable_reasons") or []) or "?"
         raise VerbError(t(f"{prefix}{pref[0].get('index')} {pref[0].get('name')} is not playable: {why}",
@@ -1260,7 +1377,7 @@ def parse_verb(text, st, numbered, refs=None):
         refs = Refs(st, numbered)
     words = text.split()
     if not words:
-        raise VerbError("empty step")
+        raise VerbError(t("empty step", "空步骤"))
     v = words[0].lower()
     a = words[1:]
     dec = (st or {}).get("decision")
@@ -1272,12 +1389,13 @@ def parse_verb(text, st, numbered, refs=None):
                             if dec == "game_over" else
                             t(f"softlock: {st.get('softlock_reason')} (the game shows no button here)",
                               f"软锁：{st.get('softlock_reason')}（游戏在这里没有可点的按钮）")
-                            if (st or {}).get("softlocked") else f"no legal actions at {dec}")
+                            if (st or {}).get("softlocked") else t(f"no legal actions at {dec}", f"{dec} 没有可选操作"))
         shown = refs.numbered if not refs.first else numbered
         for num, act in shown:
             if num == n:
                 if "choose" in act or "choose_cell" in act:
-                    raise VerbError(f"action {n} needs arguments: {action_label(act, refs.snap if not refs.first else st)}")
+                    raise VerbError(t(f"action {n} needs arguments: {action_label(act, refs.snap if not refs.first else st)}",
+                                      f"操作 {n} 需要参数：{action_label(act, refs.snap if not refs.first else st)}"))
                 return refs.numbered_action(n, st, act)
         raise VerbError(t(f"no action number {n} (have {index_range([m for m, _ in shown])}; run 'sts2 state')",
                           f"没有操作编号 {n}（现有：{index_range([m for m, _ in shown])}；运行 'sts2 state'）"))
@@ -1291,7 +1409,7 @@ def parse_verb(text, st, numbered, refs=None):
         args = {}
         for kv in a:
             if "=" not in kv:
-                raise VerbError(f"engine verb arguments are key=value, got '{kv}'")
+                raise VerbError(t(f"engine verb arguments are key=value, got '{kv}'", f"引擎动词的参数格式是 key=value，收到的是“{kv}”"))
             k, val = kv.split("=", 1)
             args[k] = int(val) if val.lstrip("-").isdigit() else val
         return {"action": v, **({"args": args} if args else {})}
@@ -1299,7 +1417,8 @@ def parse_verb(text, st, numbered, refs=None):
         if not a:
             raise VerbError("play <card: H0 | 0 | name> [target: E1 | 1 | name]")
         if dec != "combat_play":
-            raise VerbError(f"not in combat (decision: {dec}); 'play' plays a card from your hand")
+            raise VerbError(t(f"not in combat (decision: {dec}); 'play' plays a card from your hand",
+                              f"不在战斗中（当前决策：{dec}）；play 用于打出手牌"))
         hand = (st or {}).get("hand") or []
         enemies = (st or {}).get("enemies") or []
         card_ref, target_ref = _split_card_target(a, hand, enemies)
@@ -1377,8 +1496,18 @@ def parse_verb(text, st, numbered, refs=None):
         return {"action": m[dec]}
     if v in ("alt", "alternative", "reroll"):
         _needs_screen("alt", text, st)
-        return {"action": "select_card_alternative",
-                "args": {"alternative_index": refs.screen("alternatives", _int(a[0] if a else "", "alternative"), st, "alt")}}
+        i = refs.screen("alternatives", _int(a[0] if a else "", "alternative"), st, "alt")
+        alt = next((x for x in (st or {}).get("alternatives") or [] if isinstance(x, dict) and x.get("index") == i), None)
+        if alt and alt.get("id") == "Skip":
+            # The game's Skip button is one of the reward's alternatives; it is the skip action.
+            skip_n = next((n for n, x in enumerate((st or {}).get("legal_actions") or [], 1)
+                           if isinstance(x, dict) and x.get("action") == "skip_card_reward"), None)
+            if skip_n is None:
+                raise VerbError(t(f"alt {i} is {alt.get('name') or 'Skip'}, and this card reward can't be skipped now. "
+                                  f"Legal now: {legal_now(st)}",
+                                  f"alt {i} 是{alt.get('name') or '跳过'}，而这个卡牌奖励现在不能跳过。现在可选：{legal_now(st)}"))
+            return {"action": "skip_card_reward"}
+        return {"action": "select_card_alternative", "args": {"alternative_index": i}}
     if v == "claim":
         _needs_screen("claim", text, st)
         return {"action": "claim_reward", "args": {"reward_index": refs.screen("rewards", _int(a[0] if a else "", "reward"), st, "claim")}}
@@ -1414,7 +1543,7 @@ def parse_verb(text, st, numbered, refs=None):
             raise VerbError("click <x> <y> big|small  (the tool is part of the choice: big = 3x3, small = 1 cell)")
         return {"action": "crystal_sphere_click", "args": {"x": _int(a[0], "x"), "y": _int(a[1], "y"),
                                                            "tool": a[2].lower()}}
-    raise VerbError(f"unknown step '{text}' (sts2 help lists the verbs)")
+    raise VerbError(t(f"unknown step '{text}' (sts2 help lists the verbs)", f"未知步骤“{text}”（sts2 help 列出所有动词）"))
 
 
 _TARGET_TEXT = {"Self": ("targets yourself", "目标：自己"), "AnyEnemy": ("targets one enemy", "目标：单个敌人"),
@@ -1479,10 +1608,9 @@ def describe_refs(action, st, rewards_seen=None, typed=None):
         pots = [x for x in (st.get("player") or {}).get("potions") or [] if isinstance(x, dict)]
         p = next((x for x in pots if x.get("index") == i), None)
         if p:
-            tt = _TARGET_TEXT.get(p.get("target_type"))
-            out.append(t(f"{ref('P', i)} is{'' if ('P', i) in typed else ' now'} {p.get('name')} ({tt[0] if tt else p.get('target_type')}, {p.get('usage')}"
+            out.append(t(f"{ref('P', i)} is{'' if ('P', i) in typed else ' now'} {p.get('name')} ({potion_tags(p)}"
                          + ("" if p.get("can_use", True) else ", can't be used now") + ")",
-                         f"{ref('P', i)}{'是' if ('P', i) in typed else ' 现在是'} {p.get('name')}（{tt[1] if tt else p.get('target_type')}，{p.get('usage')}"
+                         f"{ref('P', i)}{'是' if ('P', i) in typed else ' 现在是'} {p.get('name')}（{potion_tags(p)}"
                          + ("" if p.get("can_use", True) else "，现在不能使用") + "）"))
         else:
             out.append(t(f"there is no P{i} (potions: {listing(pots, 'P')})", f"没有 P{i}（药水：{listing(pots, 'P')}）"))
@@ -1536,6 +1664,74 @@ def describe_refs(action, st, rewards_seen=None, typed=None):
     return out
 
 
+# The engine's reasons for an illegal action (StrictActions.CheckLegal / ReasonFor):
+# (pattern, en, zh, covered). covered = the index description (describe_refs) already says it.
+_WHERE_ZH = {"the map": "地图", "your combat turn": "你的战斗回合", "the card reward screen": "卡牌奖励界面",
+             "the card selection screen": "选牌界面", "the pack selection screen": "卡包选择界面", "this event": "此事件",
+             "the rest site": "休息处", "the shop": "商店", "the rewards screen": "奖励界面", "the treasure chest": "宝箱",
+             "the Crystal Sphere minigame": "水晶球小游戏"}
+_REASONS = [
+    (r"cannot play .*?: (?P<msg>.*?)(?: \((?P<code>[A-Za-z, ]+)\))?", None, None, True),
+    (r"invalid card index .*", None, None, True),
+    (r"'target_index' does not apply: it does not target a single enemy",
+     "it does not target a single enemy, so it takes no target", "它不以单个敌人为目标，不能指定目标", False),
+    (r"target_index \S+: no targetable enemies", "there is no enemy to target", "没有可以选为目标的敌人", False),
+    (r"target_index \S+ out of range.*", None, None, True),
+    (r"no (?:potion|reward|item|option) at index .*", None, None, True),
+    (r"node \(.*\) is not reachable from here", None, None, True),
+    (r"sold out", None, None, True),
+    (r"combat potions can't be used during a card selection", "combat potions can't be used during a card selection",
+     "选牌时不能使用战斗药水", False),
+    (r"this potion can only be used in combat", "this potion can only be used in combat", "这瓶药水只能在战斗中使用", False),
+    (r"this potion is not used by hand \(usage (?P<u>\w+)\)", "this potion is not used by hand ({u})",
+     "这瓶药水不能手动使用（{u}）", False),
+    (r"this potion is already being used \(queued\)", "this potion is already being used", "这瓶药水正在使用中", False),
+    (r"this potion can't be used now", "this potion can't be used now", "这瓶药水现在不能使用", False),
+    (r"potions are locked here", "potions can't be used or discarded here", "这里不能使用或丢弃药水", False),
+    (r"this potion needs an enemy target: use it in combat", "this potion needs an enemy target: use it in combat",
+     "这瓶药水需要敌人作为目标：请在战斗中使用", False),
+    (r"Potion slots are full: discard a potion first", "your potion slots are full: discard a potion first",
+     "药水栏已满：请先丢弃一瓶药水", False),
+    (r"Potion slots are full", "your potion slots are full", "药水栏已满", False),
+    (r"not enough gold", "not enough gold", "金币不足", False),
+    (r"this option is locked", "this option is locked", "该选项已锁定", False),
+    (r"it is not available on (?P<w>.*)", "it is not available on {w}", "在{w_zh}不能执行此操作", False),
+    (r"the run is over", "the run is over", "本局已结束", False),
+    (r"this screen can't be confirmed with the cards it shows; leave it with skip_select",
+     "this screen can't be confirmed with the cards it shows; leave it with skip",
+     "此界面无法用现有的牌确认；请用 skip 离开", False),
+    (r"this screen can't be confirmed with the cards it shows and has no close button \(softlock\)",
+     "this screen can't be confirmed with the cards it shows and has no close button (softlock)",
+     "此界面无法用现有的牌确认，也没有关闭按钮（软锁）", False),
+    (r"the screen has no cancel button; confirm with nothing selected.*",
+     "the screen has no cancel button; confirm with nothing selected: select none",
+     "此界面没有取消按钮；不选任何牌直接确认：select none", False),
+    (r"this selection requires a choice \(it is not cancelable\)", "this selection requires a choice (it can't be cancelled)",
+     "此处必须做出选择（不可取消）", False),
+    (r"a choice is still required here", "a choice is still required here", "这里还需要做出选择", False),
+    (r"'(?P<k>\w+)' does not apply to (?P<a>\w+) here", "'{k}' does not apply to {a} here", "{a} 在这里不接受参数 {k}", False),
+    (r"(?P<a>\w+) needs (?P<k>.*?)(?: \(several are legal\))?", "{a} needs {k}", "{a} 需要 {k}", False),
+    (r"it is not one of the legal actions", "it is not one of the legal actions", "这不是合法操作", False),
+]
+
+
+def engine_reason(reason):
+    """(text in the output language, short code or None, covered by the index description)
+    for one engine reason. An unknown reason is passed through as it is."""
+    import re
+    for pat, en, zh, covered in _REASONS:
+        m = re.fullmatch(pat, reason, re.S)
+        if not m:
+            continue
+        g = {k: v for k, v in m.groupdict().items() if v is not None}
+        code = g.pop("code", None)
+        if covered:
+            return g.get("msg") or reason, code, True
+        g["w_zh"] = _WHERE_ZH.get(g.get("w", ""), g.get("w", ""))
+        return t(en, zh).format(**g), code, False
+    return reason, None, False
+
+
 HELP = """sts2 - play Slay the Spire 2 (headless) from the shell. One command per step.
 
   sts2 start --character Ironclad|Silent|Defect|Regent|Necrobinder [--seed S] [--ascension 0-10]
@@ -1567,22 +1763,33 @@ shown when you submitted it (the last state/do reply):
   H# / P#   that card / potion wherever it is now (by uid); gone (played, discarded,
             exhausted, transformed) -> the chain stops, never a different card.
             "play H0; play H1" = the cards shown as H0 and H1; "play H0; play H0" stops.
-  E#        that enemy (by combat_id); dead -> stop.     N   that numbered action, remapped.
+  E#        that enemy (by combat_id); dead -> stop.
+  N         EVERY action number (select, skip, proceed, leave, remove, end, potion, claim,
+            buy...) is the action numbered N in the list printed with that view, and runs
+            only on that very screen instance (fights: the same turn, cards/potions remapped
+            by uid; rewards / shop: the items left of it); on any other screen it stops.
   choose / pick / claim / buy / select / alt / go N   only on the very screen shown (same
             source, prompt and offered items: True Grit+'s exhaust screen after Burning
             Pact's is another screen) and while that item is unchanged; a screen you have
-            not seen yet (the card reward `claim 2` opens) stops the chain before such a
-            step. raw / engine verbs: as written.
+            not seen yet (the card reward `claim 2` opens, the removal screen `skip; remove`
+            closed and opened again) stops the chain before such a step, saying what
+            differs. raw / engine verbs: as written.
+  No index: end, skip, proceed, leave, remove, select none, go COL ROW and card / enemy
+            names are read against the game where it is now ("claim 2; skip" skips the card
+            reward that claim opened).
 The chain goes on while the next step is legal and unambiguous where the game is now, also
 after the decision type changed ("pick 1; proceed", "select 1; end" after a mid-turn card
 selection). It stops before the next step on a new room, a fight starting or ending, a new
 turn, the end of the run, a step that does not apply to the new decision, a potion step on
 another screen than the chain started at, an index that can't be resolved (above), and at
-the first error (which says what each index refers to now, by the index you typed:
-"H2 (Defend as shown when the chain started, now H1) is ..."). A screen verb on a decision
-without that screen (go N in a fight) says what the decision is and lists the legal actions.
-Reward numbers are STABLE: claiming one does not renumber the rest ("claim 0; claim 1" is
-fine); claiming a gone index says it was already claimed.
+the first error: one explanation in the output language of what each index refers to now,
+by the index you typed ("H2 (Defend as shown when the chain started, now H1) is ..."), why
+the game refuses it (the engine's flag in brackets: (EnergyCostTooHigh); --json has the raw
+engine message) and the legal actions. A screen verb on a decision without that screen
+(go N in a fight) says what the decision is and lists the legal actions. Reward numbers are
+STABLE: claiming one does not renumber the rest ("claim 0; claim 1" is fine); claiming a
+gone index says it was already claimed. A card reward's Skip is the skip action (alt N on
+it = skip).
 
 Card names: the longest leading words that name a card in hand are the card, the rest is
 the target. Two cards with the same name that differ (upgrade, enchantment, cost...) are
@@ -2009,27 +2216,34 @@ class Daemon:
         return json.dumps((st or {}).get("events") or [], sort_keys=True, ensure_ascii=False)
 
     def _explain(self, action, st, r, typed=None):
-        """An engine error for one step, led by what each index in it refers to now."""
+        """An engine error for one step, as one explanation in the output language: what each
+        index in it refers to now, then the engine's reason (localized; dropped when the first
+        part already says it, keeping only its short code), then the legal actions. The raw
+        engine message is in --json."""
         import re
         msg = str(r.get("message") or r.get("code"))
         if r.get("code") != "illegal_action":
-            return msg
-        m = re.match(r"'[a-z_]+' is not allowed now: (.*?)(?: Current decision: [a-z_]+\.)?(?: (Legal: .*))?$", msg, re.S)
-        reason, legal = (m.group(1), m.group(2)) if m else (msg, None)
-        inner = re.search(r"is not one of the legal actions \((.*)\)\.?$", reason)
+            return msg if LANG["lang"] != "zh" else f"引擎拒绝了这一步：{msg}"
+        m = re.match(r"'[a-z_]+' is not allowed now: (.*?)(?: Current decision: [a-z_]+\.)?(?: Legal: .*)?$", msg, re.S)
+        reason = m.group(1) if m else msg
+        inner = re.search(r"is not one of the legal actions(?: \((.*)\))?\.?$", reason)
         if inner:
-            reason = inner.group(1)
+            reason = inner.group(1) or "it is not one of the legal actions"
+        reason = reason.strip().rstrip(".")
+        text, code, covered = engine_reason(reason)
         refs = describe_refs(action, st or {}, self._rewards_seen, typed)
-        if not refs:
-            return msg
+        legal = t("Legal now: ", "现在可选：") + legal_now(st)
+        sep = t(". ", "。")
         if action.get("action") == "claim_reward" and (action.get("args") or {}).get("reward_index") in self._rewards_seen \
                 and "no reward at index" in reason:
-            return refs[0] + (f". {legal}" if legal else "")
-        head = "; ".join(refs)
-        if reason.rstrip(".").lower() in head.lower():
-            return head + (f". {legal}" if legal else "")
-        return head + " - " + reason.rstrip(".") + (f". {legal}" if legal else "")
-
+            return refs[0] + sep + legal
+        if not refs:
+            head = t(f"'{action_label(action, st or {})}' is not allowed now", f"现在不能执行“{action_label(action, st or {})}”")
+            return head + t(": ", "：") + text + (f" ({code})" if code else "") + sep + legal
+        head = t("; ", "；").join(refs)
+        if covered or text.rstrip("。.").lower() in head.lower():
+            return head + (f" ({code})" if code else "") + sep + legal
+        return head + t(" - ", "；") + text + (f" ({code})" if code else "") + sep + legal
     def _simple(self, cmd, as_json, render):
         r = self.send(cmd)
         return self._out_engine(r, as_json, render)
@@ -2070,7 +2284,7 @@ class Daemon:
             gl = Glossary()
             lines = [f"{t('Potions', '药水')} ({len(r.get('potions') or [])}/{r.get('potion_slots')}):"]
             for x in r.get("potions") or []:
-                lines.append(f" P{x.get('index')} {x.get('name')} [{x.get('target_type')}, {x.get('usage')}]{_desc(x.get('description'))}")
+                lines.append(f" P{x.get('index')} {x.get('name')} [{potion_tags(x)}]{_desc(x.get('description'))}")
                 gl.add(x.get("tips"))
             return clip("\n".join(lines + gl.render()))
         return self._simple({"cmd": "get_potions"}, as_json, render)

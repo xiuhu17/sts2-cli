@@ -51,7 +51,7 @@ def test_play_a_few_steps(sts2):
 
 def test_errors_list_legal_actions(sts2):
     rc, out = sts2("do", "leave")
-    assert rc == 1 and "not allowed" in out and "Legal:" in out
+    assert rc == 1 and "not allowed" in out and "Legal now: [1]" in out
     rc, out = sts2("do", "99")
     assert rc == 1 and "no action number 99" in out
 

@@ -218,7 +218,8 @@ def test_engine_error_is_explained_with_the_referent():
     out, code = dm.cmd_do(["play H2 E1"], False)
     assert code == 1
     assert ("error in 'play H2 E1': H2 is now Defend (Skill, 1 energy, targets yourself); E1 is Seapunk (HP 30/30) - "
-            "'target_index' does not apply: it does not target a single enemy. Legal: play_card") in out
+            "it does not target a single enemy, so it takes no target. Legal now: [1] play H0 Defend; ") in out
+    assert "'target_index' does not apply" not in out  # one explanation, not the engine text again
 
 
 # ───────────────────────────── rendering ─────────────────────────────
@@ -320,7 +321,7 @@ def test_live_hand_indices_never_slip(sts2):
     assert after["hand"][0]["target_type"] == "Self"
     rc, out = sts2("do", "play H0 E0")
     assert rc == 1 and f"H0 is now {after['hand'][0]['name']} (Skill, 1 energy, targets yourself)" in out \
-        and "'target_index' does not apply" in out, out
+        and "it does not target a single enemy, so it takes no target" in out, out
     # The cards shown as H1 and H2: the second one moved to H1 after the first was played.
     shown = after["hand"]
     rc, out = sts2("do", "play H1; play H2")
@@ -467,3 +468,201 @@ def test_live_remapped_index_error_names_the_typed_index(game):
                 if lang == "en" else f"error in 'play H2 E0': H2（指令链开始时显示的 {name}，现在是 H{now}）是 {name}（")
         assert want in out, out
         assert f"H{now} is now" not in out and f"H{now} 现在是" not in out
+
+
+# ───────────────── numbered actions on the screen instance shown; what differs ─────────────────
+
+def _shop(**kw):
+    return {"type": "decision", "decision": "shop", "context": {"act": 1, "floor": 5}, "card_removal_cost": 100,
+            "cards": [{"index": 0, "name": "Stomp", "price": 74, "is_stocked": True}],
+            "legal_actions": [{"action": "buy_card", "args": {"card_index": 0}}, {"action": "remove_card"},
+                              {"action": "leave_room"}], **kw}
+
+
+def _removal(sid):
+    sel = _sel("Shop", [_card(0, 61, "Strike"), _card(1, 62, "Defend", "Skill", "Self")], sid, purpose="remove",
+               prompt="Choose a card to remove.")
+    sel["context"] = {"act": 1, "floor": 5}
+    sel["cancelable"] = True
+    sel["legal_actions"].append({"action": "skip_select"})
+    return sel
+
+
+def test_numbered_action_stops_on_a_reopened_screen():
+    # The agent-run repro: on the shop's removal screen, "skip; remove; 3" ran [3] (skip) on the
+    # removal screen 'remove' opened again - a screen instance the agent was never shown.
+    for lang, want in (("en", "stopped before '3': not run: '3' would run action 3 (skip / cancel the selection) on a "
+                              "different card_select screen than the one this chain started on: the removal screen was "
+                              "closed and opened again (new selection) - it was not shown to you; look at it first"),
+                       ("zh", "stopped before '3': 未执行：'3' 会在另一个 card_select 界面上执行操作 3（跳过 / 取消选择），"
+                              "而不是指令链开始时的那个：移除界面已关闭并重新打开（新的选择）——它没有显示给你；请先查看")):
+        d.LANG["lang"] = lang
+        dm = FakeDaemon(_removal(1), {_key("skip_select"): _shop(), _key("remove_card"): _removal(2)})
+        out, code = dm.cmd_do(["skip; remove; 3"], False)
+        assert code == 0 and want in out, out
+        assert [s["action"] for s in dm.sent] == ["skip_select", "remove_card"]
+    d.LANG["lang"] = "en"
+    # Every kind of numbered action: proceed / end_turn / leave / skip on a screen other than the one shown.
+    dm = FakeDaemon(_removal(1), {_key("skip_select"): _shop()})
+    out, _ = dm.cmd_do(["3; 2"], False)  # [2] was "select 1 Defend" on the removal screen; now at the shop
+    assert "stopped before '2': not run: '2' would run action 2 (select 1 Defend) on a shop screen this chain has not " \
+           "shown you: the game is now at shop, the chain started at card_select" in out, out
+    # The subset rule still holds for rewards: [1] claim 0 then [3] proceed on the same screen.
+    rw = {"type": "decision", "decision": "rewards", "context": {"act": 1, "floor": 2},
+          "rewards": [{"index": 0, "type": "gold", "amount": 8}, {"index": 1, "type": "potion", "name": "Fire Potion"}],
+          "legal_actions": [{"action": "claim_reward", "args": {"reward_index": 0}},
+                            {"action": "claim_reward", "args": {"reward_index": 1}}, {"action": "proceed"}]}
+    left = dict(rw, rewards=rw["rewards"][1:], legal_actions=rw["legal_actions"][1:])
+    mp = {"type": "decision", "decision": "map_select", "context": {"act": 1, "floor": 2}, "choices": [],
+          "legal_actions": []}
+    dm = FakeDaemon(rw, {_key("claim_reward", reward_index=0): left, _key("proceed"): mp})
+    out, code = dm.cmd_do(["1; 3"], False)
+    assert code == 0 and "ok: claim 0 8 Gold" in out and "ok: proceed (skips the rewards not claimed)" in out, out
+    # ... but not after the claim opened another screen (the card reward of 'claim 2').
+    cr = {"type": "decision", "decision": "card_reward", "context": {"act": 1, "floor": 2}, "selection_id": 4,
+          "cards": [{"index": 0, "uid": 1, "name": "Inflame"}], "legal_actions": [{"action": "skip_card_reward"}]}
+    dm = FakeDaemon(rw, {_key("claim_reward", reward_index=0): cr})
+    out, _ = dm.cmd_do(["1; 3"], False)
+    assert "stopped before '3'" in out and "card_reward screen this chain has not shown you" in out, out
+    # In a fight, numbered steps stay valid across plays (same turn) and are remapped by uid.
+    fight = _combat(_hand3())
+    after = _combat([_card(0, 12, "Bash"), _card(1, 13, "Defend", "Skill", "Self")])
+    dm = FakeDaemon(fight, {_key("play_card", card_index=0): after, _key("play_card", card_index=1): after})
+    out, code = dm.cmd_do(["1; 4"], False)
+    assert code == 0 and out.count("ok: play") == 2 and "(shown as H2)" in out, out
+
+
+def test_screen_diff_says_what_differs():
+    a, b = _removal(1), _removal(2)
+    assert d.screen_diff(a, b) == ("the removal screen was closed and opened again (new selection) - it was not "
+                                   "shown to you")
+    strike, defend = _card(0, 21, "Strike"), _card(1, 22, "Defend", "Skill", "Self")
+    diff = d.screen_diff(_sel("Burning Pact", [strike, defend], 5), _sel("True Grit+", [strike, defend], 9))
+    assert diff.startswith("it is from True Grit+ (the one shown was from Burning Pact) (now: card_select"), diff
+    diff = d.screen_diff(_sel("Burning Pact", [strike, defend], 5), _sel("Burning Pact", [_card(0, 31, "Strike"), defend], 5))
+    assert diff.startswith("the same cards, but other instances (another screen)"), diff
+    ev = {"decision": "event_choice", "event_name": "Door", "description": "A door.", "options": [{"index": 0, "title": "Open"}]}
+    assert d.screen_diff(ev, dict(ev, description="It opens.")).startswith("the event moved on to another page")
+    rw = {"decision": "rewards", "rewards": [{"index": 0, "type": "gold", "amount": 8}]}
+    assert d.screen_diff(rw, dict(rw, rewards=[{"index": 1, "type": "relic", "name": "Anchor"}])).startswith(
+        "it lists rewards that were not shown: 1 'Anchor'")
+    d.LANG["lang"] = "zh"
+    assert d.screen_diff(a, b) == "移除界面已关闭并重新打开（新的选择）——它没有显示给你"
+
+
+# ───────────────── views: no raw fields; the card reward's Skip ─────────────────
+
+def test_rewards_view_renders_can_skip():
+    st = {"type": "decision", "decision": "rewards", "source": "event", "can_skip": True,
+          "rewards": [{"index": 0, "type": "card", "card_count": 3, "can_skip": False}],
+          "legal_actions": [{"action": "claim_reward", "args": {"reward_index": 0}}, {"action": "proceed"}]}
+    text = d.render_decision(st, list(enumerate(st["legal_actions"], 1)))
+    assert "can_skip" not in text and "true" not in text.lower().split("rewards", 1)[1]
+    assert "0) card reward (3 cards) (cannot be skipped)" in text
+    assert "[2] proceed (skips the rewards not claimed)" in text
+    text = d.render_decision(dict(st, can_skip=False, legal_actions=st["legal_actions"][:1]), [(1, st["legal_actions"][0])])
+    assert "Every reward must be taken: there is no proceed until all are claimed." in text and "can_skip" not in text
+    # Hand cards say why they can't be played; potions read as words, not engine enums.
+    c = _card(0, 1, "Bash", can_play=False, unplayable_message="I don't have enough Energy.",
+              unplayable_reasons=["EnergyCostTooHigh"])
+    fight = _combat([c], potions=[{"index": 0, "uid": 3, "name": "Fire Potion", "target_type": "AnyEnemy",
+                                   "usage": "CombatOnly", "description": "Deal 20 damage."}])
+    text = d.render_decision(fight, [])
+    assert "H0 Bash (1) Attack - x [unplayable: I don't have enough Energy]" in text, text
+    assert "P0 Fire Potion [targets one enemy, combat only] - Deal 20 damage." in text
+    assert "CombatOnly" not in text and "unplayable_message" not in text
+
+
+def _card_reward(can_skip=True):
+    alts = [{"index": 0, "id": "Skip", "name": "Skip"}] if can_skip else []
+    alts.append({"index": len(alts), "id": "REROLL", "name": "Reroll", "description": "Reroll the cards."})
+    legal = [{"action": "select_card_reward", "args": {"card_index": 0}}]
+    if can_skip:
+        legal.append({"action": "skip_card_reward"})
+    legal.append({"action": "select_card_alternative", "args": {"alternative_index": len(alts) - 1}})
+    return {"type": "decision", "decision": "card_reward", "context": {"act": 1, "floor": 2}, "selection_id": 3,
+            "cards": [{"index": 0, "uid": 1, "name": "Inflame"}], "can_skip": can_skip, "alternatives": alts,
+            "legal_actions": legal}
+
+
+def test_card_reward_skip_is_the_skip_action():
+    st = _card_reward()
+    body = "\n".join(d.render_body(st, d.Glossary()))
+    assert "alternative 0) Skip" not in body and "alternative 1) Reroll - Reroll the cards." in body
+    assert d.parse_verb("alt 0", st, []) == {"action": "skip_card_reward"}
+    assert d.parse_verb("alt 1", st, []) == {"action": "select_card_alternative", "args": {"alternative_index": 1}}
+    # A reward that can't be skipped: the alternative is not there; were it listed, the error points to skip.
+    st2 = dict(_card_reward(False), alternatives=[{"index": 0, "id": "Skip", "name": "Skip"}])
+    with pytest.raises(d.VerbError, match="alt 0 is Skip, and this card reward can't be skipped now. Legal now: \\[1\\] pick 0"):
+        d.parse_verb("alt 0", st2, [])
+    dm = FakeDaemon(st, {_key("skip_card_reward"): dict(_card_reward(), decision="rewards", rewards=[], legal_actions=[])})
+    out, code = dm.cmd_do(["alt 0"], False)
+    assert code == 0 and "ok: skip the card reward" in out
+
+
+# ───────────────── step errors: one localized explanation ─────────────────
+
+def _illegal(action, why, legal="end_turn"):
+    return {"type": "error", "code": "illegal_action",
+            "message": f"'{action}' is not allowed now: {why}. Current decision: combat_play. Legal: {legal}"}
+
+
+def test_step_errors_are_one_localized_explanation():
+    c = _card(0, 1, "坚毅+", "Skill", "Self", can_play=False, unplayable_message="我没有足够的能量。",
+              unplayable_reasons=["EnergyCostTooHigh"])
+    fight = _combat([c], potions=[{"index": 0, "uid": 3, "name": "火焰药水", "target_type": "AnyEnemy", "usage": "CombatOnly"}])
+    fight["legal_actions"] = [{"action": "end_turn"}]
+    cases = {
+        _key("play_card", card_index=0): (_illegal("play_card", "cannot play 坚毅+: 我没有足够的能量。 (EnergyCostTooHigh)"),
+                                          "play H0", "H0 现在是 坚毅+（技能，1 能量，目标：自己），不能打出：我没有足够的能量 "
+                                                     "(EnergyCostTooHigh)。现在可选：[1] 结束回合"),
+        _key("use_potion", potion_index=3): (_illegal("use_potion", "no potion at index 3"), "potion P3",
+                                             "没有 P3（药水：P0 火焰药水）。现在可选：[1] 结束回合"),
+        _key("leave_room"): (_illegal("leave_room", "it is not available on your combat turn"), "leave",
+                             "现在不能执行“离开”：在你的战斗回合不能执行此操作。现在可选：[1] 结束回合"),
+    }
+    d.LANG["lang"] = "zh"
+    for key, (err, step, want) in cases.items():
+        dm = FakeDaemon(fight, {key: err})
+        out, code = dm.cmd_do([step], False)
+        assert code == 1 and f"error in '{step}': {want}" in out, out
+        for raw in ("cannot play", "no potion at index", "not available on", "Legal:", "坚毅+: "):
+            assert raw not in out, (raw, out)
+    d.LANG["lang"] = "en"
+    c_en = dict(c, name="True Grit+", unplayable_message="I don't have enough Energy.")
+    fight_en = dict(fight, hand=[c_en])
+    dm = FakeDaemon(fight_en, {_key("play_card", card_index=0): _illegal(
+        "play_card", "cannot play True Grit+: I don't have enough Energy. (EnergyCostTooHigh)")})
+    out, _ = dm.cmd_do(["play H0"], False)
+    assert ("error in 'play H0': H0 is now True Grit+ (Skill, 1 energy, targets yourself) - not playable: I don't have "
+            "enough Energy (EnergyCostTooHigh). Legal now: [1] end turn") in out, out
+    assert out.splitlines()[0].count("enough Energy") == 1
+    # --json keeps the engine's message as it was.
+    dm = FakeDaemon(fight_en, {_key("play_card", card_index=0): _illegal("play_card", "cannot play X: y (EnergyCostTooHigh)")})
+    js = json.loads(dm.cmd_do(["play H0"], True)[0])
+    assert js["results"][0]["ok"] is False
+
+
+def test_live_zh_energy_error_and_reopened_removal(game):
+    dm = _fight(game, ["BASH", "DEFEND_IRONCLAD", "TRUE_GRIT+", "STRIKE_IRONCLAD", "STRIKE_IRONCLAD"], "zh")
+    hand = dm.last["hand"]
+    bash = next(c["index"] for c in hand if c["id"] == "CARD.BASH")
+    out, code = dm.cmd_do([f"play H{bash} E0; play 防御"], False)
+    assert code == 0 and dm.last["energy"] == 0, out
+    grit = next(c["index"] for c in dm.last["hand"] if c["id"] == "CARD.TRUE_GRIT")
+    out, code = dm.cmd_do([f"play H{grit}"], False)
+    line = next(ln for ln in out.splitlines() if ln.startswith("error in"))
+    assert code == 1 and "不能打出：我没有足够的能量" in line and "(EnergyCostTooHigh)" in line, line
+    assert "cannot play" not in line and line.count("足够的能量") == 1 and "Legal:" not in line, line
+    # The shop's removal screen, closed and opened again, is not the screen shown.
+    game.start("Ironclad", seed="LP3RCEHPWTWW", ascension=10, lang="zh")
+    game.set_player(gold=500)
+    shop = game.enter_room("shop")
+    dm = EngineDaemon(game, shop)
+    out, code = dm.cmd_do(["remove"], False)
+    sel = dm.last
+    assert sel["decision"] == "card_select" and sel["purpose"] == "remove", out
+    skip_n = next(n for n, a in dm.numbered if a["action"] == "skip_select")
+    out, code = dm.cmd_do([f"skip; remove; {skip_n}"], False)
+    assert dm.last["decision"] == "card_select" and dm.last["selection_id"] != sel["selection_id"], out
+    assert f"stopped before '{skip_n}'" in out and "移除界面已关闭并重新打开（新的选择）——它没有显示给你" in out, out
