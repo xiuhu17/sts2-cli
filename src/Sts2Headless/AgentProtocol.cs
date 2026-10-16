@@ -357,16 +357,15 @@ public partial class RunSimulator
             clone.EnchantInternal(e, amount);
             clone.IsEnchantmentPreview = true;
             e.ModifyCard();
-            // NCard.UpdateVisuals(PileType.None, Normal): the enchantment's hooks (Sharp's
-            // extra damage, ...) show up in the previewed values.
-            try { clone.UpdateDynamicVarPreview(MegaCrit.Sts2.Core.Entities.Cards.CardPreviewMode.Normal, null, clone.DynamicVars); } catch { }
-            var stats = new Dictionary<string, object?>();
-            try { foreach (var dv in clone.DynamicVars.Values) stats[dv.Name.ToLowerInvariant()] = (int)dv.PreviewValue; } catch { }
+            // NCard.UpdateVisuals(PileType.None, Normal): the card's and the new enchantment's
+            // vars are previewed, so its hooks (Sharp's extra damage, ...) and its own extra
+            // text values show up.
+            var (text, stats) = PreviewedCard(clone, PileType.None);
             return new Dictionary<string, object?>
             {
                 ["cost"] = clone.EnergyCost?.GetResolved() ?? 0,
                 ["stats"] = stats.Count > 0 ? stats : null,
-                ["description"] = CardText(clone, PileType.None),
+                ["description"] = text,
             };
         }
         catch (Exception ex)
@@ -717,14 +716,19 @@ public partial class RunSimulator
                 c.DynamicVars.ClearPreview();
                 c.UpdateDynamicVarPreview(MegaCrit.Sts2.Core.Entities.Cards.CardPreviewMode.Normal, c.CurrentTarget, c.DynamicVars);
                 foreach (var dv in c.DynamicVars.Values) stats[dv.Name.ToLowerInvariant()] = (int)dv.PreviewValue;
+                if (c.Enchantment != null)
+                {
+                    c.Enchantment.DynamicVars.ClearPreview();
+                    c.UpdateDynamicVarPreview(MegaCrit.Sts2.Core.Entities.Cards.CardPreviewMode.Normal, c.CurrentTarget, c.Enchantment.DynamicVars);
+                }
                 text = CardText(c, PileType.Hand, c.CurrentTarget);
             }
             catch { stats.Clear(); text = null; }
-            finally { try { c.DynamicVars.ClearPreview(); } catch { } }
+            finally { try { c.DynamicVars.ClearPreview(); c.Enchantment?.DynamicVars.ClearPreview(); } catch { } }
         }
         // Elsewhere (deck view, piles) the card shows as UpdateVisuals draws it: enchantment-
         // modified values (Sharp), no global hooks.
-        if (stats.Count == 0)
+        if (text == null)
             (text, stats) = PreviewedCard(c, pile);
         var kws = c.Keywords?.Where(k => k != CardKeyword.None).Select(k => k.ToString()).ToList();
         var d = new Dictionary<string, object?>();

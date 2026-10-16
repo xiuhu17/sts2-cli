@@ -174,3 +174,19 @@ class TestEnchantedCardLists:
         assert s["decision"] == "card_reward"
         bw = next(c for c in s["cards"] if c["id"] == "CARD.BLOOD_WALL")
         assert bw["enchantment"] == "Nimble" and bw["stats"]["block"] == 18 and "Gain 18 Block" in bw["description"]
+
+    def test_enchantment_extra_text_in_hand(self, game):
+        """In hand the enchantment's own vars are previewed too: Adroit's extra 'Gain 3 Block'
+        line includes Dexterity, as NCard.UpdateVisuals shows it."""
+        game.start(seed="ad1")
+        game.set_player(deck=["DEFEND_IRONCLAD"] * 5, potions=["DEXTERITY_POTION"])
+        s = game.send({"cmd": "set_player", "obtain_relic": "KIFUDA"})  # Adroit 3 on chosen cards
+        assert s["decision"] == "card_select"
+        game.act("select_cards", indices="0")
+        adroit = next(c for c in game.send({"cmd": "get_deck"})["cards"] if c.get("enchantment"))
+        assert adroit["enchantment"] == "Adroit" and adroit["description"] == "Gain 5 Block.\nGain 3 Block."
+        game.enter_room("combat", encounter="SHRINKER_BEETLE_WEAK")
+        s = game.act("use_potion", potion_index=0)  # +2 Dexterity
+        card = next(c for c in s["hand"] if c.get("enchantment") == "Adroit")
+        assert card["description"] == "Gain 7 Block.\nGain 5 Block.", card
+        assert all(c["description"] == "Gain 7 Block." for c in s["hand"] if not c.get("enchantment"))

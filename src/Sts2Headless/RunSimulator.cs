@@ -2563,14 +2563,23 @@ public partial class RunSimulator
                 {
                     stats[dv.Name.ToLowerInvariant()] = (int)dv.PreviewValue;
                 }
+                // NCard.UpdateVisuals previews the enchantment's vars too: its extra card text
+                // (Adroit's "Gain X Block") shows Dexterity/Frail in hand.
+                if (c.Enchantment != null)
+                {
+                    c.Enchantment.DynamicVars.ClearPreview();
+                    c.UpdateDynamicVarPreview(MegaCrit.Sts2.Core.Entities.Cards.CardPreviewMode.Normal,
+                        c.CurrentTarget, c.Enchantment.DynamicVars);
+                }
                 // Description with the same live values (Strength, Weak, ...), like the hand UI.
                 handText = CardText(c, PileType.Hand, c.CurrentTarget, handKw);
                 // Restore the live card to base state. UpdateDynamicVarPreview mutates the
                 // card's preview (and for self-cost cards like Momentum Strike, leaving it in
                 // preview state corrupts the subsequent PlayCardAction — card stays in hand).
                 c.DynamicVars.ClearPreview();
+                c.Enchantment?.DynamicVars.ClearPreview();
             }
-            catch { }
+            catch { try { c.DynamicVars.ClearPreview(); c.Enchantment?.DynamicVars.ClearPreview(); } catch { } }
 
             // Per-target resolved damage for attack cards: the scalar `stats` above use the
             // card's CurrentTarget, but a single value can't capture target-specific modifiers
