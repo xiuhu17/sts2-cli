@@ -1211,7 +1211,7 @@ class Daemon:
     def cmd_start(self, args, as_json):
         import argparse
         p = argparse.ArgumentParser(prog="sts2 start", add_help=False)
-        p.add_argument("--character", "-c")  # no default: the game has none
+        p.add_argument("--character", "-c")  # required: the run starts on the player's Embark, not on a preselection
         p.add_argument("--seed", "-s")
         p.add_argument("--ascension", "-a", type=int, default=0)
         p.add_argument("--lang", default="en", choices=["en", "zh"])
@@ -1225,7 +1225,7 @@ class Daemon:
             return "usage: " + p.format_usage().replace("usage: ", ""), 1
         if not o.character:
             return ("error: sts2 start requires --character Ironclad|Silent|Defect|Regent|Necrobinder "
-                    "(the game has no default character)"), 1
+                    "(the character is your pick, as on the game's character select)"), 1
         cmd = {"cmd": "start_run", "character": o.character, "ascension": o.ascension, "lang": o.lang,
                "omit_deck": True}
         if o.seed:

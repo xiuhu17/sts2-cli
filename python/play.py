@@ -1288,7 +1288,7 @@ CHARACTERS = {
 
 
 def choose_character():
-    """The character select screen: the player picks; nothing is preselected."""
+    """The character select screen: the player picks the character the run starts with."""
     names = list(CHARACTERS)
     print()
     for i, key in enumerate(names):
@@ -2427,8 +2427,9 @@ if __name__ == "__main__":
             sys.exit(1)
         show_native_save(native_save_path)
 
+    cli_character = args.character
     if args.character is None and load_path is None and native_save_path is None:
-        # The game has no default character: it is the player's pick on the character select screen.
+        # The character is the player's pick (Embark on the character select screen); none is assumed.
         if args.auto or not sys.stdin.isatty():
             parser.error("--character is required (" + "|".join(CHARACTERS) + ")")
         args.character = choose_character()
@@ -2445,6 +2446,9 @@ if __name__ == "__main__":
                        native_save_path=next_native_save_path)
         if not restart:
             break
+        # A new run goes through the character select again (a loaded save had no --character);
+        # --character on the command line still applies.
+        args.character = cli_character or choose_character()
         next_seed = None
         next_auto = False
         next_load_path = None

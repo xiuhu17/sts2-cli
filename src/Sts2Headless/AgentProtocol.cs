@@ -652,7 +652,9 @@ public partial class RunSimulator
         // A start/load that failed half-way has no consistent decision to show.
         if (code == "exception" && cmd is "start_run" or "load_save") return r;
         var cur = _lastDecision;
-        if (cur == null)
+        // cmd "" = a line that never became a command (invalid JSON): it runs outside the
+        // watchdog, so only the decision already sent is shown, no game code runs for it.
+        if (cur == null && cmd != "")
         {
             cur = SafeCurrentDecision();
             if (cur != null && cur.GetValueOrDefault("type") as string == "decision")

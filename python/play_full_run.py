@@ -170,7 +170,7 @@ def main():
     )
     parser.add_argument("num_runs", type=int, help="Number of runs to play (must be positive)")
     parser.add_argument("character", choices=VALID_CHARACTERS, metavar="character",
-                        help=f"Character to play as (required: the game has no default). Choices: {', '.join(VALID_CHARACTERS)}")
+                        help=f"Character to play as (required: the run is started on an explicit pick). Choices: {', '.join(VALID_CHARACTERS)}")
     parser.add_argument("--policy", default="random", choices=["random", "heuristic"],
                         help="Decision policy (python/policy.py): seeded weighted random (default) or heuristic")
     parser.add_argument("--fresh-process", action="store_true",

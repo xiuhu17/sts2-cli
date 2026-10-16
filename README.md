@@ -55,8 +55,9 @@ python3 python/play.py --ascension 10         # Ascension 10
 python3 python/play.py --character Silent      # play as Silent
 ```
 
-Without `--character` it asks which character to play (there is no default, as in the game's
-character select); `--auto` and non-interactive use need `--character`.
+Without `--character` it asks which character to play, and again for each new run (the game's
+character select only starts a run when you press Embark on a character); `--auto` and
+non-interactive use need `--character`.
 
 Type `help` in-game:
 
@@ -160,7 +161,7 @@ dotnet run --project src/Sts2Headless/Sts2Headless.csproj
 
 Each command returns a JSON decision point (`map_select` / `combat_play` / `card_reward` / `card_select` / `bundle_select` / `rest_site` / `event_choice` / `shop` / `crystal_sphere` / `rewards` / `treasure_relic` / `game_over`). All names are in English.
 
-- **Starting a run:** `character` is required (`Ironclad`, `Silent`, `Defect`, `Regent` or `Necrobinder`): the game has no default, the character select screen needs a pick, so a missing or empty one is `bad_request` and an unknown one `unknown_character`. A missing, null, empty or blank `seed` is a random seed, as the game's blank seed box ("Random"); `context.seed` reports the one used. `ascension` defaults to 0 (the game's screen remembers your last level; here an unset field means 0), `lang` to `en` (`en` or `zh`, anything else is `bad_request`). Every field is type-checked: a wrong type is `bad_request` naming the field (`modifiers` is a list of strings, `manual_rewards` / `omit_deck` booleans, `profile` / `game_mode` / `seed` strings); `manual_rewards` is still accepted and ignored.
+- **Starting a run:** `character` is required (`Ironclad`, `Silent`, `Defect`, `Regent` or `Necrobinder`): the game's character select highlights the first character when it opens, but a run only starts when the player presses Embark on one, and the protocol has no implicit Embark, so a missing or empty one is `bad_request` and an unknown one `unknown_character`. A missing, null, empty or blank `seed` is a random seed, as the game's blank seed box ("Random"); `context.seed` reports the one used. `ascension` defaults to 0 (the game's screen remembers your last level; here an unset field means 0), `lang` to `en` (`en` or `zh`, anything else is `bad_request`). Every field is type-checked: a wrong type is `bad_request` naming the field (`modifiers` is a list of strings, `manual_rewards` / `omit_deck` booleans, `profile` / `game_mode` / `seed` strings); `manual_rewards` is still accepted and ignored.
 - **Many runs per process:** send `start_run` (or `load_save`) again to begin a new run; the previous one is torn down. This skips the engine start-up, so batch/RL workloads should keep one process per worker; memory stays flat over thousands of runs. `python/engine.py` has a small `Engine` wrapper (`dotnet bin/.../Sts2Headless.dll` directly, bounded reads, stderr drained).
 - **Start-up:** `{"type":"ready","version":...,"localization":true}` arrives after ~40 ms; the one-time engine initialisation (~0.15 s, plus the first use of the game's save serializer, warmed on a second thread) then runs right away, so a client that takes a moment before its first `start_run` doesn't wait for it (a command sent earlier simply waits; `STS2_NO_WARMUP=1` defers it to the first `start_run`/`load_save` as before). `localization` is false (plus a `warning`) when the `localization_eng/` tables can't be found, in which case names are raw keys; they are looked up from `STS2_DATA_DIR`, then upwards from the binary, next to `lib/` (`STS2_LIB`, the lib folder the engine loaded, or `STS2_GAME_DIR`, which the launchers point at the repo's `lib/`), and upwards from the working directory; the warning lists every folder searched.
 - **Builds:** `setup.sh` also publishes a ReadyToRun (precompiled) build to `src/Sts2Headless/bin/R2R/net9.0` (faster start, ~30% faster steps). `python/engine.py` launches `$STS2_ENGINE_DLL` if set, else the most recently built of `bin/R2R`, `bin/Release`, `bin/Debug` (an R2R build older than `lib/sts2.dll` is skipped), so a plain `dotnet build` after a code change is picked up automatically.
@@ -288,7 +289,7 @@ python3 python/play.py --ascension 10         # 渐进难度 10
 python3 python/play.py --character Silent      # 选择静默猎手
 ```
 
-不指定 `--character` 时会先询问要用哪个角色（和游戏的选人界面一样没有默认角色）；`--auto` 和非交互运行必须指定 `--character`。
+不指定 `--character` 时会先询问要用哪个角色，每开新的一局都会再问（游戏的选人界面要玩家选定角色并确认后才会开局）；`--auto` 和非交互运行必须指定 `--character`。
 
 游戏内输入 `help` 查看所有命令：
 
@@ -367,7 +368,7 @@ dotnet run --project src/Sts2Headless/Sts2Headless.csproj
 
 每个命令返回一个 JSON decision point（`map_select` / `combat_play` / `card_reward` / `card_select` / `bundle_select` / `rest_site` / `event_choice` / `shop` / `crystal_sphere` / `rewards` / `treasure_relic` / `game_over`），所有名称为英文。
 
-- **开局：** 必须提供 `character`（`Ironclad`、`Silent`、`Defect`、`Regent` 或 `Necrobinder`）：游戏没有默认角色，选人界面必须由玩家选择，所以缺少或为空时返回 `bad_request`，未知角色返回 `unknown_character`。`seed` 缺省、为 null、为空或只有空白时使用随机种子，和游戏里留空的种子框（“随机”）一样；实际使用的种子见 `context.seed`。`ascension` 默认为 0（游戏界面会记住上次的进阶等级；这里不填就是 0），`lang` 默认为 `en`（只能是 `en` 或 `zh`，其他值返回 `bad_request`）。每个字段都会检查类型：类型错误返回 `bad_request` 并指出字段名（`modifiers` 是字符串列表，`manual_rewards` / `omit_deck` 是布尔值，`profile` / `game_mode` / `seed` 是字符串）；`manual_rewards` 仍然接受，但会被忽略。
+- **开局：** 必须提供 `character`（`Ironclad`、`Silent`、`Defect`、`Regent` 或 `Necrobinder`）：游戏的选人界面打开时会高亮第一个角色，但只有玩家选定角色并确认出发后才会开局，而协议不会替玩家确认，所以缺少或为空时返回 `bad_request`，未知角色返回 `unknown_character`。`seed` 缺省、为 null、为空或只有空白时使用随机种子，和游戏里留空的种子框（“随机”）一样；实际使用的种子见 `context.seed`。`ascension` 默认为 0（游戏界面会记住上次的进阶等级；这里不填就是 0），`lang` 默认为 `en`（只能是 `en` 或 `zh`，其他值返回 `bad_request`）。每个字段都会检查类型：类型错误返回 `bad_request` 并指出字段名（`modifiers` 是字符串列表，`manual_rewards` / `omit_deck` 是布尔值，`profile` / `game_mode` / `seed` 是字符串）；`manual_rewards` 仍然接受，但会被忽略。
 - **一个进程跑多局：** 再发一次 `start_run`（或 `load_save`）就会结束上一局、开始新的一局，省掉引擎启动。批量跑或 RL 建议每个 worker 只开一个进程，跑上千局内存也不会增长。`python/engine.py` 里有一个简单的 `Engine` 封装：直接用 `dotnet` 运行编译好的 dll，读取有超时，stderr 会被读走。
 - **启动：** 约 40 毫秒后返回 `{"type":"ready","version":...,"localization":true}`，随后立即进行一次性的引擎初始化（约 0.15 秒，另外在第二个线程上预热游戏的存档序列化器）。客户端在第一次 `start_run` 前稍有停顿就不必再等它；在这之前发来的命令会排队等待。设置 `STS2_NO_WARMUP=1` 则和以前一样推迟到第一次 `start_run`/`load_save`。找不到 `localization_eng/` 文本时 `localization` 为 false 并附带 `warning`，此时名称都是原始键名；查找顺序是 `STS2_DATA_DIR`、从程序所在目录向上、`lib/` 旁边（`STS2_LIB`、引擎实际加载的 lib 目录，或启动器指向仓库 `lib/` 的 `STS2_GAME_DIR`）、从当前工作目录向上；warning 会列出所有查找过的目录。
 - **编译产物：** `setup.sh` 还会把 ReadyToRun（预编译）版本发布到 `src/Sts2Headless/bin/R2R/net9.0`，启动更快、每步约快 30%。`python/engine.py` 优先使用 `$STS2_ENGINE_DLL`，否则在 `bin/R2R`、`bin/Release`、`bin/Debug` 中选最近编译的那个（比 `lib/sts2.dll` 旧的 R2R 版本会被跳过），所以改完代码直接 `dotnet build` 就会生效。

@@ -441,7 +441,8 @@ class Program
                     if (asc.ValueKind != JsonValueKind.Number || !asc.TryGetInt32(out ascension) || ascension < 0 || ascension > 10)
                         return BadRequest($"'ascension' must be an integer 0-10, got {asc.GetRawText()}");
                 }
-                // The character is the player's pick on the character select screen: there is no default.
+                // The character is the player's pick: the character select highlights the first button, but a run
+                // starts only on Embark (NCharacterSelectScreen.OnEmbarkPressed), so none is assumed here.
                 var character = Str(cmd, "character", out var e1); if (e1 != null) return e1;
                 if (string.IsNullOrWhiteSpace(character))
                     return BadRequest("start_run requires character: Ironclad|Silent|Defect|Regent|Necrobinder");

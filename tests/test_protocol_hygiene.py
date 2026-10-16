@@ -97,6 +97,12 @@ class TestArgs:
         r = game.act("select_map_node", col=ch["col"], row=ch["row"], target_index=None)
         assert r["type"] == "decision", r
 
+    def test_null_required_arg_is_named(self, game):
+        game.start(seed="na4")
+        for r in (game.act("choose_option", option_index=None), game.act("choose_option")):
+            assert_full_error(r, "illegal_action")
+            assert "choose_option needs option_index" in r["message"], r["message"]
+
     def test_argument_the_verb_does_not_take_is_illegal(self, game):
         to_combat(game, "na3")
         r = game.act("end_turn", x="a")
