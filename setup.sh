@@ -231,11 +231,48 @@ $DOTNET run -- "$REPO_DIR/lib/sts2.dll" 2>&1
 cd "$REPO_DIR"
 rm -rf "$PATCH_DIR"
 
+# ── UI guard (setup-time) ──
+# The same null-guard rewrite HeadlessUiGuard would otherwise apply with Harmony on every
+# engine start (~1 s). The engine sees the stamp and skips it; if this step fails, nothing
+# changes except that the engine keeps doing it at runtime.
+
+echo ""
+echo "🛡️ Applying the headless UI guard to sts2.dll..."
+if $DOTNET build src/GodotStubs/GodotStubs.csproj -c Debug 2>&1 | tail -1 \
+   && $DOTNET run --project tools/UiGuardPatcher -c Release -- "$REPO_DIR/lib/sts2.dll" \
+        --search "$REPO_DIR/src/GodotStubs/bin/Debug/net9.0" 2>&1 | grep -v SentryGodotInitializer; then
+    :
+else
+    echo "  ⚠ UI guard not pre-applied; the engine will apply it at startup instead."
+fi
+
 # ── Build ──
 
 echo ""
 echo "🏗️ Building..."
 $DOTNET build src/Sts2Headless/Sts2Headless.csproj 2>&1 | tail -5
+
+# ── ReadyToRun build ──
+# Precompiles the engine and the game DLLs (faster start, ~30% faster steps). python/engine.py
+# prefers it while it is the newest build; a later `dotnet build` (Debug) takes over again.
+# Must stay 5 levels below the repo root (src/Sts2Headless/bin/R2R/net9.0).
+
+case "$(uname -s)-$(uname -m)" in
+    Darwin-arm64) RID=osx-arm64 ;;
+    Darwin-x86_64) RID=osx-x64 ;;
+    Linux-aarch64|Linux-arm64) RID=linux-arm64 ;;
+    Linux-x86_64) RID=linux-x64 ;;
+    *) RID=win-x64 ;;
+esac
+echo ""
+echo "⚡ ReadyToRun build ($RID)..."
+R2R_OUT="src/Sts2Headless/bin/R2R/net9.0"
+rm -rf "$R2R_OUT" "src/Sts2Headless/obj/Release/net9.0/$RID"
+if ! $DOTNET publish src/Sts2Headless/Sts2Headless.csproj -c Release -r "$RID" --self-contained false \
+        -p:PublishReadyToRun=true -o "$R2R_OUT" 2>&1 | tail -2; then
+    echo "  ⚠ ReadyToRun build failed; the Debug build will be used."
+    rm -rf "$R2R_OUT"
+fi
 
 echo ""
 echo "✅ Setup complete!"

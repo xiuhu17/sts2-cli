@@ -23,21 +23,8 @@ namespace Sts2Headless;
 /// </summary>
 internal static class HeadlessUiGuard
 {
-    // Receivers in these namespaces are presentation-only (nodes, VFX, audio, Godot types).
-    private static readonly string[] UiNamespaces =
-    {
-        "MegaCrit.Sts2.Core.Nodes", "MegaCrit.Sts2.addons", "MegaCrit.Sts2.Core.Bindings",
-        "MegaCrit.Sts2.Core.Animation", "MegaCrit.Sts2.Core.Audio", "Godot",
-    };
-
-    // Callers in these namespaces are game logic and get guarded.
-    private static readonly string[] LogicNamespaces =
-    {
-        "MegaCrit.Sts2.Core.Models", "MegaCrit.Sts2.Core.Commands", "MegaCrit.Sts2.Core.Events",
-        "MegaCrit.Sts2.Core.Entities", "MegaCrit.Sts2.Core.Combat", "MegaCrit.Sts2.Core.Rewards",
-        "MegaCrit.Sts2.Core.Rooms", "MegaCrit.Sts2.Core.Runs", "MegaCrit.Sts2.Core.Hooks",
-        "MegaCrit.Sts2.Core.GameActions", "MegaCrit.Sts2.Core.MonsterMoves", "MegaCrit.Sts2.Core.Helpers",
-    };
+    private static readonly string[] UiNamespaces = UiGuardSpec.UiNamespaces;
+    private static readonly string[] LogicNamespaces = UiGuardSpec.LogicNamespaces;
 
     private const BindingFlags AllDeclared = BindingFlags.Public | BindingFlags.NonPublic |
         BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly;
@@ -46,7 +33,17 @@ internal static class HeadlessUiGuard
     {
         if (Environment.GetEnvironmentVariable("STS2_NO_UI_GUARD") == "1")
         {
-            Console.Error.WriteLine("[INFO] UI guard disabled (STS2_NO_UI_GUARD=1)");
+            // The setup-time rewrite is part of the file and can't be switched off here.
+            string? stamp = null;
+            try { stamp = ReadStamp(gameAssembly.Location); } catch { }
+            Console.Error.WriteLine(stamp != null
+                ? "[WARN] STS2_NO_UI_GUARD=1 only skips the runtime rewrite; this sts2.dll was guarded by setup.sh (use lib/sts2.dll.original to run without it)"
+                : "[INFO] UI guard disabled (STS2_NO_UI_GUARD=1)");
+            return;
+        }
+        if (IsPreApplied(gameAssembly))
+        {
+            Console.Error.WriteLine("[INFO] UI guard: pre-applied to sts2.dll at setup");
             return;
         }
         var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -72,24 +69,89 @@ internal static class HeadlessUiGuard
             }
         }
         var scanMs = sw.ElapsedMilliseconds;
+        var dumpPath = Environment.GetEnvironmentVariable("STS2_UI_GUARD_DUMP");
+        var dump = dumpPath != null ? new List<string>() : null;
         foreach (var m in targets)
         {
-            try { harmony.Patch(m, transpiler: transpiler); patched++; }
+            s_sites = 0;
+            try
+            {
+                harmony.Patch(m, transpiler: transpiler); patched++;
+                if (dump != null && s_sites > 0) dump.Add($"{m.MetadataToken:X8}\t{s_sites}\t{m.DeclaringType?.FullName}::{m.Name}");
+            }
             catch (Exception ex)
             {
                 if (++failed <= 5) Console.Error.WriteLine($"[WARN] UI guard: {m.DeclaringType?.Name}.{m.Name}: {ex.Message}");
             }
         }
+        if (dump != null) File.WriteAllLines(dumpPath!, dump.OrderBy(x => x, StringComparer.Ordinal));
         Console.Error.WriteLine($"[INFO] UI guard: {patched} methods patched, {failed} failed " +
                                 $"(scan {scanMs}ms, patch {sw.ElapsedMilliseconds - scanMs}ms)");
+    }
+
+    /// <summary>
+    /// setup.sh rewrites lib/sts2.dll with the same guard (tools/UiGuardPatcher) and stamps it;
+    /// then there is nothing left to do at runtime. A stale or missing stamp (lib copied from an
+    /// unpatched game, or the spec changed since setup) falls back to the Harmony rewrite.
+    /// STS2_UI_GUARD_RUNTIME=1 forces the Harmony path (used to compare the two).
+    /// </summary>
+    private static bool IsPreApplied(Assembly gameAssembly)
+    {
+        if (Environment.GetEnvironmentVariable("STS2_UI_GUARD_RUNTIME") == "1")
+        {
+            try
+            {
+                if (ReadStamp(gameAssembly.Location) != null)
+                    Console.Error.WriteLine("[WARN] STS2_UI_GUARD_RUNTIME=1 on an sts2.dll already guarded by setup.sh: call sites get guarded twice (harmless, but dumps/timings aren't comparable)");
+            }
+            catch { }
+            return false;
+        }
+        string? stamp;
+        try { stamp = ReadStamp(gameAssembly.Location); }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[WARN] UI guard: cannot read the sts2.dll stamp: {ex.Message}");
+            return false;
+        }
+        if (stamp == null) return false;
+        if (stamp == UiGuardSpec.Stamp) return true;
+        Console.Error.WriteLine("[INFO] UI guard: sts2.dll was guarded with another spec; rerun setup.sh. Using the runtime rewrite");
+        return false;
+    }
+
+    /// <summary>
+    /// The value of [assembly: AssemblyMetadata(UiGuardSpec.MetadataKey, value)], read from the
+    /// file's metadata (reflection's GetCustomAttributesData would instantiate every attribute
+    /// type, and some of sts2.dll's Godot attributes don't exist in the stub).
+    /// </summary>
+    internal static string? ReadStamp(string path)
+    {
+        if (string.IsNullOrEmpty(path) || !File.Exists(path)) return null;
+        using var fs = File.OpenRead(path);
+        using var pe = new System.Reflection.PortableExecutable.PEReader(fs);
+        var md = System.Reflection.Metadata.PEReaderExtensions.GetMetadataReader(pe);
+        foreach (var h in md.GetAssemblyDefinition().GetCustomAttributes())
+        {
+            var ca = md.GetCustomAttribute(h);
+            if (ca.Constructor.Kind != System.Reflection.Metadata.HandleKind.MemberReference) continue;
+            var ctor = md.GetMemberReference((System.Reflection.Metadata.MemberReferenceHandle)ca.Constructor);
+            if (ctor.Parent.Kind != System.Reflection.Metadata.HandleKind.TypeReference) continue;
+            var type = md.GetTypeReference((System.Reflection.Metadata.TypeReferenceHandle)ctor.Parent);
+            if (md.GetString(type.Name) != "AssemblyMetadataAttribute" || md.GetString(type.Namespace) != "System.Reflection") continue;
+            var blob = md.GetBlobReader(ca.Value);
+            if (blob.ReadUInt16() != 1) continue;  // prolog
+            var key = blob.ReadSerializedString();
+            if (key == UiGuardSpec.MetadataKey) return blob.ReadSerializedString();
+        }
+        return null;
     }
 
     private static bool InNamespaces(Type t, string[] namespaces)
     {
         // Nested types (async state machines, lambdas) inherit the declaring type's namespace.
         while (t.DeclaringType != null) t = t.DeclaringType;
-        var ns = t.Namespace ?? "";
-        return namespaces.Any(n => ns == n || ns.StartsWith(n + "."));
+        return UiGuardSpec.InNamespaces(t.Namespace, namespaces);
     }
 
     private static bool IsGuardable(MethodBase callee)
@@ -125,6 +187,8 @@ internal static class HeadlessUiGuard
         return false;
     }
 
+    [ThreadStatic] private static int s_sites;  // guarded call sites in the method being patched (dump only)
+
     private static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions, ILGenerator il)
     {
         var list = instructions.ToList();
@@ -144,6 +208,7 @@ internal static class HeadlessUiGuard
                 continue;
             }
 
+            s_sites++;
             var ps = callee.GetParameters();
             var argLocals = ps.Select(p => il.DeclareLocal(p.ParameterType)).ToArray();
             var self = il.DeclareLocal(callee.DeclaringType!);

@@ -420,15 +420,33 @@ def restart_bridge():
             if pid:
                 os.kill(int(pid), signal.SIGKILL)
     except: pass
-    time.sleep(2)
+    # SIGKILL is immediate and the bridge binds with SO_REUSEADDR; just wait for the port owner to go.
+    deadline = time.time() + 2
+    while time.time() < deadline:
+        r = subprocess.run(["lsof", "-ti", f":{PORT}"], capture_output=True, text=True)
+        if not r.stdout.strip():
+            break
+        time.sleep(0.05)
     # Start new bridge
+    import socket
     log = f"/tmp/sts2_game_{PORT}.jsonl"
+    bridge = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sts2_bridge.py")
     proc = subprocess.Popen(
-        ["python3", "agent/sts2_bridge.py", str(PORT), "--compact", "--log", log],
+        [sys.executable, bridge, str(PORT), "--compact", "--log", log],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
     )
-    time.sleep(6)
-    return proc
+    # The bridge only listens once the engine has said ready, so a successful connect means
+    # it can take commands.
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            raise RuntimeError(f"bridge exited with code {proc.returncode}")
+        try:
+            socket.create_connection(("127.0.0.1", PORT), 0.2).close()
+            return proc
+        except OSError:
+            time.sleep(0.05)
+    raise RuntimeError("bridge did not start listening within 30s")
 
 if __name__ == "__main__":
     max_attempts = 10
