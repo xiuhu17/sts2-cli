@@ -517,8 +517,10 @@ def render_map(m, st):
         for n in r:
             width = max(width, (n.get("col") or 0) + 1)
     lines = [t("Map (bottom = start; [x] visited, <x> you are here, *x* reachable now; "
-               "M monster E elite R rest $ shop T treasure ? unknown B boss A ancient)",
-               "地图（底部为起点；[x] 已走过，<x> 当前位置，*x* 现在可去；M 敌人 E 精英 R 休息 $ 商店 T 宝箱 ? 未知 B Boss A 先古之民）")]
+               "M monster E elite R rest $ shop T treasure ? unknown B boss A ancient; "
+               "a visited ? shows what it was in lowercase: m e $ t, ? = event)",
+               "地图（底部为起点；[x] 已走过，<x> 当前位置，*x* 现在可去；M 敌人 E 精英 R 休息 $ 商店 T 宝箱 ? 未知 B Boss A 先古之民；"
+               "去过的 ? 用小写显示实际房间：m e $ t，? 为事件）")]
     grid = []
     for r in rows:
         if not r:
@@ -529,6 +531,9 @@ def render_map(m, st):
         for n in r:
             c = n.get("col") or 0
             s = sym.get(n.get("type"), "o")
+            if n.get("revealed_type"):
+                # A visited "?" shows what it turned out to be (lowercase), like the game's icon.
+                s = sym.get(n["revealed_type"], "?").lower()
             if n.get("current"):
                 s = f"<{s}>"
             elif (c, row_i) in choices:

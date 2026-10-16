@@ -110,6 +110,12 @@ public partial class RunSimulator
     // extra loop iteration.
     private static readonly AutoResetEvent s_flowSignal = new(false);
 
+    /// <summary>
+    /// Wake a WaitFlow waiter now: a game thread just published a prompt (card reward, card
+    /// selection) and will block or park without returning, so StartFlow's own Set never runs.
+    /// </summary>
+    internal static void SignalFlow() => s_flowSignal.Set();
+
     /// <summary>Task.Run(() => RunWithHostContext(work)) that signals waiters once the pool thread is done with it.</summary>
     private static Task StartFlow(Func<Task> work) => Task.Run(() =>
     {

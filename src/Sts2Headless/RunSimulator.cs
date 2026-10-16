@@ -2550,7 +2550,7 @@ public partial class RunSimulator
                     ["cost"] = cost,
                     ["type"] = c.Type.ToString(),
                     ["upgraded"] = c.IsUpgraded,
-                    ["description"] = CardText(c, pileType, null, kwSet, cost),
+                    ["description"] = PileCardText(c, pileType, kwSet, cost),
                 };
                 if (kws?.Count > 0) g["keywords"] = kws;
                 AddCardMeta(g, c, kwSet, rawCost);
@@ -2668,11 +2668,13 @@ public partial class RunSimulator
                             row["dealer"] = "osty";
                             if (player.IsOstyMissing) row["osty_missing"] = true;
                         }
+                        // Replay / Echo Form / Burst ...: the whole card runs again on this target.
+                        int plays = PlayCount(c, combatState, c.TargetType == TargetType.AnyEnemy ? tgt : null);
                         if (repeat > 1 || hasHitCount)
-                        {
                             row["repeat"] = repeat;
-                            if (perHit != null) row["total_damage"] = perHit * repeat;
-                        }
+                        if (plays > 1) row["plays"] = plays;
+                        if ((repeat > 1 || hasHitCount || plays > 1) && perHit != null)
+                            row["total_damage"] = perHit * repeat * plays;
                         damageByTarget.Add(row);
                     }
                     catch { }
@@ -2698,6 +2700,8 @@ public partial class RunSimulator
             // can_play is the game's CanPlay, which checks stars via HasEnoughResourcesFor.
             AddCardMeta(cardInfo, c, handKw);
             AddHandPlayability(cardInfo, c, pcs);
+            var playCount = PlayCount(c, combatState, null);
+            if (playCount > 1) cardInfo["play_count"] = playCount;
             var kws = (handKw ?? c.Keywords)?.Where(k => k != CardKeyword.None).Select(k => k.ToString()).ToList();
             if (kws?.Count > 0) cardInfo["keywords"] = kws;
             if (c.Enchantment != null)
@@ -4546,14 +4550,12 @@ public partial class RunSimulator
         try { ctx["total_floor"] = _runState.TotalFloor; } catch { }
         ctx["ascension"] = _runState.AscensionLevel;
         try { ctx["seed"] = _runState.Rng.StringSeed; } catch { }
+        // NRunTimer (the top bar's run timer): RunManager.RunTime, wall-clock seconds.
+        try { ctx["run_time_seconds"] = RunManager.Instance.RunTime; } catch { }
         try
         {
             if (_runState.Modifiers.Count > 0)
-                ctx["modifiers"] = _runState.Modifiers.Select(m => new Dictionary<string, object?>
-                {
-                    ["id"] = m.Id.Entry,
-                    ["name"] = _loc.Bilingual("modifiers", m.Id.Entry + ".title"),
-                }).ToList();
+                ctx["modifiers"] = _runState.Modifiers.Select(m => ModifierInfo(m, false)).ToList();
         }
         catch { }
 
@@ -4639,6 +4641,7 @@ public partial class RunSimulator
         // Real-game (TestMode off) behaviour for the TestMode branches that are game logic.
         ParityPatches.Install(new Harmony("sts2headless.parity"));
         MapPruningPatch.Install(new Harmony("sts2headless.mappruning"));
+        AnimationDelayPatch.Install(new Harmony("sts2headless.animationdelay"));
 
         // Capture the game's own run saves instead of writing them (write_continue_save).
         ContinueSave.Install();
@@ -4976,6 +4979,7 @@ public partial class RunSimulator
             PendingMinSelect = minSelect;
             PendingMaxSelect = maxSelect;
             _pendingTcs = new TaskCompletionSource<IEnumerable<CardModel>>();
+            RunSimulator.SignalFlow();
 
             Console.Error.WriteLine($"[SIM] Card selection pending: {optList.Count} options, select {minSelect}-{maxSelect}");
 
@@ -5072,6 +5076,7 @@ public partial class RunSimulator
                 PendingRewardAlternatives = alternatives?.ToList() ?? new();
                 _rewardWait = wait;
             }
+            RunSimulator.SignalFlow();  // the waiter sees HasPendingReward without a 1 ms poll
 
             Console.Error.WriteLine($"[SIM] Card reward pending: {options.Count} cards (blocking)");
             // No timeout: the reward waits for the player's answer (a timeout used to skip it
@@ -5530,6 +5535,7 @@ public partial class RunSimulator
             {
                 sim._pendingBundles = bundles;
                 sim._pendingBundleTcs = new TaskCompletionSource<IEnumerable<CardModel>>();
+                SignalFlow();
                 Console.Error.WriteLine($"[SIM] Bundle selection pending: {bundles.Count} packs");
 
                 __result = sim._pendingBundleTcs.Task;
@@ -5556,6 +5562,7 @@ public partial class RunSimulator
             if (sim != null)
             {
                 sim._crystalSphere = grid;
+                SignalFlow();
                 Console.Error.WriteLine($"[SIM] Crystal Sphere minigame pending: {grid.DivinationCount} divinations");
             }
             __result = null!;
@@ -5642,7 +5649,7 @@ public partial class RunSimulator
                 ["col"] = (int)ch.coord.col,
                 ["row"] = (int)ch.coord.row,
             }).ToList();
-            return new Dictionary<string, object?>
+            var node = new Dictionary<string, object?>
             {
                 ["col"] = (int)point.coord.col,
                 ["row"] = (int)point.coord.row,
@@ -5652,6 +5659,10 @@ public partial class RunSimulator
                 ["current"] = currentCoord.HasValue && currentCoord.Value == point.coord,
                 ["travelable"] = travelable.Contains(point.coord),
             };
+            if (point.PointType == MapPointType.Unknown && visited.Contains(point.coord)
+                && RevealedRoomType(point) is { } revealed)
+                node["revealed_type"] = revealed;
+            return node;
         }
 
         for (int row = 0; row < map.GetRowCount(); row++)
@@ -5720,12 +5731,7 @@ public partial class RunSimulator
         }).ToList();
         try
         {
-            result["modifiers"] = _runState.Modifiers.Select(m => new Dictionary<string, object?>
-            {
-                ["id"] = m.Id.Entry,
-                ["name"] = _loc.Bilingual("modifiers", m.Id.Entry + ".title"),
-                ["description"] = _loc.Bilingual("modifiers", m.Id.Entry + ".description"),
-            }).ToList();
+            result["modifiers"] = _runState.Modifiers.Select(m => ModifierInfo(m, true)).ToList();
         }
         catch { }
         try { result["run_time_seconds"] = RunManager.Instance.RunTime; } catch { }

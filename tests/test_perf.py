@@ -76,6 +76,87 @@ def test_relocated_binary_still_finds_localization(tmp_path):
         p.kill()
 
 
+def test_relocated_binary_finds_localization_via_game_dir(tmp_path):
+    """Launchers set STS2_GAME_DIR (not STS2_LIB) to the repo's lib/; the tables next to it count."""
+    if not DEBUG_DLL.is_file():
+        pytest.skip("Debug build missing")
+    out = tmp_path / "pub"
+    shutil.copytree(DEBUG_DLL.parent, out)
+    cmd = [engine.find_dotnet() or "dotnet", str(out / "Sts2Headless.dll")]
+    env = {k: v for k, v in os.environ.items() if k not in ("STS2_LIB", "STS2_DATA_DIR")}
+    env["STS2_GAME_DIR"] = str(LIB)
+    p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                         text=True, bufsize=1, env=env, cwd=str(tmp_path))
+    try:
+        ready = json.loads(p.stdout.readline())
+        assert ready["localization"] is True, ready
+        p.stdin.write(json.dumps({"cmd": "start_run", "character": "Ironclad", "seed": "gd"}) + "\n")
+        p.stdin.flush()
+        r = json.loads(p.stdout.readline())
+        assert not r["context"]["act_name"].endswith(".title"), r["context"]
+    finally:
+        p.kill()
+
+
+def test_missing_localization_warning_lists_searched_folders(tmp_path):
+    if not DEBUG_DLL.is_file():
+        pytest.skip("Debug build missing")
+    out = tmp_path / "pub"
+    shutil.copytree(DEBUG_DLL.parent, out)
+    lib = tmp_path / "lib"
+    shutil.copytree(LIB, lib)
+    env = {k: v for k, v in os.environ.items() if k not in ("STS2_LIB", "STS2_DATA_DIR")}
+    env["STS2_GAME_DIR"] = str(lib)
+    p = subprocess.Popen([engine.find_dotnet() or "dotnet", str(out / "Sts2Headless.dll")],
+                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                         text=True, bufsize=1, env=env, cwd=str(tmp_path))
+    try:
+        ready = json.loads(p.stdout.readline())
+        assert ready["localization"] is False
+        expected = str(tmp_path / "localization_eng").replace("/private", "")
+        assert expected in ready["warning"].replace("/private", ""), ready
+    finally:
+        p.kill()
+
+
+def test_fast_map_pruning_matches_the_game_over_many_seeds():
+    """The DFS / packed-key pruning against the game's version on a few hundred maps."""
+    p, send, _ = _spawn({"STS2_VERIFY_MAP_PRUNING": "1", "STS2_DEBUG_COMMANDS": "1"})
+    try:
+        chars = ["Ironclad", "Silent", "Defect", "Regent", "Necrobinder"]
+        for i in range(200):
+            r = send({"cmd": "start_run", "character": chars[i % 5], "seed": f"pv{i}", "ascension": i % 11})
+            assert r["type"] == "decision", r
+        assert send({"cmd": "__debug_stats"})["map_pruning_verified"] >= 200
+    finally:
+        p.kill()
+
+
+def test_amalgamator_skips_the_real_time_pause():
+    """Amalgamator's Task.Delay(300) is an animation pause; select_cards must not sit through it."""
+    p, send, _ = _spawn({"STS2_DEBUG": "1"})
+    try:
+        send({"cmd": "start_run", "character": "Ironclad", "seed": "amal"})
+        r = send({"cmd": "enter_room", "type": "event", "event": "AMALGAMATOR"})
+        strikes_before = sum(c["name"] == "Strike" for c in r["player"]["deck"])
+        # Choose the Combine Strikes option by its key, not its position.
+        opt = next(o for o in r["options"] if "COMBINE_STRIKES" in (o.get("text_key") or ""))
+        r = send({"cmd": "action", "action": "choose_option", "args": {"option_index": opt["index"]}})
+        assert r["decision"] == "card_select", r
+        picks = [i for i, c in enumerate(r["cards"]) if c["name"] == "Strike"][:2]
+        assert len(picks) == 2, r["cards"]
+        t = time.perf_counter()
+        r = send({"cmd": "action", "action": "select_cards", "args": {"indices": ",".join(map(str, picks))}})
+        dt = time.perf_counter() - t
+        assert r["decision"] == "event_choice", r
+        deck = r["player"]["deck"]
+        assert sum(c["name"] == "Ultimate Strike" for c in deck) == 1
+        assert sum(c["name"] == "Strike" for c in deck) == strikes_before - 2
+        assert dt < 0.15, dt
+    finally:
+        p.kill()
+
+
 def test_fast_map_pruning_matches_the_game():
     """STS2_VERIFY_MAP_PRUNING runs the game's FindMatchingSegments next to ours and throws on a difference."""
     p, send, _ = _spawn({"STS2_VERIFY_MAP_PRUNING": "1", "STS2_DEBUG_COMMANDS": "1"})

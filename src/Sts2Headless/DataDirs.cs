@@ -3,12 +3,22 @@ namespace Sts2Headless;
 /// <summary>
 /// Locates the repo's data directories (localization_eng / localization_zhs) independently of
 /// where the engine binary was built or published (bin/Debug, bin/Release, bin/R2R, a publish
-/// folder, ...): STS2_DATA_DIR, then walking up from the binary, then next to the lib/ folder,
-/// then walking up from the working directory.
+/// folder, ...): STS2_DATA_DIR, then walking up from the binary, then next to the lib/ folder
+/// (STS2_LIB, the lib directory the engine resolved, STS2_GAME_DIR — launchers point it at the
+/// repo's lib/), then walking up from the working directory.
 /// </summary>
 internal static class DataDirs
 {
     private static readonly Dictionary<string, string> s_found = new();
+
+    /// <summary>The lib directory Program resolved the game DLLs from (set before the first lookup).</summary>
+    public static string? LibDir;
+
+    /// <summary>Every directory searched, for the "not found" warning.</summary>
+    public static string SearchedRoots(string name) =>
+        string.Join(", ", Roots().Where(r => !string.IsNullOrEmpty(r))
+            .Select(r => { try { return Path.GetFullPath(Path.Combine(r, name)); } catch { return r; } })
+            .Distinct());
 
     public static string Localization(string name)
     {
@@ -51,6 +61,10 @@ internal static class DataDirs
         }
         var lib = Environment.GetEnvironmentVariable("STS2_LIB");
         if (!string.IsNullOrWhiteSpace(lib)) yield return Path.Combine(lib.Trim(), "..");
+        if (!string.IsNullOrWhiteSpace(LibDir)) yield return Path.Combine(LibDir, "..");
+        // Launchers and the test harness set STS2_GAME_DIR to the repo's lib/.
+        var gameDir = Environment.GetEnvironmentVariable("STS2_GAME_DIR");
+        if (!string.IsNullOrWhiteSpace(gameDir)) yield return Path.Combine(gameDir.Trim(), "..");
         // An engine published outside the repo, launched from inside it.
         dir = Environment.CurrentDirectory;
         for (var depth = 0; depth < 16 && !string.IsNullOrEmpty(dir); depth++)
