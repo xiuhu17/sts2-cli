@@ -16,6 +16,7 @@ import os
 import argparse
 import random
 from game_log import GameLogger
+import game_over
 from engine import engine_command, find_dotnet
 from policy import make_policy
 
@@ -1923,9 +1924,9 @@ def play(character, seed=None, auto=False, ascension=0, log=True,
                     quote = f" — {c(desc(kb['quote']), 'dim')}" if kb.get("quote") else ""
                     print(f"  {t('Killed by','死因')}: {n(kb.get('name'))}{quote}")
                 if state.get("score") is not None:
-                    bd = state.get("score_breakdown") or {}
-                    parts = ", ".join(f"{k} {v}" for k, v in bd.items())
-                    print(f"  {t('Score','分数')}: {c(str(state['score']), 'yellow')}" + (f" ({parts})" if parts else ""))
+                    print(f"  {t('Score','分数')}: {c(str(state['score']), 'yellow')}")
+                for line in game_over.summary_lines(state, t):
+                    print(line)
 
                 deck = p.get("deck", [])
                 if deck:
