@@ -33,6 +33,19 @@ For a compatibility check, run `python3 python/play_full_run.py 5 Ironclad`
 (repeat for Silent, Defect, Regent, and Necrobinder). A completed run reaches
 victory or defeat; crashes, stalls, and timeouts return a nonzero exit code.
 
+### Bots decide through a stated policy
+
+No client chooses for the player. The bots (`play_full_run.py`, `play.py --auto`,
+`agent/auto_play.py`, `agent/combat_helper.py`, `scripts/fuzz_legal.py`, `scripts/bench.py`)
+pick one entry of the engine's `legal_actions` through a policy in `python/policy.py`, never
+"the first option": `random` (default for `play_full_run.py --policy`: seeded, weighted by verb,
+uniform within a verb, never discards potions) or `heuristic` (used by `play.py --auto`: plays a
+card while one is legal and aims at the lowest-HP enemy, rests below 70% HP else smiths,
+removes Strike/Defend first, claims every reward then proceeds, otherwise random). The
+docstring of `python/policy.py` lists every rule. A run is reproducible from (seed, policy).
+Rewards screens and treasure chests are always decisions: the clients send
+`"manual_rewards": true` and handle `rewards` / `treasure_relic`.
+
 ## Play
 
 ```bash
@@ -55,11 +68,20 @@ Type `help` in-game:
 
   Map:     enter path number (0, 1, 2)
   Combat:  card index / e (end turn) / p0 (use potion)
-  Reward:  card index / s (skip)
-  Rest:    option index
-  Event:   option index / leave
+  Reward:  card index / s (skip, when the reward can be skipped) / a0 (alternative)
+  Rewards: index to claim / p (proceed; unclaimed rewards are left behind)
+  Chest:   relic index / s (skip)
+  Select:  card index(es) / s (skip or cancel, when the screen allows it)
+  Rest:    option index / leave (only when the game allows it)
+  Event:   option index / leave (only when the event offers no choice)
   Shop:    c0 (card) / r0 (relic) / p0 (potion) / rm (remove) / leave
+  Potions: u0 use outside combat (when usable there) / x0 discard, at any prompt
 ```
+
+Every prompt is built from the engine's `legal_actions`: it accepts exactly what the game
+allows on that screen and nothing is chosen for you (no automatic proceed/leave after an
+error; an error re-shows the same decision). A decision the client has no screen for is
+shown with all its fields and its legal actions as `a0`, `a1`, ...
 
 ## For AI agents: the `sts2` shell client (recommended)
 
@@ -74,8 +96,11 @@ minutes idle, `STS2_IDLE_TIMEOUT`), so every later call is a ~20 ms round-trip
 bin/sts2 start --character Ironclad --seed abc        # [--ascension N] [--lang zh] [--profile PATH]
 bin/sts2 state                     # current decision + numbered actions
 bin/sts2 do 3                      # take action [3]
-bin/sts2 do "play Bash E0; play Strike E0; end"   # batch: stops at the first error, or when a
-                                   # step no longer fits the decision (e.g. a card selection popped up)
+bin/sts2 do "play Bash E0; play Strike E0; end"   # batch: stops at the first error, and
+                                   # before any step once the game is at another decision or a new
+                                   # turn (e.g. a card selection popped up, the fight ended)
+bin/sts2 do "play Body Slam -> Jaw Worm"   # multi-word names; identical cards are one play, but
+                                   # differing same-name cards / same-name enemies need H<n> / E<n>
 bin/sts2 deck | relics | potions | piles [draw] | map | card N | log [N]
 bin/sts2 --json state              # raw engine JSON instead of text
 bin/sts2 help                      # all verbs
@@ -87,15 +112,26 @@ drawn, damage, block, powers, enemy moves, relic triggers, gold/deck/relic chang
 then the decision: in combat the enemies with intents and powers, the hand with card
 text, energy, orbs/stars/Osty, piles; for card selections the purpose
 (upgrade/remove/transform/enchant/discard/exhaust/choose), the game's prompt, the source,
-whether it can be cancelled, and upgrade/enchant/transform previews. Replies stay under
-8 KB. Steps in a batch are read against the state at the moment they run, so refer to
-cards by name (`play Strike`) or re-check indices. `--lang zh` uses the game's official
+whether it can be cancelled, and upgrade/enchant/transform previews; Ancient dialogue,
+per-target damage (also with one enemy), the game's intent titles, the score and cause of
+death at game over, a used card removal, and the Crystal Sphere grid with axes, legend and
+tool rules. Fields the renderer does not know are printed as `key: value`. Replies stay
+under 8 KB and the legal actions are never cut (long selections are folded into one
+`[a-b]` line, the card list is shortened instead). Steps in a batch are read against the
+state at the moment they run, so refer to cards by name (`play Strike`); a bare action
+number after the first step only runs while the action list is unchanged. `click X Y`
+needs the tool (`big` = 3x3, `small` = one cell). The start command is stored with the seed
+the engine used (also when you gave none) in `$TMPDIR`, so a crashed engine, an engine that
+died while idle, or a killed daemon replays the very same run; a replay that does not end
+where the run was is reported as diverged. `--lang zh` uses the game's official
 Chinese text. Debug commands are never enabled in the daemon. Set `STS2_SESSION` to run
 several independent games.
 
 `agent/sts2_bridge.py` (HTTP, one JSON command per POST) is still available; it now
-restarts a dead engine and replays the run, answers bad bodies with a JSON error,
-serves `GET /state` and `GET /help`, and its `--compact` mode keeps all descriptions.
+restarts a dead engine and replays the run on the seed the engine reported (a response
+after a restart carries `notes`; a diverged replay says so), answers bad bodies with a JSON
+error, serves `GET /state` and `GET /help`, and its `--compact` mode keeps all descriptions.
+`agent/combat_helper.py` plays only legal cards and stops at every non-combat decision; ties between equally scored cards, targets or potions are broken by a seeded RNG, not by list order.
 
 ## JSON Protocol
 
@@ -224,6 +260,16 @@ cd sts2-cli
 Silent、Defect、Regent、Necrobinder。“完成”指正常胜利或死亡；崩溃、卡住和超时
 会返回非零退出码。
 
+### 机器人按明确的策略做决定
+
+任何客户端都不会替玩家做选择。机器人（`play_full_run.py`、`play.py --auto`、`agent/auto_play.py`、
+`agent/combat_helper.py`、`scripts/fuzz_legal.py`、`scripts/bench.py`）通过 `python/policy.py`
+里的策略从引擎的 `legal_actions` 中选一项，从不“默认选第一个”：`random`（`play_full_run.py --policy`
+的默认值：按种子随机，按操作类型加权，同类型内均匀选择，从不丢弃药水）或 `heuristic`（`play.py --auto`
+使用：只要有能打的牌就打，攻击生命最低的敌人；生命低于 70% 休息，否则升级；优先移除打击/防御；
+领取全部奖励后继续；其余随机）。所有规则见 `python/policy.py` 的文档字符串。同一种子加同一策略可以完全复现。
+奖励界面和宝箱永远是决策：客户端会发送 `"manual_rewards": true` 并处理 `rewards` / `treasure_relic`。
+
 ## 玩
 
 ```bash
@@ -246,11 +292,17 @@ python3 python/play.py --character Silent      # 选择静默猎手
 
   地图:    输入编号 (0, 1, 2)
   战斗:    输入卡牌编号 / e 结束回合 / p0 使用药水
-  奖励:    输入卡牌编号 / s 跳过
-  休息:    输入选项编号
-  事件:    输入选项编号 / leave 离开
+  卡牌奖励: 输入卡牌编号 / s 跳过（奖励可跳过时）/ a0 其他选项
+  奖励:    输入编号领取 / p 继续（未领取的奖励将被放弃）
+  宝箱:    输入遗物编号 / s 跳过
+  选牌:    输入卡牌编号 / s 跳过或取消（界面允许时）
+  休息:    输入选项编号 / leave（游戏允许离开时）
+  事件:    输入选项编号 / leave（事件没有可选项时）
   商店:    c0 买卡 / r0 买遗物 / p0 买药水 / rm 移除 / leave 离开
+  药水:    任意提示下 u0 在战斗外使用（可用时）/ x0 丢弃
 ```
+
+每个提示都根据引擎的 `legal_actions` 生成：只接受游戏在该界面允许的操作，不会替你做任何选择（出错后不会自动继续或离开，只会重新显示当前决策）。客户端没有专门界面的决策会显示全部字段和合法操作，编号为 `a0`、`a1`……
 
 ## 角色支持
 
@@ -271,17 +323,19 @@ python3 python/play.py --character Silent      # 选择静默猎手
 bin/sts2 start --character Ironclad --seed abc --lang zh   # [--ascension N] [--profile PATH]
 bin/sts2 state                     # 当前决策 + 编号的可选操作
 bin/sts2 do 3                      # 执行第 [3] 个操作
-bin/sts2 do "play Bash E0; play Strike E0; end"   # 批量：遇到第一个错误、或某一步不再适用于当前决策
-                                   # （例如弹出了选牌）时停止
+bin/sts2 do "play Bash E0; play Strike E0; end"   # 批量：遇到第一个错误时停止；游戏进入其他决策
+                                   # 或新的回合后（例如弹出了选牌、战斗结束），后面的步骤不再执行
+bin/sts2 do "play Body Slam -> Jaw Worm"   # 支持多词牌名；完全相同的牌视为同一个操作，但同名而不同的牌
+                                   # 或同名敌人需要用 H<n> / E<n>
 bin/sts2 deck | relics | potions | piles [draw] | map | card N | log [N]
 bin/sts2 --json state              # 输出引擎原始 JSON
 bin/sts2 help                      # 全部指令
 bin/sts2 stop
 ```
 
-每次返回先列出上次决策以来发生的事（打出和抽到的牌、伤害、格挡、能力、敌人行动、遗物触发、金币/牌组/遗物变化），然后是当前决策：战斗中显示敌人的意图和能力、带卡牌说明的手牌、能量、充能球/辉星/奥斯提、牌堆；选牌时显示用途（升级/移除/变化/附魔/丢弃/消耗/选择）、游戏的提示语、来源、能否取消，以及升级/附魔/变化预览。每次输出都小于 8 KB。批量里的每一步都按执行那一刻的状态解析，所以建议用牌名（`play Strike`）或重新确认编号。`--lang zh` 使用游戏官方中文。守护进程里永远不会开启调试命令。设置 `STS2_SESSION` 可以同时进行多局互不影响的游戏。
+每次返回先列出上次决策以来发生的事（打出和抽到的牌、伤害、格挡、能力、敌人行动、遗物触发、金币/牌组/遗物变化），然后是当前决策：战斗中显示敌人的意图和能力、带卡牌说明的手牌、能量、充能球/辉星/奥斯提、牌堆；选牌时显示用途（升级/移除/变化/附魔/丢弃/消耗/选择）、游戏的提示语、来源、能否取消，以及升级/附魔/变化预览；还会显示先古之民的对话、每个目标的实际伤害（只有一个敌人时也显示）、游戏自己的意图名称、游戏结束时的分数和死因、商店删牌已使用，以及带坐标轴、图例和工具说明的水晶球格子。渲染器不认识的字段会以 `key: value` 输出。每次输出都小于 8 KB，且合法操作永远不会被截掉（长列表的选牌操作会合并成一行 `[a-b]`，改为缩短卡牌列表）。批量里的每一步都按执行那一刻的状态解析，所以建议用牌名（`play Strike`）；第一步之后的纯数字步骤只有在操作列表未变化时才会执行。`click X Y` 必须带工具（`big` = 3x3，`small` = 单格）。开局命令连同引擎实际使用的种子（即使你没有指定）保存在 `$TMPDIR`，所以引擎崩溃、空闲时退出或守护进程被杀后，重放的都是同一局；重放结果与原局面不一致时会明确提示。`--lang zh` 使用游戏官方中文。守护进程里永远不会开启调试命令。设置 `STS2_SESSION` 可以同时进行多局互不影响的游戏。
 
-`agent/sts2_bridge.py`（HTTP，每次 POST 一条 JSON 命令）仍然可用：现在引擎退出后会自动重启并重放本局，非法请求体会返回 JSON 错误，提供 `GET /state` 和 `GET /help`，`--compact` 模式也不再删除说明文字。
+`agent/sts2_bridge.py`（HTTP，每次 POST 一条 JSON 命令）仍然可用：现在引擎退出后会自动重启，并用引擎报告的种子重放本局（重启后的响应带 `notes`，重放不一致时会说明），非法请求体会返回 JSON 错误，提供 `GET /state` 和 `GET /help`，`--compact` 模式也不再删除说明文字。`agent/combat_helper.py` 只打合法的牌，遇到任何非战斗决策都会停下交还给调用者；评分相同的牌、目标或药水由带种子的随机数决定，而不是按列表顺序。
 
 ## JSON 协议
 
