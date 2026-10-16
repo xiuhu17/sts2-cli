@@ -12,7 +12,8 @@ def _concrete(a, rng):
     min..max of its indices, a {"choose_cell": ...} a random listed cell and tool."""
     if "choose" in a:
         c = a["choose"]
-        picks = sorted(rng.sample(c["from"], rng.randint(c["min"], c["max"])))
+        k = rng.choice(c["counts"]) if c.get("counts") else rng.randint(c["min"], c["max"])
+        picks = sorted(rng.sample(c["from"], k))
         return {"action": a["action"], "args": {"indices": ",".join(map(str, picks))}}
     if "choose_cell" in a:
         x, y = rng.choice(a["choose_cell"]["cells"])

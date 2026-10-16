@@ -55,7 +55,8 @@ def to_args(entry, rng):
     if "choose" in entry:
         ch = entry["choose"]
         lo, hi = int(ch.get("min", 1)), int(ch.get("max", 1))
-        k = rng.randint(lo, hi)
+        # "counts": the only sizes the screen confirms when they have a gap (0 or max).
+        k = rng.choice(list(ch["counts"])) if ch.get("counts") else rng.randint(lo, hi)
         picks = sorted(rng.sample(list(ch["from"]), k))
         return {"action": entry["action"], "args": {"indices": ",".join(map(str, picks))}}
     if "choose_cell" in entry:
