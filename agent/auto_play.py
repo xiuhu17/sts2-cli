@@ -238,7 +238,9 @@ def handle_shop(d):
     return action("leave_room")
 
 def handle_rest(d):
-    """Heal if HP < 75%, else smith."""
+    """Heal if HP < 75%, else smith. With no option left, press Proceed (leave_room)."""
+    if not [o for o in d.get("options", []) if o.get("is_enabled", True)]:
+        return action("leave_room")
     player = d["player"]
     hp_pct = player["hp"] / player["max_hp"]
     floor = d["context"]["floor"]

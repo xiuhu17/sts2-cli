@@ -508,10 +508,14 @@ public partial class RunSimulator
                 {
                     var id = cEl.GetString();
                     if (id == null) continue;
+                    // "BASH+" adds an upgraded copy.
+                    var plus = id.EndsWith("+");
+                    if (plus) id = id[..^1];
                     var canonical = ModelDb.GetById<CardModel>(new ModelId("CARD", id));
                     if (canonical != null)
                     {
                         var card = _runState.CreateCard(canonical, player);
+                        if (plus && card.IsUpgradable) { card.UpgradeInternal(); card.FinalizeUpgradeInternal(); }
                         player.Deck.AddInternal(card, silent: true);
                     }
                 }
@@ -696,7 +700,11 @@ public partial class RunSimulator
 
             RunManager.Instance.Launch();
             Log("Run launched");
-            ContinueSave.Last = save;
+            // RunState.FromSerializable shares the save's inner per-act history lists with the
+            // live run, so re-entering the node would grow `save` too. Keep an independent copy
+            // of what is on disk (the game's Continue does not save again: saveGame=false).
+            var onDisk = ContinueSave.Snapshot(saveJson) ?? save;
+            ContinueSave.Last = onDisk;
 
             if (ContinueSave.ShouldReenterLatestCoord(save))
             {
@@ -716,7 +724,7 @@ public partial class RunSimulator
                     WaitForActionExecutor();
                 }
                 finally { ContinueSave.SuppressRoomEndRewards = false; }
-                ContinueSave.Last = save;
+                ContinueSave.Last = onDisk;
             }
             else if (savedRoom is MapRoom || savedRoom == null)
             {
@@ -3236,6 +3244,7 @@ public partial class RunSimulator
             ["hidden_cells"] = hidden,
             ["items_seen"] = seen.Values.ToList(),
             ["tools"] = new List<string> { "big", "small" },
+            ["current_tool"] = grid.CrystalSphereTool == MegaCrit.Sts2.Core.Events.Custom.CrystalSphereEvent.CrystalSphereMinigame.CrystalSphereToolType.Small ? "small" : "big",
             ["player"] = PlayerSummary(_runState!.Players[0]),
         };
     }
@@ -3247,7 +3256,10 @@ public partial class RunSimulator
         if (args == null || !args.ContainsKey("x") || !args.ContainsKey("y"))
             return Error("crystal_sphere_click requires 'x', 'y' and optionally 'tool' (big|small)");
         int x = Convert.ToInt32(args["x"]), y = Convert.ToInt32(args["y"]);
-        var toolName = args.GetValueOrDefault("tool")?.ToString()?.ToLowerInvariant() ?? "big";
+        // No tool given: the one currently selected in the minigame (the game starts on Big and
+        // keeps the last tool picked), as a click without touching the tool buttons would.
+        var toolName = args.GetValueOrDefault("tool")?.ToString()?.ToLowerInvariant()
+                       ?? (grid.CrystalSphereTool == MegaCrit.Sts2.Core.Events.Custom.CrystalSphereEvent.CrystalSphereMinigame.CrystalSphereToolType.Small ? "small" : "big");
         if (toolName != "big" && toolName != "small") return Error($"Unknown tool '{toolName}' (big|small)");
         if (x < 0 || y < 0 || x >= grid.cells.GetLength(0) || y >= grid.cells.GetLength(1))
             return Error($"Cell ({x},{y}) is outside the {grid.cells.GetLength(0)}x{grid.cells.GetLength(1)} grid");
@@ -3570,14 +3582,11 @@ public partial class RunSimulator
             return _runState?.CurrentRoom is MapRoom ? MapSelectState() : DetectDecisionPoint();
         }
 
-        var currentOptions = localEvent.CurrentOptions;
-        if (currentOptions == null || currentOptions.Count == 0)
-        {
-            Log($"Event {localEvent.GetType().Name} has no options, auto-skipping");
-            try { RunManager.Instance.EnterRoom(new MapRoom()).GetAwaiter().GetResult(); _syncCtx.Pump(); }
-            catch { }
-            return MapSelectState();
-        }
+        // An unfinished event without options is shown as it is (never skipped for the player);
+        // legal_actions then offers leave_room as the only way on.
+        var currentOptions = localEvent.CurrentOptions ?? (IReadOnlyList<EventOption>)Array.Empty<EventOption>();
+        if (currentOptions.Count == 0)
+            Log($"[WARN] Event {localEvent.GetType().Name} is not finished but has no options");
 
         var options = currentOptions
             .Select((opt, i) =>
@@ -3721,15 +3730,11 @@ public partial class RunSimulator
         var options = restRoom.Options;
         var player = _runState!.Players[0];
 
-        if (options == null || options.Count == 0)
-        {
-            // Options empty = choice already made (synchronizer cleared them), go to map
-            Log("Rest site: options empty, proceeding to map");
-            ForceToMap();
-            return MapSelectState();
-        }
-
-        var optionList = options.Select((opt, i) => RestOptionInfo(opt, i, player)).ToList();
+        // No options left (the synchronizer cleared them after the choice): the game hides the
+        // choices and enables Proceed (NRestSiteRoom.AfterSelectingOptionAsync /
+        // OnActiveScreenUpdated); the room is left only when the player presses it (leave_room).
+        var optionList = (options ?? (IReadOnlyList<RestSiteOption>)Array.Empty<RestSiteOption>())
+            .Select((opt, i) => RestOptionInfo(opt, i, player)).ToList();
 
         return new Dictionary<string, object?>
         {
@@ -3738,7 +3743,7 @@ public partial class RunSimulator
             ["context"] = RunContext(),
             ["options"] = optionList,
             // After an option is used the game shows Proceed (NRestSiteRoom.ShowProceedButton).
-            ["can_leave"] = ReferenceEquals(_restChoiceRoom, restRoom),
+            ["can_leave"] = ReferenceEquals(_restChoiceRoom, restRoom) || optionList.Count == 0,
             ["player"] = PlayerSummary(player),
         };
     }
@@ -4996,11 +5001,10 @@ public partial class RunSimulator
             if (optList.Count == 0)
                 return Task.FromResult<IEnumerable<CardModel>>(Array.Empty<CardModel>());
 
-            // If only one option and minSelect requires it, auto-select -- unless the game's
-            // screen has a cancel button (rest-site Smith, shop removal): then backing out is
-            // a real choice.
-            if (optList.Count == 1 && minSelect >= 1 && ctx?.Cancelable != true)
-                return Task.FromResult<IEnumerable<CardModel>>(optList);
+            // No auto-pick here: CardSelectCmd already skips the screen itself when the game
+            // does (count <= MinSelect && !RequireManualConfirmation, one upgradable card in
+            // hand, ...). Every call that reaches the selector is a screen a human sees, even
+            // with a single card (choose-a-card, manual-confirm and cancelable screens).
             // A choose-a-card screen without a skip button requires a pick even though the
             // game asks the selector for 0-1 cards.
             if (ctx != null && ctx.ForceMinSelect > minSelect)
@@ -5110,7 +5114,9 @@ public partial class RunSimulator
             }
 
             Console.Error.WriteLine($"[SIM] Card reward pending: {options.Count} cards (blocking)");
-            wait.Wait(TimeSpan.FromSeconds(300)); // Wait up to 5 min
+            // No timeout: the reward waits for the player's answer (a timeout used to skip it
+            // for them). Reset() wakes it when the run is torn down.
+            wait.Wait();
 
             int choice, altChoice;
             lock (_rewardLock)
@@ -5567,7 +5573,10 @@ public partial class RunSimulator
                 return false;
             }
 
-            __result = Task.FromResult<IEnumerable<CardModel>>(bundles[0]);
+            // No simulator to ask (the run is being torn down): never pick a pack for the player.
+            Console.Error.WriteLine("[WARN] Bundle selection requested with no active run; not choosing one");
+            __result = Task.FromException<IEnumerable<CardModel>>(
+                new InvalidOperationException("bundle selection without an active run"));
             return false;
         }
 

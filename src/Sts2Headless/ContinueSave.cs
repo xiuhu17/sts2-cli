@@ -58,6 +58,17 @@ internal static class ContinueSave
         catch (Exception ex) { Console.Error.WriteLine($"[WARN] ContinueSave rewards: {ex.Message}"); }
     }
 
+    /// <summary>A fresh, unshared copy of a save (null if it does not parse).</summary>
+    internal static SerializableRun? Snapshot(string saveJson)
+    {
+        try
+        {
+            var r = SaveManager.FromJson<SerializableRun>(saveJson);
+            return r.Success ? r.SaveData : null;
+        }
+        catch { return null; }
+    }
+
     public static bool SaveRunPrefix(AbstractRoom? preFinishedRoom, ref Task __result)
     {
         try { Last = RunManager.Instance.ToSave(preFinishedRoom); }

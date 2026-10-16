@@ -182,6 +182,12 @@ class TestRestSite:
         game.set_player(hp=30)
         state = game.enter_room("rest_site")
         state = game.act("choose_option", option_index=0)
+        # The choices are gone and only Proceed is left (NRestSiteRoom.ShowProceedButton): the
+        # room is not left for the player.
+        assert state["decision"] == "rest_site"
+        assert state["options"] == [] and state["can_leave"] is True
+        assert [a["action"] for a in state["legal_actions"] if a["action"] not in ("use_potion", "discard_potion")] == ["leave_room"]
+        state = game.act("proceed")  # alias of the same Proceed button
         assert state["decision"] == "map_select"
 
     def test_cannot_leave_before_a_choice(self, game):
