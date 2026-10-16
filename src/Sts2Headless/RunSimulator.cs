@@ -342,8 +342,9 @@ public partial class RunSimulator
 
     // Pending rewards for card selection (populated after combat, before proceeding)
     private List<Reward>? _pendingRewards;
-    private CardReward? _pendingCardReward;
     private bool _rewardsProcessed;
+    // Proceed was pressed on the post-combat (terminal) rewards screen.
+    private bool _rewardsProceeded;
     private int _goldBeforeCombat;
     private int _lastKnownHp;
     private readonly HeadlessCardSelector _cardSelector = new();
@@ -387,6 +388,7 @@ public partial class RunSimulator
             }
             var unlocks = progress != null ? new UnlockState(progress) : UnlockState.all;
             if (ParityPatches.Failure != null) return Error(ParityPatches.Failure);
+            if (RewardPatches.Failure != null) return Error(RewardPatches.Failure);
             if (!ResetForNewRun())
                 return RestartRequired();
             // The game reads the profile's progress during the run (act discovery, first-run
@@ -622,6 +624,7 @@ public partial class RunSimulator
                     return Error($"Unknown room type: {roomType}");
             }
 
+            ResetPerRoomState(runState.Players[0]);
             RunManager.Instance.EnterRoom(room).GetAwaiter().GetResult();
             _syncCtx.Pump();
             WaitForActionExecutor();
@@ -678,6 +681,7 @@ public partial class RunSimulator
         {
             EnsureModelDbInitialized();
             if (ParityPatches.Failure != null) return Error(ParityPatches.Failure);
+            if (RewardPatches.Failure != null) return Error(RewardPatches.Failure);
             ProgressState? progress = null;
             if (profilePath != null)
             {
@@ -1150,6 +1154,22 @@ public partial class RunSimulator
 
     #region Actions
 
+    /// <summary>
+    /// Forget the previous room's reward / treasure / event tracking before entering a room
+    /// (map travel and debug enter_room alike), so the next room's rewards are generated.
+    /// </summary>
+    private void ResetPerRoomState(Player player)
+    {
+        _treasureFinishPending = null;
+        _rewardsProcessed = false;
+        _rewardsProceeded = false;
+        _eventOptionChosen = false;
+        _lastEventOptionCount = 0;
+        _pendingRewards = null;
+        _rewardDone.Clear();
+        _lastKnownHp = player.Creature?.CurrentHp ?? 0;
+    }
+
     private Dictionary<string, object?> DoMapSelect(Player player, Dictionary<string, object?>? args)
     {
         if (args == null || !args.ContainsKey("col") || !args.ContainsKey("row"))
@@ -1172,14 +1192,7 @@ public partial class RunSimulator
             return Error($"Map node ({reqCol},{reqRow}) is not reachable; choices: {list}");
         }
 
-        // Reset tracking for new room
-        _treasureFinishPending = null;
-        _rewardsProcessed = false;
-        _pendingCardReward = null;
-        _eventOptionChosen = false;
-        _lastEventOptionCount = 0;
-        _pendingRewards = null;
-        _lastKnownHp = player.Creature?.CurrentHp ?? 0;
+        ResetPerRoomState(player);
 
         var col = reqCol;
         var row = reqRow;
@@ -1516,33 +1529,7 @@ public partial class RunSimulator
             return DetectDecisionPoint();
         }
 
-        if (_pendingCardReward == null)
-            return Error("No pending card reward");
-        if (args == null || !args.ContainsKey("card_index"))
-            return Error("select_card_reward requires 'card_index'");
-
-        var cardIndex = Convert.ToInt32(args["card_index"]);
-        var cards = _pendingCardReward.Cards.ToList();
-        if (cardIndex < 0 || cardIndex >= cards.Count)
-            return Error($"Invalid card index {cardIndex}, {cards.Count} cards available");
-
-        var card = cards[cardIndex];
-        Log($"Selected card reward: {card.GetType().Name}");
-
-        // Add card to deck
-        try
-        {
-            MegaCrit.Sts2.Core.Commands.CardPileCmd
-                .Add(card, MegaCrit.Sts2.Core.Entities.Cards.PileType.Deck)
-                .GetAwaiter().GetResult();
-            _syncCtx.Pump();
-            RunManager.Instance.RewardSynchronizer.SyncLocalObtainedCard(card);
-        }
-        catch (Exception ex) { Log($"Add card to deck: {ex.Message}"); }
-
-        _pendingCardReward = null;
-        // Check if more rewards pending
-        return DetectDecisionPoint();
+        return Error("No pending card reward");
     }
 
     private Dictionary<string, object?> DoSkipCardReward(Player player)
@@ -1562,13 +1549,7 @@ public partial class RunSimulator
             WaitForActionExecutor();
             return DetectDecisionPoint();
         }
-        if (_pendingCardReward != null)
-        {
-            Log("Skipping card reward");
-            _pendingCardReward.OnSkipped();
-            _pendingCardReward = null;
-        }
-        return DetectDecisionPoint();
+        return Error("No pending card reward");
     }
 
     private Dictionary<string, object?> DoBuyCard(Player player, Dictionary<string, object?>? args)
@@ -1689,9 +1670,10 @@ public partial class RunSimulator
         try
         {
             // Run on background thread so card selection can pause (same pattern as event options).
-            // A successful removal marks the service used, as NMerchantCardRemoval.OnCardRemovalUsed does.
+            // A successful removal marks the service used (RewardPatches, standing in for
+            // NMerchantCardRemoval.OnCardRemovalUsed), for this and Lord's Parasol's free one.
             var inv = merchantRoom.GetLocalInventory();
-            if (RunInBackground(async () => { if (await removal.OnTryPurchaseWrapper(inv)) removal.SetUsed(); }))
+            if (RunInBackground(() => removal.OnTryPurchaseWrapper(inv)))
             {
                 WaitForActionExecutor();
                 return DetectDecisionPoint();
@@ -2157,7 +2139,6 @@ public partial class RunSimulator
             if (combatRoom.IsPreFinished || !CombatManager.Instance.IsInProgress)
             {
                 // Rewards left on the boss screen don't follow the player onwards.
-                _pendingCardReward = null;
                 _pendingRewards = null;
                 // Ascension 10 first boss: the map opens for the second boss (NRewardsScreen).
                 if (AtFirstOfDoubleBoss())
@@ -2328,12 +2309,6 @@ public partial class RunSimulator
         // Rewards offered by an event or a relic pickup (RewardsSet.Offer)
         if (EventRewardsOpen)
             return EventRewardsState(player);
-
-        // Check if there's a pending card reward
-        if (_pendingCardReward != null)
-        {
-            return CardRewardState(player, _runState.CurrentRoom as CombatRoom);
-        }
 
         // Check if RunManager reports game over (victory)
         if (RunManager.Instance.IsGameOver)
@@ -2892,6 +2867,7 @@ public partial class RunSimulator
         {
             _goldBeforeCombat = player.Gold;
             _rewardDone.Clear();
+            _rewardsProceeded = false;
             try
             {
                 var rewardsSet = new RewardsSet(player).WithRewardsFromRoom(combatRoom);
@@ -2911,14 +2887,13 @@ public partial class RunSimulator
             }
         }
 
-        // The reward screen (NRewardsScreen) stays up while anything on it is unclaimed: every
-        // reward is the player's to take or leave, and Proceed leaves the rest.
-        if (_pendingRewards != null && _pendingCardReward == null
-            && Enumerable.Range(0, _pendingRewards.Count).Any(i => !_rewardDone.Contains(i)))
+        // The post-combat reward screen (NRewardsScreen, terminal) stays up until Proceed: every
+        // reward is the player's to take or leave, and once all are taken the empty screen
+        // keeps its Proceed button (potions can still be used or discarded there).
+        if (_pendingRewards != null && !_rewardsProceeded)
             return RewardsState(player);
 
-        // No more pending rewards — proceed
-        _pendingCardReward = null;
+        // Proceed pressed — leave the room
         _pendingRewards = null;
         _rewardsProcessed = true;
 
@@ -2969,44 +2944,6 @@ public partial class RunSimulator
         // Normal → go to map
         ForceToMap();
         return MapSelectState();
-    }
-
-    private Dictionary<string, object?> CardRewardState(Player player, CombatRoom? combatRoom)
-    {
-        if (_pendingCardReward == null)
-            return DetectPostCombatState(player, combatRoom ?? (_runState?.CurrentRoom as CombatRoom)!);
-
-        var cards = _pendingCardReward.Cards.Select((c, i) =>
-        {
-            var stats = new Dictionary<string, object?>();
-            try { foreach (var dv in c.DynamicVars.Values) stats[dv.Name.ToLowerInvariant()] = (int)dv.BaseValue; } catch { }
-            var crkws = c.Keywords?.Where(k => k != CardKeyword.None).Select(k => k.ToString()).ToList();
-            return WithCardMeta(new Dictionary<string, object?>
-            {
-                ["index"] = i,
-                ["id"] = c.Id.ToString(),
-                ["name"] = CardName(c),
-                ["cost"] = c.EnergyCost?.GetResolved() ?? 0,
-                ["type"] = c.Type.ToString(),
-                ["rarity"] = c.Rarity.ToString(),
-                ["description"] = CardText(c),
-                ["tips"] = Tips(() => c.HoverTips, _loc.Card(c.Id.Entry)),
-                ["stats"] = stats.Count > 0 ? stats : null,
-                ["keywords"] = crkws?.Count > 0 ? crkws : null,
-                ["after_upgrade"] = GetUpgradedInfo(c),
-            }, c);
-        }).ToList();
-
-        return new Dictionary<string, object?>
-        {
-            ["type"] = "decision",
-            ["decision"] = "card_reward",
-            ["context"] = RunContext(),
-            ["cards"] = cards,
-            ["can_skip"] = _pendingCardReward.CanSkip,
-            ["gold_earned"] = _runState!.Players[0].Gold - _goldBeforeCombat,
-            ["player"] = PlayerSummary(_runState!.Players[0]),
-        };
     }
 
     // ─── Event / relic reward sets ───
@@ -3292,12 +3229,11 @@ public partial class RunSimulator
     // Indices into _pendingRewards already claimed, skipped, or handed to the card reward screen.
     private readonly HashSet<int> _rewardDone = new();
 
-    /// <summary>The post-combat reward screen is open (combat over, unclaimed rewards left).</summary>
+    /// <summary>The post-combat reward screen is open (combat over, Proceed not pressed yet).</summary>
     private bool RewardsScreenOpen =>
-        _pendingRewards != null && _pendingCardReward == null
+        _pendingRewards != null && !_rewardsProceeded
         && _runState?.CurrentRoom is CombatRoom && !CombatManager.Instance.IsInProgress
-        && !HasPendingPrompt
-        && Enumerable.Range(0, _pendingRewards.Count).Any(i => !_rewardDone.Contains(i));
+        && !HasPendingPrompt;
 
     private Dictionary<string, object?> RelicInfo(RelicModel r, int? index = null)
     {
@@ -3426,7 +3362,8 @@ public partial class RunSimulator
             try { _pendingRewards[i].OnSkipped(); }
             catch (Exception ex) { Log($"Skip reward {i}: {ex.Message}"); }
         }
-        Log("Left remaining rewards");
+        _rewardsProceeded = true;
+        Log("Proceeding from the rewards screen");
         return DetectDecisionPoint();
     }
 
@@ -3504,7 +3441,7 @@ public partial class RunSimulator
         // would drop the remaining rewards, so resolve it first.
         if (_pendingRewards != null && _runState?.CurrentRoom is CombatRoom
             && !CombatManager.Instance.IsInProgress
-            && (_pendingCardReward != null || HasPendingPrompt)
+            && HasPendingPrompt
             && action is "proceed" or "leave_room" or "select_map_node")
             return Error($"'{action}' is not available yet: finish the current reward choice first");
 
@@ -4640,6 +4577,7 @@ public partial class RunSimulator
         HeadlessUiGuard.Install(typeof(CombatManager).Assembly);
         // Real-game (TestMode off) behaviour for the TestMode branches that are game logic.
         ParityPatches.Install(new Harmony("sts2headless.parity"));
+        RewardPatches.Install(new Harmony("sts2headless.rewards"));
         MapPruningPatch.Install(new Harmony("sts2headless.mappruning"));
         AnimationDelayPatch.Install(new Harmony("sts2headless.animationdelay"));
 
@@ -5052,13 +4990,20 @@ public partial class RunSimulator
         // NOTE: STS2 build 23372702 changed ICardSelector.GetSelectedCardReward to return
         // a CardRewardSelection struct { CardModel card; CardRewardAlternative alternative }.
         // CardReward.OnSelect interprets: alternative != null → pick that alternative
-        // (Skip/Reroll); else card != null → take that card; both null → skip (no card kept).
+        // (Skip/Reroll/Sacrifice); else card != null → take that card; both null → skip.
         public MegaCrit.Sts2.Core.TestSupport.CardRewardSelection GetSelectedCardReward(
             IReadOnlyList<MegaCrit.Sts2.Core.Entities.Cards.CardCreationResult> options,
             IReadOnlyList<CardRewardAlternative> alternatives)
         {
+            // OnSelect passes the list it generated when the screen opened on every pass, but the
+            // screen shows the latest CardRewardAlternative.Generate(reward) (RefreshOptions after
+            // a Driftwood Reroll, which drops REROLL). The screen's button i still resolves to
+            // alternatives[i] (OnSelect indexes its own list by the screen's position).
+            var shownFor = RewardPatches.ShownFor(options);
+            var shown = shownFor?.Alternatives ?? alternatives ?? Array.Empty<CardRewardAlternative>();
+
             // Nothing on the screen at all (no cards, no Skip/Reroll/Sacrifice): nothing to decide.
-            if (options.Count == 0 && (alternatives == null || alternatives.Count == 0)) return default;
+            if (options.Count == 0 && shown.Count == 0) return default;
 
             // Blocking the main thread would wait for an answer only it can deliver. Every reward
             // flow runs on a background flow, so this is an adapter bug: fail loudly instead of
@@ -5068,12 +5013,19 @@ public partial class RunSimulator
 
             // Store pending and block until main loop resolves
             var wait = new ManualResetEventSlim(false);
+            int generation;
             lock (_rewardLock)
             {
+                // A reward from a run that is being (or has been) torn down: fault that flow
+                // instead of parking its screen in the next run or choosing anything for it.
+                if (!_runOpen || (shownFor != null && _activeRun != null
+                        && !ReferenceEquals(shownFor.Reward.Player.RunState, _activeRun)))
+                    throw new OperationCanceledException("Card reward from a finished run");
+                generation = _generation;
                 _rewardChoice = -1;
                 _rewardAltChoice = -1;
                 PendingRewardCards = options.ToList();
-                PendingRewardAlternatives = alternatives?.ToList() ?? new();
+                PendingRewardAlternatives = shown.ToList();
                 _rewardWait = wait;
             }
             RunSimulator.SignalFlow();  // the waiter sees HasPendingReward without a 1 ms poll
@@ -5094,6 +5046,9 @@ public partial class RunSimulator
                     PendingRewardCards = null;
                     _rewardWait = null;
                 }
+                // Woken by Reset(): the run is gone, nothing was chosen.
+                if (generation != _generation)
+                    throw new OperationCanceledException("Card reward cancelled: the run was reset");
             }
 
             if (alternatives != null && altChoice >= 0 && altChoice < alternatives.Count)
@@ -5105,16 +5060,32 @@ public partial class RunSimulator
 
         public bool HasPendingReward => PendingRewardCards != null && _rewardWait != null;
 
+        // Run-generation guard: Reset() closes the selector and bumps the generation, so a
+        // reward flow of the torn-down run that publishes late, or is waiting, is cancelled.
+        private int _generation;
+        private bool _runOpen;
+        private object? _activeRun;
+
+        /// <summary>A new run owns the selector (called once its RunState exists).</summary>
+        public void BeginRun(object runState)
+        {
+            lock (_rewardLock) { _runOpen = true; _activeRun = runState; }
+        }
+
         /// <summary>Drop any pending prompt, waking the game thread that is waiting on it.</summary>
         public void Reset()
         {
+            lock (_rewardLock) { _runOpen = false; _activeRun = null; _generation++; }
             CancelPending();
             CompleteReward(-1);
         }
 
         public void ResolveReward(int index) => CompleteReward(index);
 
-        /// <summary>The Skip / Reroll / Sacrifice choices offered next to the cards.</summary>
+        /// <summary>
+        /// The Skip / Reroll / Sacrifice buttons the card reward screen shows now (index i
+        /// resolves to the i-th alternative CardReward.OnSelect generated, as on the screen).
+        /// </summary>
         public List<CardRewardAlternative>? PendingRewardAlternatives { get; private set; }
         private int _rewardAltChoice = -1;
 
@@ -5799,6 +5770,7 @@ public partial class RunSimulator
     {
         _selectorScope?.Dispose();
         _selectorScope = CardSelectCmd.UseSelector(_cardSelector);
+        if (_runState != null) _cardSelector.BeginRun(_runState);
         LocPatches._bundleSimRef = this;
     }
 
@@ -5875,8 +5847,8 @@ public partial class RunSimulator
         _eventOptionChosen = false;
         _lastEventOptionCount = 0;
         _pendingRewards = null;
-        _pendingCardReward = null;
         _rewardsProcessed = false;
+        _rewardsProceeded = false;
         _rewardDone.Clear();
         ContinueSave.Capture(null);
         ResetRoomParityState();
