@@ -146,6 +146,32 @@ class TestRelicState:
         assert relics["NUNCHAKU"]["counter"] > 0
 
 
+    def test_wax_relic_name(self, tmp_path):
+        """Wax relics (Toy Box) carry the game's "Wax {Title}" prefix and the wax flag."""
+        import json
+        path, wax_path = tmp_path / "w.save", tmp_path / "wax.save"
+        g = Game()
+        try:
+            _to_map(g, g.start(seed="w1"))
+            g.set_player(relics=["BURNING_BLOOD", "ANCHOR"])
+            assert g.send({"cmd": "write_continue_save", "path": str(path)})["success"]
+        finally:
+            g.close()
+        save = json.loads(path.read_text())
+        for r in save["players"][0]["relics"]:
+            if r["id"] == "RELIC.ANCHOR":
+                r["props"] = {"bools": [{"name": "IsWax", "value": True}]}
+        wax_path.write_text(json.dumps(save))
+        for lang, name in (("en", "Wax Anchor"), ("zh", "蜡制锚")):
+            g = Game()
+            try:
+                state = g.send({"cmd": "load_save", "path": str(wax_path), "lang": lang})
+                anchor = next(r for r in state["player"]["relics"] if r["id"] == "ANCHOR")
+                assert anchor["name"] == name and anchor["wax"] is True, anchor
+            finally:
+                g.close()
+
+
 class TestPotionsOutOfCombat:
     def test_anytime_listed_combat_only_rejected(self, game):
         state = _to_map(game, game.start(seed="mr6"))

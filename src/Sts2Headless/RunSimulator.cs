@@ -1798,8 +1798,8 @@ public class RunSimulator
             WaitForActionExecutor();
             _syncCtx.Pump();
 
-            // Effect may require card_select before the potion slot clears — do not discard as "stuck".
-            if (_cardSelector.HasPending || _cardSelector.HasPendingReward)
+            // Effect may open a prompt (card_select, bundle, ...) before the potion slot clears.
+            if (HasPendingPrompt)
                 return DetectDecisionPoint();
 
             // A cancelled use (invalid target, failed check) leaves the potion in its slot, as
@@ -3075,7 +3075,7 @@ public class RunSimulator
         try { foreach (var dv in r.DynamicVars.Values) vars[dv.Name] = (int)dv.BaseValue; } catch { }
         var info = new Dictionary<string, object?>();
         if (index != null) info["index"] = index;
-        info["name"] = _loc.Relic(r.Id.Entry);
+        info["name"] = RelicName(r);
         info["description"] = RelicText(r);
         var relicTips = Tips(() => RelicExtraTips?.GetValue(r) as IEnumerable<MegaCrit.Sts2.Core.HoverTips.IHoverTip>);
         if (relicTips != null) info["tips"] = relicTips;
@@ -3089,6 +3089,18 @@ public class RunSimulator
     /// (ShowCounter/DisplayAmount, e.g. Pen Nib's attack count), the glow/greyed status, and
     /// the used-up / melted / wax markers. Only non-default values are emitted.
     /// </summary>
+    /// <summary>
+    /// The relic's title as RelicModel.Title builds it: wax relics (Toy Box) use the
+    /// "TOY_BOX.waxRelicPrefix" template ("Wax {Title}" / "蜡制{Title}").
+    /// </summary>
+    private static string RelicName(RelicModel r)
+    {
+        var title = _loc.Relic(r.Id.Entry);
+        bool wax;
+        try { wax = r.IsWax; } catch { wax = false; }
+        return wax ? _loc.Bilingual("relics", "TOY_BOX.waxRelicPrefix").Replace("{Title}", title) : title;
+    }
+
     private static void AddRelicState(Dictionary<string, object?> d, RelicModel r)
     {
         try { if (r.ShowCounter) d["counter"] = r.DisplayAmount; } catch { }
@@ -4188,7 +4200,7 @@ public class RunSimulator
                 var rd = new Dictionary<string, object?>
                 {
                     ["id"] = r.Id.Entry,
-                    ["name"] = _loc.Relic(r.Id.Entry),
+                    ["name"] = RelicName(r),
                     ["description"] = RelicText(r),
                     ["vars"] = vars.Count > 0 ? vars : null,
                 };
