@@ -112,7 +112,7 @@ MegaCrit.Sts2.Core.Platform.Null.NullLeaderboardStrategy.Write logging_or_io_onl
 MegaCrit.Sts2.Core.Rewards.PotionReward.CreateIcon ui_vfx_audio_only
 MegaCrit.Sts2.Core.Rewards.RewardsSet.Offer gameplay: RewardsSet.testSelector offers every set as a rewards decision
 MegaCrit.Sts2.Core.Rooms.MapRoom.EnterInternal ui_vfx_audio_only
-MegaCrit.Sts2.Core.Rooms.MerchantRoom.Exit logging_or_io_only
+MegaCrit.Sts2.Core.Rooms.MerchantRoom.Exit gameplay: forced off (ParityPatches; run history of unbought shop items)
 MegaCrit.Sts2.Core.Runs.RunManager.ClearScreens logging_or_io_only
 MegaCrit.Sts2.Core.Runs.RunManager.FadeIn logging_or_io_only
 MegaCrit.Sts2.Core.Runs.RunManager.FadeOut logging_or_io_only
@@ -120,7 +120,7 @@ MegaCrit.Sts2.Core.Runs.RunManager.InitializeShared logging_or_io_only
 MegaCrit.Sts2.Core.Runs.RunManager.ReturnToMainMenuWithError logging_or_io_only
 MegaCrit.Sts2.Core.Runs.RunManager.ShouldApplyTutorialModifications gameplay: forced off (ParityPatches)
 MegaCrit.Sts2.Core.Runs.RunManager.TryGetRoomTypeForTutorial gameplay: forced off (ParityPatches)
-MegaCrit.Sts2.Core.Runs.RunManager.UpdatePlayerStatsInMapPointHistory logging_or_io_only
+MegaCrit.Sts2.Core.Runs.RunManager.UpdatePlayerStatsInMapPointHistory gameplay: forced off (ParityPatches; gold/HP in the run history)
 MegaCrit.Sts2.Core.Runs.RunManager.UpdateRichPresence logging_or_io_only
 MegaCrit.Sts2.Core.Runs.RunRngSet.GetMockInstance test_infra_only
 MegaCrit.Sts2.Core.Saves.Managers.ProgressSaveManager.SeenPopup ui_vfx_audio_only

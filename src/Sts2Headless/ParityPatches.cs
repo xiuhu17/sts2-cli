@@ -58,6 +58,11 @@ internal static class ParityPatches
         ("RunManager.TryGetRoomTypeForTutorial", AccessTools.Method(typeof(RunManager), "TryGetRoomTypeForTutorial")),
         // An unlocked but never-discovered act is forced (reads SaveManager.Progress.DiscoveredActs).
         ("ActModel.GetRandomList", AccessTools.Method(typeof(ActModel), nameof(ActModel.GetRandomList))),
+        // Leaving a shop records its unbought cards/relics/potions in the run history (the
+        // game's save and run history list them as not picked).
+        // Each map point's history gets the player's gold / HP / max HP (save and run history).
+        ("RunManager.UpdatePlayerStatsInMapPointHistory", AccessTools.Method(typeof(RunManager), "UpdatePlayerStatsInMapPointHistory")),
+        ("MerchantRoom.Exit", AccessTools.Method(typeof(MegaCrit.Sts2.Core.Rooms.MerchantRoom), nameof(MegaCrit.Sts2.Core.Rooms.MerchantRoom.Exit))),
     };
 
     public static void Install(Harmony harmony)

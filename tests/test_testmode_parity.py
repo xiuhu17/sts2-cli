@@ -3,6 +3,7 @@ the real game (TestMode off): shop potion price jitter, Cauldron / Calling Bell 
 discovery-order rooms and act selection from the profile, Rolling Boulder's hits, and reward
 sets that are always the player's decision."""
 
+import json
 import os
 import subprocess
 
@@ -34,7 +35,8 @@ class TestPatches:
         assert "[ERROR] TestMode parity" not in err, err
         for target in ("MerchantPotionEntry.CalcCost", "Cauldron.GenerateRewards", "CallingBell.GenerateRewards",
                        "RunManager.ShouldApplyTutorialModifications", "RunManager.TryGetRoomTypeForTutorial",
-                       "ActModel.GetRandomList"):
+                       "ActModel.GetRandomList", "RunManager.UpdatePlayerStatsInMapPointHistory",
+                       "MerchantRoom.Exit"):
             assert f"[INFO] TestMode off in {target}" in err, target
         unaudited = [l for l in err.splitlines() if "unaudited TestMode branch" in l]
         assert not unaudited, "classify these in src/Sts2Headless/testmode-audited.txt:\n" + "\n".join(unaudited)
@@ -56,9 +58,13 @@ class TestShop:
     def test_recorded_real_game_shop(self, game):
         # Real game, seed R3B0F9WFJUMG, Ironclad, the recorded profile: Neow Lost Coffer, potion
         # and Shrug It Off, then (1,1) (1,2) (1,3) (0,4) to the floor-6 shop.
+        # Replay policy (the recorded run's choices, not "take the first option"): in combat play
+        # the hand left to right, then end the turn; claim every reward on a rewards screen; take
+        # Shrug It Off when offered; the Self-Help Book page is the recorded "read the back" and
+        # Sharp goes on a Strike. Any other decision fails the test.
         state = game.send({"cmd": "start_run", "character": "Ironclad", "seed": "R3B0F9WFJUMG",
                            "profile": os.environ["STS2_PARITY_PROFILE"]})
-        state = game.act("choose_option", option_index=1)
+        state = game.act("choose_option", option_index=1)  # Lost Coffer
         route = [(1, 1), (1, 2), (1, 3), (0, 4), (0, 5)]
         for _ in range(600):
             d = state.get("decision")
@@ -74,18 +80,47 @@ class TestShop:
                 state = (game.act("select_card_reward", card_index=names.index("Shrug It Off"))
                          if "Shrug It Off" in names else game.act("skip_card_reward"))
             elif d == "combat_play":
-                plays = [a for a in legal if a["action"] == "play_card"]
+                plays = sorted((a for a in legal if a["action"] == "play_card"),
+                               key=lambda a: a["args"]["card_index"])
                 a = plays[0] if plays else {"action": "end_turn"}
                 state = game.act(a["action"], **a.get("args", {}))
+            elif d == "rewards":
+                claimable = [w for w in state["rewards"]
+                             if not (w["type"] == "potion" and state.get("potion_slots_full"))]
+                state = (game.act("claim_reward", reward_index=claimable[0]["index"]) if claimable
+                         else game.act("proceed"))
+            elif d == "event_choice":
+                opts = [o for o in state["options"] if not o.get("is_locked")]
+                if len(opts) > 1:
+                    opts = [o for o in opts if "READ_THE_BACK" in (o.get("text_key") or "")]
+                assert len(opts) == 1, state
+                state = game.act("choose_option", option_index=opts[0]["index"])
+            elif d == "card_select":
+                strikes = sorted(c["index"] for c in state["cards"] if c["name"].startswith("Strike"))
+                state = game.act("select_cards", indices=str(strikes[0]))  # recorded: a Strike
             else:
-                claims = [a for a in legal if a["action"] == "claim_reward"]
-                a = claims[0] if claims else legal[0]
-                state = game.act(a["action"], **(a.get("args") or {}))
+                raise AssertionError(f"unexpected decision on the recorded route: {state}")
         assert state["context"]["floor"] == 6
         assert [p["cost"] for p in state["potions"]] == [99, 77, 77]
         assert [c["cost"] for c in state["cards"]] == [36, 74, 143, 49, 74, 82, 173]
         assert [r["cost"] for r in state["relics"]] == [216, 243, 222]
         assert state["card_removal_cost"] == 75
+
+    def test_leaving_a_shop_records_its_unbought_items(self, game, tmp_path):
+        # MerchantRoom.Exit (TestMode off): unbought cards/relics/potions go into the map
+        # point's history as not picked, like the game's save and run history.
+        game.start(seed="tm-shop")
+        shop = game.enter_room("shop")
+        game.act("leave_room")
+        path = str(tmp_path / "run.save")
+        game.send({"cmd": "write_continue_save", "path": path})
+        with open(path) as f:
+            save = json.load(f)
+        stats = [p for act in save["map_point_history"] for e in act for p in e["player_stats"]]
+        cards = {c["card"]["id"] for p in stats for c in p.get("card_choices", []) if not c["was_picked"]}
+        potions = {c["choice"] for p in stats for c in p.get("potion_choices", []) if not c["was_picked"]}
+        assert {c["id"] for c in shop["cards"]} <= cards
+        assert {"POTION." + p["id"] for p in shop["potions"]} <= potions
 
 
 class TestRelicRewards:
