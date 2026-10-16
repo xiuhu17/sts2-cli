@@ -76,8 +76,13 @@ def compact_json(obj, depth=0):
     return obj
 
 
+_CTRL = re.compile(r'[\x00-\x1f\x7f]+')
+
+
 def sanitize_json(obj):
-    if isinstance(obj, str): return re.sub(r'[\x00-\x1f\x7f]', '', obj)
+    # Control characters become a space (descriptions use \n between sentences), and most
+    # strings have none, so test before substituting.
+    if isinstance(obj, str): return _CTRL.sub(' ', obj) if _CTRL.search(obj) else obj
     if isinstance(obj, dict): return {k: sanitize_json(v) for k, v in obj.items()}
     if isinstance(obj, list): return [sanitize_json(v) for v in obj]
     return obj
@@ -201,11 +206,15 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         data = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         step, result = game.send(data)
-        raw_result = sanitize_json(result)
-        # Log FULL response (before compact) for replay
-        log_entry(step, data, raw_result)
-        # Apply compact for client
-        client_result = compact_json(raw_result) if COMPACT else raw_result
+        if LOG_FILE or not COMPACT:
+            raw_result = sanitize_json(result)
+            # Log FULL response (before compact) for replay
+            log_entry(step, data, raw_result)
+            # Apply compact for client
+            client_result = compact_json(raw_result) if COMPACT else raw_result
+        else:
+            # Nothing to log: compact first so the sanitizer skips the fields compact drops.
+            client_result = sanitize_json(compact_json(result))
         body = json.dumps(client_result, ensure_ascii=False).encode()
         self.send_response(200)
         self.send_header('Content-Type', 'application/json')

@@ -138,6 +138,7 @@ public partial class RunSimulator
             ["net_card_db_subscriptions"] = Count(subs),
             ["net_loading_handles"] = Count(s_loadCountsField?.GetValue(null)),
             ["save_store_calls"] = store?.Calls.Count ?? -1,
+            ["map_pruning_verified"] = MapPruningPatch.VerifiedCalls,
         };
     }
 }

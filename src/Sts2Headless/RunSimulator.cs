@@ -4236,6 +4236,7 @@ public partial class RunSimulator
         PatchTalkCmd();
         PatchHeadlessPresentation();
         HeadlessUiGuard.Install(typeof(CombatManager).Assembly);
+        MapPruningPatch.Install(new Harmony("sts2headless.mappruning"));
 
         // Initialize localization system (needed for events, cards, etc.)
         InitLocManager();
