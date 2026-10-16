@@ -204,10 +204,11 @@ class TestEventCombatResume:
         game.send({"cmd": "set_player", "hp": 999, "max_hp": 999, "deck": ["BLUDGEON"] * 10})
         state = game.enter_room("event", event="BATTLEWORN_DUMMY")
         state = fight(game, game.act("choose_option", option_index=0))
-        for _ in range(5):
-            if state["decision"] != "card_reward":
-                break
-            state = game.act("skip_card_reward")
+        assert state["decision"] == "rewards"
+        state = game.act("proceed")  # leave the fight's rewards; the event resumes
+        assert state["decision"] == "rewards" and state["source"] == "event"
+        assert [r["type"] for r in state["rewards"]] == ["potion"]
+        state = game.act("claim_reward", reward_index=state["rewards"][0]["index"])
         assert state["decision"] == "event_choice" and state["event_id"] == "BATTLEWORN_DUMMY"
         assert state["finished"] is True and state["description"]
         assert len(state["player"]["potions"]) == 1
@@ -219,7 +220,7 @@ class TestCardRewardAlternatives:
     def test_driftwood_reroll(self, game):
         game.skip_neow(game.start(seed="cr1"))
         game.set_player(relics=["DRIFTWOOD"], hp=80)
-        state = fight(game, game.enter_room("combat", encounter="SHRINKER_BEETLE_WEAK"))
+        state = game.open_card_reward(fight(game, game.enter_room("combat", encounter="SHRINKER_BEETLE_WEAK")))
         assert state["decision"] == "card_reward" and state["from_event"] is False
         ids = [a["id"] for a in state["alternatives"]]
         assert ids == ["Skip", "REROLL"] and state["can_skip"] is True
@@ -263,18 +264,15 @@ class TestSpecialRewards:
         game.skip_neow(game.start(seed="sp1"))
         game.set_player(deck=["FORBIDDEN_GRIMOIRE"] + ["STRIKE_IRONCLAD"] * 5, hp=80)
         state = fight(game, game.enter_room("combat", encounter="SHRINKER_BEETLE_WEAK"), prefer="GRIMOIRE")
-        seen_removal = False
-        for _ in range(10):
-            if state["decision"] == "card_reward":
-                state = game.act("skip_card_reward")
-            elif state["decision"] == "card_select":
-                seen_removal = True
-                state = game.act("select_cards", indices="0")
-            elif state["decision"] == "rewards":
-                state = game.act("proceed")
-            else:
-                break
-        assert seen_removal
+        assert state["decision"] == "rewards"
+        removal = next(r for r in state["rewards"] if r["type"] == "card_removal")
+        state = game.act("claim_reward", reward_index=removal["index"])
+        assert state["decision"] == "card_select"
+        state = game.act("select_cards", indices="0")
+        assert state["decision"] == "rewards"
+        assert all(r["index"] != removal["index"] for r in state["rewards"])
+        state = game.act("proceed")
+        assert state["decision"] == "map_select"
         assert state["player"]["deck_size"] == 5
 
     def test_manual_reward_types(self, game):
@@ -331,6 +329,11 @@ class TestFakeMerchant:
         assert state["decision"] == "combat_play"
         game.set_player(hp=500)
         state = fight(game, state)
+        # The fight's rewards (gold and the fake relics) are on the rewards screen.
+        assert state["decision"] == "rewards"
+        while any(r["type"] == "relic" for r in state["rewards"]):
+            relic_reward = next(r for r in state["rewards"] if r["type"] == "relic")
+            state = game.act("claim_reward", reward_index=relic_reward["index"])
         relics = [r["name"] for r in state["player"]["relics"]]
         assert any("Rug" in r for r in relics)
         assert len(relics) >= 1 + 1 + 1 + 5

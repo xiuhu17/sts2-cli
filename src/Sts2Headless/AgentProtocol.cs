@@ -1261,7 +1261,7 @@ public partial class RunSimulator
         ["type"] = "help",
         ["commands"] = new Dictionary<string, object?>
         {
-            ["start_run"] = "{cmd:start_run, character:Ironclad|Silent|Defect|Regent|Necrobinder, seed?, ascension?:0-10, lang?:en|zh, manual_rewards?:bool, omit_deck?:bool, modifiers?:[..], game_mode?, profile?:path}",
+            ["start_run"] = "{cmd:start_run, character:Ironclad|Silent|Defect|Regent|Necrobinder, seed?, ascension?:0-10, lang?:en|zh, manual_rewards?:bool (ignored: rewards are always decisions), omit_deck?:bool, modifiers?:[..], game_mode?, profile?:path}",
             ["action"] = "{cmd:action, action:<verb>, args:{...}} - send one entry of legal_actions as-is",
             ["get_state"] = "re-send the current decision (no game change)",
             ["get_deck"] = "{cmd:get_deck, upgrades?:bool} the deck with full card text",
@@ -1270,7 +1270,7 @@ public partial class RunSimulator
             ["get_piles"] = "{cmd:get_piles, pile?:draw|discard|exhaust|hand|all} combat piles (draw pile sorted, order hidden)",
             ["get_card"] = "{cmd:get_card, deck_index:N | hand_index:N | id:CARD_ID, upgraded?:bool}",
             ["get_map"] = "the whole act map",
-            ["load_save"] = "{cmd:load_save, path|json, lang?, manual_rewards?, omit_deck?}",
+            ["load_save"] = "{cmd:load_save, path|json, lang?, manual_rewards? (ignored), omit_deck?}",
             ["write_continue_save"] = "{cmd:write_continue_save, path?}",
             ["quit"] = "{cmd:quit, path?}",
             ["help"] = "this text",
@@ -1292,7 +1292,7 @@ public partial class RunSimulator
             ["buy_card"] = "{card_index}", ["buy_relic"] = "{relic_index}", ["buy_potion"] = "{potion_index}",
             ["remove_card"] = "{} shop card removal (opens a card_select)",
             ["claim_reward"] = "{reward_index}",
-            ["proceed"] = "{} leave a rewards screen / continue",
+            ["proceed"] = "{} leave a rewards screen (not when its can_skip is false) / continue",
             ["leave_room"] = "{} leave a shop (or a finished event/rest site)",
             ["select_treasure_relic"] = "{relic_index}", ["skip_treasure_relic"] = "{}",
             ["crystal_sphere_click"] = "{x, y, tool:big|small} from choose_cell",

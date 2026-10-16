@@ -253,8 +253,13 @@ class TestContinueSave:
             state = _to_map(g, g.start(seed="e2"))
             c = state["choices"][0]
             state = g.auto_play_combat(g.act("select_map_node", col=c["col"], row=c["row"]))
+            assert state["decision"] == "rewards"
+            rewards = [(r["type"], r.get("amount"), r.get("id")) for r in state["rewards"]]
+            state = g.open_card_reward(state)
             assert state["decision"] == "card_reward"
             cards = [x["name"] for x in state["cards"]]
+            state = g.act("skip_card_reward")  # back to the rewards screen, nothing taken
+            assert state["decision"] == "rewards"
             gold = state["player"]["gold"]
             assert g.send({"cmd": "write_continue_save", "path": str(path)})["success"]
         finally:
@@ -262,10 +267,14 @@ class TestContinueSave:
         g = Game()
         try:
             state = g.send({"cmd": "load_save", "path": str(path)})
-            assert state["decision"] == "card_reward", state
-            assert [x["name"] for x in state["cards"]] == cards
+            assert state["decision"] == "rewards", state
+            assert [(r["type"], r.get("amount"), r.get("id")) for r in state["rewards"]] == rewards
             assert state["player"]["gold"] == gold
+            state = g.open_card_reward(state)
+            assert [x["name"] for x in state["cards"]] == cards
             state = g.act("skip_card_reward")
+            assert state["decision"] == "rewards"
+            state = g.act("proceed")
             assert state["decision"] == "map_select"
         finally:
             g.close()

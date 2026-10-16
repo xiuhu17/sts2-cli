@@ -117,7 +117,7 @@ class TestCombatEnd:
         game.skip_neow(state)
         state = game.enter_room("combat", encounter="SHRINKER_BEETLE_WEAK")
         state = game.auto_play_combat(state)
-        assert state["decision"] in ("card_reward", "map_select", "card_select", "bundle_select")
+        assert state["decision"] == "rewards"
 
     def test_player_powers_after_enemy_debuff(self, game):
         """Shrinker Beetle applies Shrink debuff to player after its turn."""
