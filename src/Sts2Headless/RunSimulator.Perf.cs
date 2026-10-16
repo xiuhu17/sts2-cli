@@ -3,6 +3,7 @@ using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 using MegaCrit.Sts2.Core.Multiplayer.Game;
 using MegaCrit.Sts2.Core.Runs;
+using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Saves;
 
 namespace Sts2Headless;
@@ -116,4 +117,60 @@ public partial class RunSimulator
     /// </summary>
     private static void WaitFlow(Task t) =>
         WaitHandle.WaitAny(new[] { ((IAsyncResult)t).AsyncWaitHandle, s_flowSignal }, 1);
+}
+
+public partial class RunSimulator
+{
+    /// <summary>Test hook (STS2_DEBUG_COMMANDS=1): sizes of the structures the leak fixes keep bounded.</summary>
+    internal static Dictionary<string, object?> DebugStats()
+    {
+        int Count(object? o) => o is System.Collections.ICollection c ? c.Count : -1;
+        var combatEnded = typeof(CombatManager).GetField("CombatEnded", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?.GetValue(CombatManager.Instance) as Delegate;
+        var subs = typeof(NetCombatCardDb).GetField("_subscriptions", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?.GetValue(NetCombatCardDb.Instance);
+        var store = s_saveStoreField?.GetValue(SaveManager.Instance) as MegaCrit.Sts2.Core.Saves.Test.MockGodotFileIo;
+        return new Dictionary<string, object?>
+        {
+            ["type"] = "debug_stats",
+            ["heap_bytes"] = GC.GetTotalMemory(forceFullCollection: true),
+            ["combat_ended_handlers"] = combatEnded?.GetInvocationList().Length ?? 0,
+            ["net_card_db_subscriptions"] = Count(subs),
+            ["net_loading_handles"] = Count(s_loadCountsField?.GetValue(null)),
+            ["save_store_calls"] = store?.Calls.Count ?? -1,
+        };
+    }
+}
+
+public partial class RunSimulator
+{
+    // ─── after_upgrade preview cache ───
+
+    // GetUpgradedInfo clones the canonical card, replays its upgrades plus one, and formats the
+    // clone: the result depends only on (language, card id, upgrade level, the live card's
+    // keyword sequence). Every decision response lists the whole deck with it, so memoize.
+    // Callers only serialize the returned dictionary, so one shared instance is safe.
+    private static readonly Dictionary<string, Dictionary<string, object?>> s_upgradeCache = new();
+
+    private static Dictionary<string, object?>? CachedUpgradedInfo(CardModel card, Func<CardModel, Dictionary<string, object?>?> compute)
+    {
+        string key;
+        try
+        {
+            var sb = new System.Text.StringBuilder(48);
+            sb.Append(_loc.Lang).Append('|').Append(card.Id.ToString()).Append('|').Append(card.CurrentUpgradeLevel);
+            if (card.Keywords != null)
+                foreach (var k in card.Keywords)
+                    if (k != MegaCrit.Sts2.Core.Entities.Cards.CardKeyword.None) sb.Append('|').Append((int)k);
+            key = sb.ToString();
+        }
+        catch { return compute(card); }
+        lock (s_upgradeCache)
+            if (s_upgradeCache.TryGetValue(key, out var hit)) return hit;
+        var info = compute(card);
+        if (info != null)
+            lock (s_upgradeCache)
+                if (s_upgradeCache.Count < 20000) s_upgradeCache[key] = info;
+        return info;
+    }
 }

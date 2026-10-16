@@ -372,6 +372,9 @@ class Program
                 Thread.Sleep(cmd.TryGetProperty("ms", out var ms) ? ms.GetInt32() : 60000);
                 return new Dictionary<string, object?> { ["type"] = "ok" };
 
+            case "__debug_stats" when Environment.GetEnvironmentVariable("STS2_DEBUG_COMMANDS") == "1":
+                return RunSimulator.DebugStats();
+
             case "set_player":
             {
                 var args = new Dictionary<string, JsonElement>();

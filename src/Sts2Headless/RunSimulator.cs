@@ -4038,6 +4038,11 @@ public partial class RunSimulator
     private Dictionary<string, object?>? GetUpgradedInfo(CardModel card)
     {
         if (!card.IsUpgradable) return null;
+        return CachedUpgradedInfo(card, ComputeUpgradedInfo);
+    }
+
+    private Dictionary<string, object?>? ComputeUpgradedInfo(CardModel card)
+    {
         try
         {
             var clone = ModelDb.GetById<CardModel>(card.Id).ToMutable();
