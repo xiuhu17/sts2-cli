@@ -5078,6 +5078,8 @@ public partial class RunSimulator
             lock (_rewardLock) { _runOpen = false; _activeRun = null; _generation++; }
             CancelPending();
             CompleteReward(-1);
+            // The alternatives' closures hold the old CardReward (and its Player / RunState).
+            lock (_rewardLock) { if (_rewardWait == null) PendingRewardAlternatives = null; }
         }
 
         public void ResolveReward(int index) => CompleteReward(index);

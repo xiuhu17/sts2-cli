@@ -31,6 +31,18 @@ def _play(game, state, steps):
     return seen
 
 
+def _no_clock(states):
+    """Drop run_time_seconds (wall clock, RunManager.RunTime): it differs between replays
+    when the machine is busy, while everything the game decides must not."""
+    def strip(x):
+        if isinstance(x, dict):
+            return {k: strip(v) for k, v in x.items() if k != "run_time_seconds"}
+        if isinstance(x, list):
+            return [strip(v) for v in x]
+        return x
+    return strip(states)
+
+
 class TestProcessReuse:
     def test_start_run_twice(self, game):
         first = game.start(seed="reuse-a")
@@ -44,7 +56,7 @@ class TestProcessReuse:
         a = _play(game, game.start(seed="reuse-det"), 60)
         b = _play(game, game.start(seed="reuse-det"), 60)
         assert len(a) > 10
-        assert a == b
+        assert _no_clock(a) == _no_clock(b)
 
     def test_new_run_while_prompt_pending(self, game):
         state = game.start(seed="bench_7")
