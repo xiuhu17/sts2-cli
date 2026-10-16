@@ -368,16 +368,31 @@ public partial class RunSimulator
             var history = rs.MapPointHistory;
             state["total_floor"] = history.Sum(a => a.Count);
             state["score"] = ScoreUtility.CalculateScore(rs, isVictory);
+            // Kept for compatibility. Mixed units: floors/gold are POINTS, elites_killed /
+            // bosses_slain / ascension are COUNTS (levels); the *_points / *_climbed / *_gained
+            // keys give both. score_lines is what the screen shows.
+            var elites = ScoreUtility.GetElitesKilledCount(history);
+            var bosses = ScoreUtility.GetBossesSlainCount(history, isVictory);
+            var me = rs.Players[0];
             state["score_breakdown"] = new Dictionary<string, object?>
             {
                 ["floors"] = ScoreUtility.GetScoreForFloor(history),
                 ["gold"] = ScoreUtility.GetScoreForGoldGained(history, rs.Players.Count),
-                ["elites_killed"] = ScoreUtility.GetElitesKilledCount(history),
-                ["bosses_slain"] = ScoreUtility.GetBossesSlainCount(history, isVictory),
+                ["elites_killed"] = elites,
+                ["bosses_slain"] = bosses,
                 ["ascension"] = rs.AscensionLevel,
+                ["floors_climbed"] = rs.TotalFloor,
+                ["floors_points"] = ScoreUtility.GetScoreForFloor(history),
+                ["gold_gained"] = history.SelectMany(a => a).Sum(e => e.GetEntry(me.NetId)?.GoldGained ?? 0),
+                ["gold_points"] = ScoreUtility.GetScoreForGoldGained(history, rs.Players.Count),
+                ["elites_killed_points"] = ScoreUtility.GetScoreForElitesKilled(elites),
+                ["bosses_slain_points"] = ScoreUtility.GetScoreForBossesSlain(bosses),
+                ["ascension_multiplier"] = 1.0 + rs.AscensionLevel * 0.1,
             };
         }
         catch (Exception ex) { Log($"Run stats: {ex.Message}"); }
+        // NGameOverScreen: banner, score lines, badges, score bar, discoveries.
+        foreach (var (k, v) in GameOverScreenInfo(isVictory)) state[k] = v;
         if (isVictory) return;
         try
         {

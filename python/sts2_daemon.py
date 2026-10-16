@@ -11,6 +11,9 @@ import os
 import socket
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import game_over  # noqa: E402
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 MAX_OUT = 7800  # keep every reply well under ~8 KB
@@ -447,7 +450,9 @@ _KNOWN_KEYS = {
     "treasure_relic": {"relics", "can_skip"},
     "map_select": {"act", "act_name", "choices", "floor"},
     "crystal_sphere": {"divinations_left", "width", "height", "rows", "hidden_cells", "items_seen", "tools"},
-    "game_over": {"act", "floor", "victory", "killed_by", "score", "score_breakdown", "total_floor"},
+    "game_over": {"act", "floor", "victory", "killed_by", "score", "score_breakdown", "total_floor", "banner",
+                  "death_quote", "victory_text", "score_lines", "badges", "score_progress", "discoveries",
+                  "discoveries_header", "main_menu_button", "abandoned"},
 }
 # Per-card fields shown by card_line / the card_select renderer.
 _CARD_KEYS = {"index", "id", "name", "cost", "cost_x", "star_cost", "type", "rarity", "description", "tips",
@@ -546,9 +551,12 @@ def game_over_lines(st):
     if isinstance(kb, dict):
         out.append(f"  {t('Killed by', '死因')}: {kb.get('name')}" + (f" - {_one_line(kb['quote'])}" if kb.get("quote") else ""))
     if st.get("score") is not None:
-        bd = st.get("score_breakdown") or {}
-        parts = ", ".join(f"{k} {v}" for k, v in bd.items())
-        out.append(f"  {t('Score', '分数')}: {st['score']}" + (f" ({parts})" if parts else ""))
+        out.append(f"  {t('Score', '分数')}: {st['score']}")
+        if not st.get("score_lines"):  # an older engine: the raw breakdown
+            bd = st.get("score_breakdown") or {}
+            if bd:
+                out[-1] += " (" + ", ".join(f"{k} {v}" for k, v in bd.items()) + ")"
+    out.extend(game_over.summary_lines(st, t))
     out.append(f"  ({t('sts2 start ... for a new run', 'sts2 start ... 开始新一局')})")
     return out
 

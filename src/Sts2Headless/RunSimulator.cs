@@ -211,6 +211,10 @@ internal class LocLookup
             if (Raw(t, text) is string hit) return hit;
         return null;
     }
+    /// <summary>The table's keys starting with <paramref name="prefix"/>, in key order (LocTable.GetLocStringsWithPrefix).</summary>
+    public List<string> KeysWithPrefix(string table, string prefix) =>
+        (_eng.GetValueOrDefault(table)?.Keys ?? Enumerable.Empty<string>())
+            .Where(k => k.StartsWith(prefix, StringComparison.Ordinal)).OrderBy(k => k, StringComparer.Ordinal).ToList();
     public string? Zh(string table, string key) => _zhs.GetValueOrDefault(table)?.GetValueOrDefault(key);
 
     /// <summary>Strip BBCode tags like [gold], [/blue], [b], [sine], etc.</summary>
@@ -3040,6 +3044,7 @@ public partial class RunSimulator
         if (frame == null) return DetectDecisionPoint();
         if (frame.Claim != null && !frame.Claim.IsCompleted && !HasPendingPrompt)
             Log("Event reward claim still running");
+        MarkRewardsSeen(frame.Rewards);
         var rewards = new List<Dictionary<string, object?>>();
         for (int i = 0; i < frame.Rewards.Count; i++)
             if (!frame.Done.Contains(i)) rewards.Add(RewardInfo(frame.Rewards[i], i));
@@ -3316,8 +3321,19 @@ public partial class RunSimulator
         return info;
     }
 
+    /// <summary>NRewardsScreen marks each reward it shows as seen (Reward.MarkContentAsSeen):
+    /// relics and potions shown there count as discoveries on the game-over screen.</summary>
+    private static void MarkRewardsSeen(IEnumerable<MegaCrit.Sts2.Core.Rewards.Reward> rewards)
+    {
+        foreach (var r in rewards)
+        {
+            try { r.MarkContentAsSeen(); } catch (Exception ex) { Console.Error.WriteLine($"[WARN] MarkContentAsSeen: {ex.Message}"); }
+        }
+    }
+
     private Dictionary<string, object?> RewardsState(Player player)
     {
+        MarkRewardsSeen(_pendingRewards!);
         var rewards = new List<Dictionary<string, object?>>();
         for (int i = 0; i < _pendingRewards!.Count; i++)
             if (!_rewardDone.Contains(i)) rewards.Add(RewardInfo(_pendingRewards[i], i));

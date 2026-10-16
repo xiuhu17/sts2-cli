@@ -201,8 +201,15 @@ public partial class RunSimulator
         public static void GridForRewards(PlayerChoiceContext context, CardSelectorPrefs prefs) =>
             Stage(FromPrefs(prefs, "choose", "reward_grid", Involved(context)), false);
 
-        public static void ChooseACard(PlayerChoiceContext context, bool canSkip)
+        public static void ChooseACard(PlayerChoiceContext context, IReadOnlyList<CardModel> cards, Player player, bool canSkip)
         {
+            // The local branch of FromChooseACardScreen marks the shown cards as seen (they
+            // count as discoveries on the game-over screen); headless the selector branch runs.
+            if (cards.Count is > 0 and <= 3 && MegaCrit.Sts2.Core.Context.LocalContext.IsMe(player))
+                foreach (var c in cards)
+                {
+                    try { MegaCrit.Sts2.Core.Saves.SaveManager.Instance.MarkCardAsSeen(c); } catch { }
+                }
             Stage(new SelectContext
             {
                 Purpose = "choose",
@@ -1345,6 +1352,15 @@ public partial class RunSimulator
             OnHistoryChangedUnlocked();
             evs = _events;
             _events = new List<Dictionary<string, object?>>();
+            // A generated card that never reached a pile (CardPileCmd.Add refuses combat piles
+            // once the combat is ending: Anger's copy on the killing blow) is not shown by the
+            // game (PreviewCardPileAdd skips failed adds): drop its card_added line, so every
+            // card_added has the pile the card is in.
+            if (_pendingGenerated.Count > 0)
+            {
+                var never = new HashSet<Dictionary<string, object?>>(_pendingGenerated.Values, ReferenceEqualityComparer.Instance);
+                evs.RemoveAll(never.Contains);
+            }
             _pendingGenerated.Clear();
             _lastGeneratedAdd = null;
         }
