@@ -1534,7 +1534,7 @@ def generic_choice(state):
     if "choose_cell" in a:
         cells = {f"{x} {y}" for x, y in a["choose_cell"]["cells"]}
         cell = get_input(t("Cell 'x y'", "格子 'x y'"), cells, state=state)
-        tools = a["choose_cell"].get("tools") or ["big", "small"]
+        tools = a["choose_cell"].get("tools") or []   # only the tools the engine offers
         tool = get_input(t(f"Tool ({'/'.join(tools)})", f"工具 ({'/'.join(tools)})"), set(tools), state=state)
         x, y = cell.split()
         return {"cmd": "action", "action": a["action"], "args": {"x": int(x), "y": int(y), "tool": tool}}

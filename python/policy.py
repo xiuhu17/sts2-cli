@@ -60,7 +60,9 @@ def to_args(entry, rng):
         return {"action": entry["action"], "args": {"indices": ",".join(map(str, picks))}}
     if "choose_cell" in entry:
         cells = entry["choose_cell"].get("cells") or []
-        tools = entry["choose_cell"].get("tools") or ["big", "small"]
+        tools = entry["choose_cell"].get("tools") or []   # only the tools the engine offers
+        if not cells or not tools:
+            raise NoLegalAction(f"{entry['action']} lists no cell or no tool: {entry['choose_cell']}")
         x, y = rng.choice(cells)
         return {"action": entry["action"], "args": {"x": x, "y": y, "tool": rng.choice(tools)}}
     out = {"action": entry["action"]}

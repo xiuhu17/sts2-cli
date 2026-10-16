@@ -11,15 +11,18 @@ Policy (stated, nothing else is decided here):
     the legal target with the highest threat (one-shottable attackers first). When no legal
     card scores as worth playing, it ends the turn.
   - A potion is used only when HP < 20 or the incoming damage is lethal, and only potions
-    the engine lists as usable (untargeted ones first, lowest slot first).
+    the engine lists as usable (untargeted ones first).
+  - Ties (equal card score, equal threat, several usable potions) are broken by a seeded
+    random.Random (the caller's, or one seeded from the run seed), never by list order.
   - It STOPS and returns the state at every other decision (card selections from a card's
     effect, rewards, card rewards, map, ...): those are the caller's choices.
 """
 import json
+import random
 import sys
 import urllib.request
 
-PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 19044
+PORT = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].isdigit() else 19044
 URL = f"http://localhost:{PORT}"
 
 
@@ -60,15 +63,22 @@ def enemy_threat(en):
     return atk * 100 + (200 - en.get("hp", 0))
 
 
-def pick_target(enemies, targets, card_dmg=6):
-    """Best of the legal targets: a one-shottable attacker, else the highest threat."""
+def _rng(d, rng):
+    return rng if rng is not None else random.Random(str((d.get("context") or {}).get("seed")))
+
+
+def pick_target(enemies, targets, card_dmg=6, rng=None):
+    """Best of the legal targets: a one-shottable attacker, else the highest threat
+    (ties: rng). A target the engine does not list is never picked."""
     by = {e.get("index"): e for e in enemies}
-    cands = [by[t] for t in targets if t in by]
+    cands = [by[t] for t in sorted(targets) if t in by]
     if not cands:
-        return None
+        # Legal targets the state does not describe: any of them, chosen by rng.
+        return (rng or random.Random()).choice(sorted(targets)) if targets else None
     oneshot = [e for e in cands if e.get("hp", 0) <= card_dmg and calc_incoming([e]) > 0]
     pool = oneshot or cands
-    return max(pool, key=lambda e: (enemy_threat(e), -e.get("index", 0))).get("index")
+    top = max(enemy_threat(e) for e in pool)
+    return (rng or random.Random()).choice([e for e in pool if enemy_threat(e) == top]).get("index")
 
 
 def card_priority(c, inc, blk, hp):
@@ -96,8 +106,9 @@ def card_priority(c, inc, blk, hp):
     return 20 + cost
 
 
-def best_play(d):
+def best_play(d, rng=None):
     """The legal play_card entry to send, or None."""
+    rng = _rng(d, rng)
     hand = {c.get("index"): c for c in d.get("hand") or []}
     enemies = d.get("enemies") or []
     p = d.get("player") or {}
@@ -106,25 +117,25 @@ def best_play(d):
     for a in d.get("legal_actions") or []:
         if a.get("action") == "play_card":
             plays.setdefault(a["args"]["card_index"], []).append(a)
-    best, best_p = None, None
+    scored = []
     for ci, entries in sorted(plays.items()):
         c = hand.get(ci, {})
         pr = card_priority(c, inc, blk, hp)
-        if pr is None or (best_p is not None and pr >= best_p):
-            continue
-        targets = [a["args"]["target_index"] for a in entries if "target_index" in a["args"]]
-        if targets:
-            ti = pick_target(enemies, targets, (c.get("stats") or {}).get("damage", 6))
-            entry = next(a for a in entries if a["args"].get("target_index") == ti)
-        else:
-            if len(entries) != 1:
-                continue
-            entry = entries[0]  # the card's only legal play
-        best, best_p = entry, pr
-    return best
+        if pr is not None:
+            scored.append((pr, ci, c, entries))
+    if not scored:
+        return None
+    best_p = min(pr for pr, *_ in scored)
+    _, ci, c, entries = rng.choice([x for x in scored if x[0] == best_p])
+    targets = [a["args"]["target_index"] for a in entries if "target_index" in a["args"]]
+    if targets:
+        ti = pick_target(enemies, targets, (c.get("stats") or {}).get("damage", 6), rng)
+        return next(a for a in entries if a["args"].get("target_index") == ti)
+    return rng.choice(entries)  # normally the card's only legal play
 
 
-def emergency_potion(d):
+def emergency_potion(d, rng=None):
+    rng = _rng(d, rng)
     p = d.get("player") or {}
     hp, blk = p.get("hp", 99), p.get("block", 0)
     inc = calc_incoming(d.get("enemies") or [])
@@ -136,19 +147,22 @@ def emergency_potion(d):
     targeted = [a for a in uses if "target_index" in a["args"]]
     plain = [a for a in uses if "target_index" not in a["args"]]
     if plain:
-        return min(plain, key=lambda a: a["args"]["potion_index"])  # stated tie-break: lowest slot
-    ti = pick_target(d.get("enemies") or [], [a["args"]["target_index"] for a in targeted])
-    return next(a for a in targeted if a["args"]["target_index"] == ti)
+        return rng.choice(plain)
+    pi = rng.choice(sorted({a["args"]["potion_index"] for a in targeted}))
+    entries = [a for a in targeted if a["args"]["potion_index"] == pi]
+    ti = pick_target(d.get("enemies") or [], [a["args"]["target_index"] for a in entries], rng=rng)
+    return next(a for a in entries if a["args"]["target_index"] == ti)
 
 
-def fight(d=None, max_steps=300):
+def fight(d=None, max_steps=300, rng=None):
     """Play cards until the state is no longer a combat turn; returns that state."""
     if d is None:
         d = cmd({"cmd": "get_state"})
     for _ in range(max_steps):
         if d.get("type") != "decision" or d.get("decision") != "combat_play":
             return d  # any other decision (or an error) is the caller's
-        act = emergency_potion(d) or best_play(d)
+        rng = _rng(d, rng)
+        act = emergency_potion(d, rng) or best_play(d, rng)
         if act is None:
             act = next((a for a in d.get("legal_actions") or [] if a.get("action") == "end_turn"), None)
             if act is None:

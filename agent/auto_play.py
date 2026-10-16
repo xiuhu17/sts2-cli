@@ -77,7 +77,7 @@ class NecrobinderPolicy(HeuristicPolicy):
         p = state.get("player") or {}
         hp, mhp = p.get("hp", 1), max(p.get("max_hp", 1), 1)
         if dec == "combat_play":
-            act = combat_helper.emergency_potion(state) or combat_helper.best_play(state)
+            act = combat_helper.emergency_potion(state, self.rng) or combat_helper.best_play(state, self.rng)
             if act is not None:
                 return to_args(act, self.rng)
             if by.get("end_turn"):

@@ -107,6 +107,25 @@ def _numbered(st):
     return list(enumerate(st.get("legal_actions") or [], 1))
 
 
+def test_combat_helper_breaks_ties_by_rng_not_order():
+    import combat_helper
+    st = {"context": {"seed": "s"}, "player": {"hp": 10, "block": 0},
+          "hand": [{"index": i, "name": "Strike", "cost": 1, "type": "Attack", "target_type": "AnyEnemy"}
+                   for i in (0, 1)],
+          "enemies": [{"index": i, "hp": 5, "intents": [{"type": "Attack", "damage": 12}]} for i in (0, 1)],
+          "legal_actions": [{"action": "play_card", "args": {"card_index": i, "target_index": t}}
+                            for i in (0, 1) for t in (0, 1)] + [{"action": "end_turn"}]}
+    picks = {json.dumps(combat_helper.best_play(st, random.Random(s)), sort_keys=True) for s in range(40)}
+    assert len(picks) == 4  # both identical-score cards, both identical-threat targets
+    assert all(json.loads(p) in st["legal_actions"] for p in picks)
+    # Crystal Sphere: only the tools the engine lists are used.
+    entry = {"action": "crystal_sphere_click", "choose_cell": {"cells": [[1, 2]], "tools": ["small"]}}
+    assert policy.to_args(entry, random.Random(0))["args"] == {"x": 1, "y": 2, "tool": "small"}
+    with pytest.raises(policy.NoLegalAction):
+        policy.to_args({"action": "crystal_sphere_click", "choose_cell": {"cells": [[1, 2]], "tools": []}},
+                       random.Random(0))
+
+
 def test_clip_never_cuts_legal_actions():
     cards = [{"index": i, "name": f"Card{i}", "cost": 1, "type": "Skill", "description": "Gain 5 Block. " * 8,
               "after_upgrade": {"description": "Gain 8 Block. " * 8}} for i in range(90)]

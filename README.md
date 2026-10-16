@@ -131,7 +131,7 @@ several independent games.
 restarts a dead engine and replays the run on the seed the engine reported (a response
 after a restart carries `notes`; a diverged replay says so), answers bad bodies with a JSON
 error, serves `GET /state` and `GET /help`, and its `--compact` mode keeps all descriptions.
-`agent/combat_helper.py` plays only legal cards and stops at every non-combat decision.
+`agent/combat_helper.py` plays only legal cards and stops at every non-combat decision; ties between equally scored cards, targets or potions are broken by a seeded RNG, not by list order.
 
 ## JSON Protocol
 
@@ -332,7 +332,7 @@ bin/sts2 stop
 
 每次返回先列出上次决策以来发生的事（打出和抽到的牌、伤害、格挡、能力、敌人行动、遗物触发、金币/牌组/遗物变化），然后是当前决策：战斗中显示敌人的意图和能力、带卡牌说明的手牌、能量、充能球/辉星/奥斯提、牌堆；选牌时显示用途（升级/移除/变化/附魔/丢弃/消耗/选择）、游戏的提示语、来源、能否取消，以及升级/附魔/变化预览；还会显示先古之民的对话、每个目标的实际伤害（只有一个敌人时也显示）、游戏自己的意图名称、游戏结束时的分数和死因、商店删牌已使用，以及带坐标轴、图例和工具说明的水晶球格子。渲染器不认识的字段会以 `key: value` 输出。每次输出都小于 8 KB，且合法操作永远不会被截掉（长列表的选牌操作会合并成一行 `[a-b]`，改为缩短卡牌列表）。批量里的每一步都按执行那一刻的状态解析，所以建议用牌名（`play Strike`）；第一步之后的纯数字步骤只有在操作列表未变化时才会执行。`click X Y` 必须带工具（`big` = 3x3，`small` = 单格）。开局命令连同引擎实际使用的种子（即使你没有指定）保存在 `$TMPDIR`，所以引擎崩溃、空闲时退出或守护进程被杀后，重放的都是同一局；重放结果与原局面不一致时会明确提示。`--lang zh` 使用游戏官方中文。守护进程里永远不会开启调试命令。设置 `STS2_SESSION` 可以同时进行多局互不影响的游戏。
 
-`agent/sts2_bridge.py`（HTTP，每次 POST 一条 JSON 命令）仍然可用：现在引擎退出后会自动重启，并用引擎报告的种子重放本局（重启后的响应带 `notes`，重放不一致时会说明），非法请求体会返回 JSON 错误，提供 `GET /state` 和 `GET /help`，`--compact` 模式也不再删除说明文字。`agent/combat_helper.py` 只打合法的牌，遇到任何非战斗决策都会停下交还给调用者。
+`agent/sts2_bridge.py`（HTTP，每次 POST 一条 JSON 命令）仍然可用：现在引擎退出后会自动重启，并用引擎报告的种子重放本局（重启后的响应带 `notes`，重放不一致时会说明），非法请求体会返回 JSON 错误，提供 `GET /state` 和 `GET /help`，`--compact` 模式也不再删除说明文字。`agent/combat_helper.py` 只打合法的牌，遇到任何非战斗决策都会停下交还给调用者；评分相同的牌、目标或药水由带种子的随机数决定，而不是按列表顺序。
 
 ## JSON 协议
 
