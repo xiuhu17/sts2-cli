@@ -21,8 +21,8 @@ public partial class RunSimulator
     // ── Names (the models' Title overrides, falling back to the loc tables) ──
 
     /// <summary>CardModel.Title: "Strike+" or "Searing Blow+3" for multi-upgrade cards.</summary>
-    private static string CardName(CardModel c) =>
-        _loc.Card(c.Id.Entry) + (!c.IsUpgraded ? "" : c.MaxUpgradeLevel > 1 ? "+" + c.CurrentUpgradeLevel : "+");
+    private static string CardName(CardModel? c) =>
+        c == null ? "?" : _loc.Card(c.Id.Entry) + (!c.IsUpgraded ? "" : c.MaxUpgradeLevel > 1 ? "+" + c.CurrentUpgradeLevel : "+");
 
     private static readonly Dictionary<Type, bool> _titleOverridden = new();
 
@@ -96,17 +96,28 @@ public partial class RunSimulator
         return _loc.Relic(r.Id.Entry);
     }
 
-    private static string ModelName(AbstractModel m) => m switch
+    /// <summary>The model's name as the game titles it (blockers, card_select sources, ...).</summary>
+    private static string? ModelName(AbstractModel? m)
     {
-        CardModel c => CardName(c),
-        PowerModel p => PowerName(p),
-        RelicModel r => RelicName(r),
-        PotionModel po => _loc.Potion(po.Id.Entry),
-        EnchantmentModel e => _loc.Bilingual("enchantments", e.Id.Entry + ".title"),
-        AfflictionModel a => _loc.Bilingual("afflictions", a.Id.Entry + ".title"),
-        MonsterModel mo => MonsterName(mo),
-        _ => m.Id.Entry,
-    };
+        try
+        {
+            return m switch
+            {
+                null => null,
+                CardModel c => CardName(c),
+                PowerModel p => PowerName(p),
+                RelicModel r => RelicName(r),
+                PotionModel po => _loc.Potion(po.Id.Entry),
+                OrbModel o => _loc.Bilingual("orbs", o.Id.Entry + ".title"),
+                EventModel ev => EventTitle(ev.Id.Entry),
+                EnchantmentModel e => _loc.Bilingual("enchantments", e.Id.Entry + ".title"),
+                AfflictionModel a => _loc.Bilingual("afflictions", a.Id.Entry + ".title"),
+                MonsterModel mo => MonsterName(mo),
+                _ => m.Id.Entry,
+            };
+        }
+        catch { return m?.Id.Entry; }
+    }
 
     // ── Cards ──
 

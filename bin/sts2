@@ -1,0 +1,5 @@
+#!/bin/sh
+# sts2: shell client for the headless Slay the Spire 2 engine (see python/sts2.py, `sts2 help`).
+# -S -E: skip site-packages and PYTHON* env, so each call starts in ~10 ms.
+here=$(cd "$(dirname "$0")" && pwd)
+exec python3 -S -E "$here/../python/sts2.py" "$@"

@@ -75,7 +75,8 @@ class TestTravel:
         state = game.start(seed="mr2")
         assert state["decision"] == "event_choice"  # Neow
         r = game.act("select_map_node", col=0, row=9)
-        assert r["type"] == "error" and "map_select" in r["message"]
+        # Rejected by the action validator (illegal_action) before the engine's own map check.
+        assert r["type"] == "error" and r.get("code") == "illegal_action" and r["decision"] == "event_choice"
         state = _to_map(game, state)
         c = state["choices"][0]
         state = game.act("select_map_node", col=c["col"], row=c["row"])

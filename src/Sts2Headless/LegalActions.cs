@@ -26,7 +26,7 @@ internal static class LegalActions
         }
     }
 
-    private static List<Dictionary<string, object?>> For(Dictionary<string, object?> r)
+    internal static List<Dictionary<string, object?>> For(Dictionary<string, object?> r)
     {
         var acts = new List<Dictionary<string, object?>>();
         var decision = r.GetValueOrDefault("decision") as string;
@@ -94,7 +94,8 @@ internal static class LegalActions
                         ["action"] = "select_cards",
                         ["choose"] = new Dictionary<string, object?> { ["from"] = from, ["min"] = Math.Min(Math.Max(min, 1), max), ["max"] = max },
                     });
-                if (min == 0)
+                // Skipping is selecting nothing (min 0) or the screen's cancel button.
+                if (min == 0 || r.GetValueOrDefault("cancelable") is true)
                     acts.Add(Act("skip_select"));
                 break;
             }
@@ -184,12 +185,13 @@ internal static class LegalActions
                 break;
         }
 
-        // Outside combat the potion popup still enables "Use" for AnyTime potions (Blood Potion,
-        // Fruit Juice, Foul Potion at the merchant, ...); "can_use" carries the game's checks.
-        // None of them targets an enemy there, so no target is needed.
+        // Outside the combat turn the potion popup still enables "Use" for AnyTime potions (Blood
+        // Potion, Fruit Juice, Foul Potion at the merchant, ...), even on a selection screen;
+        // "can_use" carries the game's checks. Enemy-targeted ones would need a target here.
         if (decision != "combat_play")
             foreach (var p in Potions(player))
-                if (p.GetValueOrDefault("can_use") is true)
+                if (p.GetValueOrDefault("can_use") is true
+                    && p.GetValueOrDefault("target_type") as string != "AnyEnemy")
                     acts.Add(Act("use_potion", ("potion_index", p["index"])));
 
         // Discarding a potion is allowed at any decision point, unless an event locks potions.

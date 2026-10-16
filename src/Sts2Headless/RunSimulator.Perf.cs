@@ -97,7 +97,7 @@ public partial class RunSimulator
     }
 
     /// <summary>Cheap per-command housekeeping (bounds very long runs and load_save loops).</summary>
-    internal static void AfterCommand() => ClearMockSaveStoreLog();
+    internal static void AfterEveryCommand() => ClearMockSaveStoreLog();
 }
 
 public partial class RunSimulator

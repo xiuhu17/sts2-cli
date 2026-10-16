@@ -374,7 +374,9 @@ public partial class RunSimulator
             {
                 var m = ResolveModifier(name);
                 if (m == null)
-                    return Error($"Unknown modifier '{name}'. Known: {string.Join(", ", KnownModifiers())}");
+                    return Error(name.Trim().ToUpperInvariant().StartsWith("CHARACTER_CARDS")
+                        ? $"Modifier '{name}' needs a character: CHARACTER_CARDS:<character>. Known: {string.Join(", ", KnownModifiers())}"
+                        : $"Unknown modifier '{name}'. Known: {string.Join(", ", KnownModifiers())}");
                 modifierModels.Add(m);
             }
             ProgressState? progress = null;
@@ -1771,6 +1773,11 @@ public partial class RunSimulator
 
     private Dictionary<string, object?> DoSkipSelect(Player player)
     {
+        if (!_cardSelector.HasPending)
+            return Error("No pending card selection");
+        if (_cardSelector.PendingMinSelect > 0 && _cardSelector.PendingContext?.Cancelable != true
+            && (_cardSelector.PendingOptions?.Count ?? 0) > 0)
+            return Error($"This selection can't be skipped: choose at least {_cardSelector.PendingMinSelect} card(s) with select_cards");
         if (_cardSelector.HasPending)
         {
             Log("Skipping card selection");
@@ -1889,6 +1896,9 @@ public partial class RunSimulator
     /// <summary>
     /// Whether the potion popup would enable "Use" (NPotionPopup: usage, CanUseOrRemovePotions,
     /// PassesCustomUsabilityCheck, and for CombatOnly potions RefreshButtons' turn checks).
+    /// AnyTime potions stay usable while a selection screen is open, as in the game; CombatOnly
+    /// ones don't (InACardSelectScreen). Without these checks a CombatOnly potion used on the
+    /// map was queued and then silently lost.
     /// </summary>
     private bool PotionUsable(Player player, PotionModel potion, out string reason)
     {
@@ -1896,9 +1906,6 @@ public partial class RunSimulator
         if (potion.IsQueued) { reason = "already being used"; return false; }
         if (player.Creature == null || player.Creature.IsDead) { reason = "player is dead"; return false; }
         if (!player.CanUseOrRemovePotions) { reason = "potions are locked right now"; return false; }
-        // A card / bundle selection screen is open and its flow is waiting on the answer.
-        if (_cardSelector.HasPending || _cardSelector.HasPendingReward || _pendingBundles != null)
-        { reason = "a selection is open"; return false; }
         switch (potion.Usage)
         {
             case MegaCrit.Sts2.Core.Entities.Potions.PotionUsage.AnyTime:
@@ -1909,7 +1916,8 @@ public partial class RunSimulator
                 var creature = player.Creature;
                 if (creature.CombatState?.CurrentSide != creature.Side || CombatManager.Instance.PlayerActionsDisabled)
                 { reason = "it can only be used during your turn"; return false; }
-                if (HasPendingPrompt) { reason = "a selection is open"; return false; }  // InACardSelectScreen
+                if (HasPendingPrompt)  // InACardSelectScreen
+                { reason = "a card selection is open (only AnyTime potions can be used then)"; return false; }
                 break;
             }
             default:
@@ -2267,7 +2275,7 @@ public partial class RunSimulator
                 }, card);
             }).ToList();
 
-            return new Dictionary<string, object?>
+            var selectState = new Dictionary<string, object?>
             {
                 ["type"] = "decision",
                 ["decision"] = "card_select",
@@ -2277,6 +2285,8 @@ public partial class RunSimulator
                 ["max_select"] = _cardSelector.PendingMaxSelect,
                 ["player"] = PlayerSummary(player),
             };
+            AugmentCardSelect(selectState, player);
+            return selectState;
         }
 
         // Rewards offered by an event (manual_rewards)
@@ -3056,7 +3066,11 @@ public partial class RunSimulator
             _syncCtx.Pump();
             WaitFlow(t);
         }
-        if (t != null && t.IsFaulted) Log($"Event reward claim failed: {t.Exception?.InnerException}");
+        if (t != null && t.IsFaulted)
+        {
+            Log($"Event reward claim failed: {t.Exception?.InnerException}");
+            NoteFlowFault(t.Exception);
+        }
         if (frame != null && t != null && t.IsCompleted && ReferenceEquals(frame.Claim, t))
         {
             // A reward the player backed out of (skipped card reward, cancelled removal) stays
@@ -4095,7 +4109,10 @@ public partial class RunSimulator
         if (task != null && task.IsCompleted)
         {
             if (task.IsFaulted)
+            {
                 Log($"Background task failed: {task.Exception?.InnerException}");
+                NoteFlowFault(task.Exception);
+            }
             if (ReferenceEquals(_backgroundTask, task)) _backgroundTask = null;
         }
         return HasPendingPrompt;
@@ -4480,7 +4497,7 @@ public partial class RunSimulator
                 };
             }).Where(x => x != null).ToList(),
             ["deck_size"] = player.Deck?.Cards?.Count(c => c != null) ?? 0,
-            ["deck"] = player.Deck?.Cards?.Where(c => c != null).Select(c =>
+            ["deck"] = OmitDeck ? null : player.Deck?.Cards?.Where(c => c != null).Select(c =>
             {
                 var dstats = new Dictionary<string, object?>();
                 try { foreach (var dv in c.DynamicVars.Values) dstats[dv.Name.ToLowerInvariant()] = (int)dv.BaseValue; } catch { }
@@ -4625,6 +4642,7 @@ public partial class RunSimulator
 
         // Capture the game's own run saves instead of writing them (write_continue_save).
         ContinueSave.Install();
+        InstallAgentPatches();
 
         // Initialize localization system (needed for events, cards, etc.)
         InitLocManager();
@@ -4963,6 +4981,9 @@ public partial class RunSimulator
         public int PendingMinSelect { get; private set; }
         public int PendingMaxSelect { get; private set; }
         public string PendingPrompt { get; private set; } = "";
+        // What the game's selection screen says about this prompt (purpose, prompt text,
+        // cancel button, ...), captured from CardSelectCmd by SelectPromptPatches.
+        public SelectContext? PendingContext { get; private set; }
         private TaskCompletionSource<IEnumerable<CardModel>>? _pendingTcs;
 
         public bool HasPending => _pendingTcs != null && !_pendingTcs.Task.IsCompleted;
@@ -4971,14 +4992,22 @@ public partial class RunSimulator
             IEnumerable<CardModel> options, int minSelect, int maxSelect)
         {
             var optList = options.ToList();
+            var ctx = SelectPromptPatches.Take();
             if (optList.Count == 0)
                 return Task.FromResult<IEnumerable<CardModel>>(Array.Empty<CardModel>());
 
-            // If only one option and minSelect requires it, auto-select
-            if (optList.Count == 1 && minSelect >= 1)
+            // If only one option and minSelect requires it, auto-select -- unless the game's
+            // screen has a cancel button (rest-site Smith, shop removal): then backing out is
+            // a real choice.
+            if (optList.Count == 1 && minSelect >= 1 && ctx?.Cancelable != true)
                 return Task.FromResult<IEnumerable<CardModel>>(optList);
+            // A choose-a-card screen without a skip button requires a pick even though the
+            // game asks the selector for 0-1 cards.
+            if (ctx != null && ctx.ForceMinSelect > minSelect)
+                minSelect = Math.Min(ctx.ForceMinSelect, maxSelect);
 
             // Store pending selection and wait
+            PendingContext = ctx;
             PendingOptions = optList;
             PendingMinSelect = minSelect;
             PendingMaxSelect = maxSelect;
@@ -4996,6 +5025,7 @@ public partial class RunSimulator
             // request the next selection, which must not be wiped by this call.
             var tcs = _pendingTcs;
             PendingOptions = null;
+            PendingContext = null;
             _pendingTcs = null;
             tcs?.TrySetResult(selected);
         }
@@ -5012,6 +5042,7 @@ public partial class RunSimulator
             if (options == null || tcs == null) return null;
             var selected = indices.Where(i => i >= 0 && i < options.Count).Select(i => options[i]).ToList();
             PendingOptions = null;
+            PendingContext = null;
             _pendingTcs = null;
             return () => tcs.TrySetResult(selected);
         }
@@ -5021,6 +5052,7 @@ public partial class RunSimulator
         {
             var tcs = _pendingTcs;
             PendingOptions = null;
+            PendingContext = null;
             _pendingTcs = null;
             return tcs == null ? null : () => tcs.TrySetResult(Array.Empty<CardModel>());
         }
@@ -5039,6 +5071,7 @@ public partial class RunSimulator
         {
             var tcs = _pendingTcs;
             PendingOptions = null;
+            PendingContext = null;
             _pendingTcs = null;
             tcs?.TrySetResult(Array.Empty<CardModel>());
         }
@@ -5603,12 +5636,15 @@ public partial class RunSimulator
     {
         var inner = ex;
         while (inner.InnerException != null) inner = inner.InnerException;
-        return new Dictionary<string, object?>
+        var err = new Dictionary<string, object?>
         {
             ["type"] = "error",
+            ["code"] = "exception",
             ["message"] = $"{context}: {inner.GetType().Name}: {inner.Message}",
-            ["stack_trace"] = inner.StackTrace,
         };
+        // Stack traces are for engine developers, not agents (STS2_DEBUG=1 to include them).
+        if (DebugTraces) err["stack_trace"] = inner.StackTrace;
+        return err;
     }
 
     public Dictionary<string, object?> GetFullMap()
