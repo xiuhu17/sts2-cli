@@ -117,6 +117,19 @@ public partial class RunSimulator
         finally { s_flowSignal.Set(); }
     });
 
+    /// <summary>StartFlow for a flow with a result (e.g. RewardsSetSynchronizer.SelectLocalReward).</summary>
+    private static Task<T> StartFlow<T>(Func<Task<T>> work) => Task.Run(() =>
+    {
+        var prev = SynchronizationContext.Current;
+        SynchronizationContext.SetSynchronizationContext(_syncCtx);
+        try { return work(); }
+        finally
+        {
+            SynchronizationContext.SetSynchronizationContext(prev);
+            s_flowSignal.Set();
+        }
+    });
+
     /// <summary>
     /// One wait step of a "pump until done or prompt" loop: returns when <paramref name="t"/>
     /// completes, a flow parks, or after 1 ms (the previous fixed poll, kept as the fallback for

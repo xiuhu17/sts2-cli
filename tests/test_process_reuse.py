@@ -60,12 +60,15 @@ class TestProcessReuse:
 class TestStateAfterSelection:
     def test_event_card_select_returns_current_state(self, game):
         """After resolving an event's card selection the event has finished; the response
-        must not be the stale event page (which used to need an extra choose_option)."""
+        is its final page (finished, a single Proceed option), not the stale option page."""
         state = game.start(seed="bench_7")
         assert state["event_name"] == "Neow"
         state = game.act("choose_option", option_index=0)
         assert state["decision"] == "card_select"
         state = game.act("select_cards", indices="0")
+        assert state["decision"] == "event_choice" and state.get("finished") is True, state.get("decision")
+        assert [o.get("is_proceed") for o in state["options"]] == [True]
+        state = game.act("choose_option", option_index=0)
         assert state["decision"] == "map_select", state.get("decision")
 
 

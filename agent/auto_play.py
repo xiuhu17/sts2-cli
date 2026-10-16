@@ -227,7 +227,8 @@ def handle_shop(d):
             deck_size += 1
 
     # Remove a Strike if affordable
-    if gold >= removal_cost and deck_size > 8:
+    # Card removal is offered once per shop visit (card_removal_available).
+    if d.get("card_removal_available", True) and gold >= removal_cost and deck_size > 8:
         print(f"  REMOVE: Strike ({removal_cost}g)")
         action("remove_card")
         # Select first Strike
