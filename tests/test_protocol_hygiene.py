@@ -206,3 +206,71 @@ class TestBridgeCompact:
         c = bridge.compact_json({"type": "decision", "hand": [
             {"name": "Strike", "enchantment": "Sharp", "enchantment_amount": 2, "description": "Deal 8 damage."}]})
         assert c["hand"][0]["name"] == "Strike [Sharp 2]" and "enchantment" not in c["hand"][0]
+
+
+class TestInputLimits:
+    """Every line gets one reply; client input is never echoed back unbounded."""
+
+    def _raw(self, game, line):
+        game.proc.stdin.write(line + "\n")
+        game.proc.stdin.flush()
+        return game._read()
+
+    def test_blank_lines_get_bad_request(self, game):
+        game.start(seed="il1")
+        for line in ("", "   ", "\t "):
+            r = self._raw(game, line)
+            assert_full_error(r, "bad_request")
+            assert "Empty line" in r["message"]
+        # Still in lockstep: the next reply answers the next command.
+        assert game.send({"cmd": "get_state"})["type"] == "decision"
+
+    def test_long_unknown_names_are_truncated(self, game):
+        import time
+        game.start(seed="il2")
+        t0 = time.time()
+        r = game.send({"cmd": "action", "action": "x" * 200000})
+        assert_full_error(r, "unknown_action")
+        assert len(r["message"]) < 2000 and "(200000 chars)" in r["message"]
+        assert time.time() - t0 < 0.5
+        r = game.send({"cmd": "y" * 1000000})
+        assert r["code"] == "unknown_command" and len(r["message"]) < 2000
+        r = game.send({"cmd": "start_run", "character": "z" * 100000})
+        assert r["code"] == "unknown_character" and len(r["message"]) < 2000
+        # Near-misses still get a suggestion.
+        assert "Did you mean 'end_turn'" in game.act("end_trun")["message"]
+
+    def test_oversized_seed_is_refused_and_keeps_the_run(self, game):
+        before = game.start(seed="il3")
+        r = game.send({"cmd": "start_run", "character": "Ironclad", "seed": "S" * 65})
+        assert_full_error(r, "bad_request")
+        assert "at most 64" in r["message"]
+        assert game.send({"cmd": "get_state"})["context"]["seed"] == before["context"]["seed"]
+        assert game.start(seed="S" * 64)["type"] == "decision"
+
+
+class TestFailedLoadKeepsRun:
+    """load_save checks that the game can build a run from the save before ending the current
+    one: a save it can't load (unknown character id, no players) leaves the run as it was."""
+
+    @pytest.mark.parametrize("corrupt", ["unknown_character", "no_players"])
+    def test_unloadable_save_keeps_the_current_run(self, game, tmp_path, corrupt):
+        import json
+        state = game.start(character="Defect", seed="sv1")
+        path = tmp_path / "save.json"
+        assert game.send({"cmd": "write_continue_save", "path": str(path)})["success"] is True
+        text = path.read_text()
+        if corrupt == "unknown_character":
+            text = text.replace("CHARACTER.DEFECT", "CHARACTER.NOBODY")
+        else:
+            d = json.loads(text)
+            d.pop("players")
+            text = json.dumps(d)
+        r = game.send({"cmd": "load_save", "json": text})
+        assert_full_error(r, "bad_request")
+        assert "not loadable" in r["message"]
+        after = game.send({"cmd": "get_state"})
+        assert after["type"] == "decision" and after["decision"] == state["decision"]
+        assert after["context"]["seed"] == state["context"]["seed"]
+        # The intact save still loads.
+        assert game.send({"cmd": "load_save", "path": str(path)})["type"] == "decision"

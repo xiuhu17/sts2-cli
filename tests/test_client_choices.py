@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.join(ROOT, "python"))
 sys.path.insert(0, os.path.join(ROOT, "agent"))
 import policy  # noqa: E402
 import sts2_daemon as d  # noqa: E402
+from conftest import stop_session  # noqa: E402
 
 STS2 = os.path.join(ROOT, "bin", "sts2")
 
@@ -211,6 +212,27 @@ def test_verbs_multiword_ambiguous_and_click():
         d.parse_verb("1", {"decision": "game_over"}, [])
 
 
+def test_prefix_never_prefers_a_playable_card():
+    # 'play Def' names Defend as much as Deflect: playing Deflect because Defend is
+    # unplayable would play a card the player did not name.
+    st = {"decision": "combat_play", "enemies": [],
+          "hand": [{"index": 0, "name": "Defend", "can_play": False, "unplayable_message": "Not enough energy."},
+                   {"index": 1, "name": "Deflect", "can_play": True}]}
+    with pytest.raises(d.VerbError, match="matches several cards.*H0 Defend \\(not playable\\).*H1 Deflect"):
+        d.parse_verb("play Def", st, [])
+    with pytest.raises(d.VerbError, match="H0 Defend is not playable: Not enough energy"):
+        d.parse_verb("play Defend", st, [])
+    assert d.parse_verb("play Defl", st, [])["args"] == {"card_index": 1}
+    # An unplayable Strike and a playable Strike+ differ: ambiguous, not Strike+.
+    st2 = dict(st, hand=[{"index": 0, "name": "Strike", "can_play": False},
+                         {"index": 1, "name": "Strike+", "can_play": True}])
+    with pytest.raises(d.VerbError, match="not playable"):
+        d.parse_verb("play Str", st2, [])
+    # Identical playable copies are still one play.
+    st3 = dict(st, hand=[{"index": 0, "name": "Strike", "can_play": True}, {"index": 1, "name": "Strike", "can_play": True}])
+    assert d.parse_verb("play Str", st3, [])["args"] == {"card_index": 0}
+
+
 # ───────────────────────────── live: sts2 shell client ─────────────────────────────
 
 @pytest.fixture(scope="module")
@@ -226,12 +248,7 @@ def sts2():
 
     run.session = session
     yield run
-    run("stop")
-    sock, _ = d.paths(session)
-    try:
-        os.unlink(sock[:-len(".sock")] + ".run.jsonl")
-    except OSError:
-        pass
+    stop_session(session, env)
 
 
 def _engine_pids(session):

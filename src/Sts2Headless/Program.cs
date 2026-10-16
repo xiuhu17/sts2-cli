@@ -229,7 +229,12 @@ class Program
             while ((line = Console.ReadLine()) != null)
             {
                 line = line.Trim();
-                if (string.IsNullOrEmpty(line)) continue;
+                // Every line gets exactly one reply: a client waiting on a blank line would hang.
+                if (string.IsNullOrEmpty(line))
+                {
+                    WriteLine(sim.CompleteError("", BadRequest("Empty line: each line must be a JSON object with a string 'cmd', e.g. {\"cmd\":\"get_state\"}")));
+                    continue;
+                }
 
                 JsonElement cmd;
                 try { cmd = JsonSerializer.Deserialize<JsonElement>(line); }
@@ -338,7 +343,11 @@ class Program
             while ((line = Console.ReadLine()) != null)
             {
                 line = line.Trim();
-                if (string.IsNullOrEmpty(line)) continue;
+                if (string.IsNullOrEmpty(line))
+                {
+                    WriteLine(BadRequest("Empty line: each line must be a JSON object with a string 'cmd'"));
+                    continue;
+                }
                 JsonElement cmd;
                 try { cmd = JsonSerializer.Deserialize<JsonElement>(line); }
                 catch (JsonException ex)
@@ -647,7 +656,7 @@ class Program
                 return new Dictionary<string, object?>
                 {
                     ["type"] = "error", ["code"] = "unknown_command",
-                    ["message"] = $"Unknown command '{cmdType}'. Commands: {string.Join(", ", Commands)}",
+                    ["message"] = $"Unknown command '{RunSimulator.Clip(cmdType)}'. Commands: {string.Join(", ", Commands)}",
                 };
         }
     }

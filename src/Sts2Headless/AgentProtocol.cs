@@ -56,6 +56,7 @@ public partial class RunSimulator
         public bool RequireConfirm;
         public int ForceMinSelect;            // choose-a-card without skip: a pick is required
         public AbstractModel? Source;         // the card/relic/power/potion that asked
+        public AbstractModel? HandSource;     // hand selections: the source NPlayerHand waits on
         public EnchantmentModel? Enchantment; // enchant screens: what gets applied
         public int EnchantAmount;
         public Func<CardModel, CardTransformation>? Transform;
@@ -154,7 +155,9 @@ public partial class RunSimulator
 
         public static void Discard(PlayerChoiceContext context, CardSelectorPrefs prefs, AbstractModel source)
         {
-            Stage(FromPrefs(prefs, "discard", "hand", source ?? Involved(context)), false);
+            var c = FromPrefs(prefs, "discard", "hand", source ?? Involved(context));
+            c.HandSource = source;
+            Stage(c, false);
             lock (Lock) _outer++;
         }
 
@@ -165,8 +168,12 @@ public partial class RunSimulator
 
         public static void DeckGeneric(CardSelectorPrefs prefs) => Stage(FromPrefs(prefs, "choose", "deck", null), true);
 
-        public static void Hand(PlayerChoiceContext context, CardSelectorPrefs prefs, AbstractModel source) =>
-            Stage(FromPrefs(prefs, "choose", "hand", source ?? Involved(context)), true);
+        public static void Hand(PlayerChoiceContext context, CardSelectorPrefs prefs, AbstractModel source)
+        {
+            var c = FromPrefs(prefs, "choose", "hand", source ?? Involved(context));
+            c.HandSource = source;
+            Stage(c, true);
+        }
 
         public static void HandUpgrade(PlayerChoiceContext context, AbstractModel source)
         {
@@ -177,6 +184,7 @@ public partial class RunSimulator
                 Screen = "hand",
                 Prompt = Format(new LocString("gameplay_ui", "CHOOSE_CARD_UPGRADE_HEADER")),
                 Source = source ?? Involved(context),
+                HandSource = source,
             }, false);
         }
 
@@ -498,6 +506,8 @@ public partial class RunSimulator
 
     private static string? Suggest(string action)
     {
+        // Far longer than any verb: nothing to suggest (and no quadratic edit distance).
+        if (action.Length > 40) return null;
         var a = action.Trim().ToLowerInvariant().Replace('-', '_').Replace(' ', '_');
         if (AllActions.Contains(a)) return a;
         return AllActions.FirstOrDefault(x => x.Contains(a) || a.Contains(x))
@@ -529,7 +539,7 @@ public partial class RunSimulator
         {
             var s = Suggest(action);
             var cur0 = _lastDecision ?? SafeCurrentDecision();
-            var err = Error($"Unknown action '{action}'.{(s != null ? $" Did you mean '{s}'?" : "")} " +
+            var err = Error($"Unknown action '{Clip(action)}'.{(s != null ? $" Did you mean '{s}'?" : "")} " +
                             $"Legal now: {(cur0 != null ? SummarizeLegal(LegalOf(cur0)) : "?")}");
             err["code"] = "unknown_action";
             return WithDecision(err, cur0);
@@ -919,7 +929,7 @@ public partial class RunSimulator
         var groups = new Dictionary<string, Dictionary<string, object?>>();
         var list = new List<Dictionary<string, object?>>();
         CardModel[] cards;
-        try { cards = pile?.Cards?.ToArray() ?? Array.Empty<CardModel>(); } catch { return list; }
+        try { cards = (type == PileType.Hand ? HandOrder.Cards(pile).ToArray() : pile?.Cards?.ToArray()) ?? Array.Empty<CardModel>(); } catch { return list; }
         foreach (var c in cards)
         {
             if (c == null) continue;
@@ -959,7 +969,7 @@ public partial class RunSimulator
         {
             IReadOnlyList<CardModel>? source = where switch
             {
-                "hand" => player!.PlayerCombatState?.Hand?.Cards?.ToList(),
+                "hand" => player!.PlayerCombatState?.Hand is { } h ? HandOrder.Cards(h) : null,
                 "deck" or null => player!.Deck?.Cards?.Where(c => c != null).ToList(),
                 _ => null,
             };
@@ -997,15 +1007,31 @@ public partial class RunSimulator
     internal static void InstallAgentPatches()
     {
         SelectPromptPatches.Install();
+        HandOrder.Install();
         try
         {
             var harmony = new Harmony("sts2headless.events");
+            var addInternal = typeof(CardPile).GetMethod("AddInternal");
+            if (addInternal != null)
+                harmony.Patch(addInternal, postfix: new HarmonyMethod(typeof(RunSimulator).GetMethod(nameof(CardPileAddInternalPostfix),
+                    System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)));
+            var think = typeof(ThinkCmd).GetMethod("Play");
+            if (think != null)
+                harmony.Patch(think, prefix: new HarmonyMethod(typeof(RunSimulator).GetMethod(nameof(ThinkCmdPlayPrefix),
+                    System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)));
             var flash = typeof(RelicModel).GetMethod("Flash", new[] { typeof(IEnumerable<Creature>) });
             if (flash != null)
                 harmony.Patch(flash, postfix: new HarmonyMethod(typeof(RunSimulator).GetMethod(nameof(RelicFlashPostfix),
                     System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)));
         }
         catch (Exception ex) { Console.Error.WriteLine($"[WARN] relic flash hook: {ex.Message}"); }
+    }
+
+    // ThinkCmd.Play only builds the bubble node (null headless): record the line instead.
+    private static bool ThinkCmdPlayPrefix(LocString line, Creature speaker)
+    {
+        RecordBubble("thought", line, speaker);
+        return false;
     }
 
     private static void RelicFlashPostfix(RelicModel __instance)
@@ -1060,6 +1086,62 @@ public partial class RunSimulator
         catch { }
     }
 
+    // card_added events waiting for the pile their card is added to.
+    private readonly Dictionary<CardModel, Dictionary<string, object?>> _pendingGenerated = new();
+    // The card_added event of the last card added to any pile (null when that card was not a
+    // generated one): HAND_FULL right after it means the hand was full and it went to discard.
+    private Dictionary<string, object?>? _lastGeneratedAdd;
+
+    private static string PileName(PileType t) => t.ToString().ToLowerInvariant();
+
+    private static void CardPileAddInternalPostfix(CardPile __instance, CardModel card)
+    {
+        var sink = _eventSink;
+        if (sink == null) return;
+        if (sink._pendingGenerated.Count == 0) { sink._lastGeneratedAdd = null; return; }
+        try
+        {
+            lock (sink._evLock)
+            {
+                if (sink._pendingGenerated.Remove(card, out var e))
+                {
+                    e["pile"] = PileName(__instance.Type);
+                    sink._lastGeneratedAdd = e;
+                }
+                else sink._lastGeneratedAdd = null;
+            }
+        }
+        catch { }
+    }
+
+    /// <summary>A speech bubble (TalkCmd) or thought bubble (ThinkCmd) the game shows over a
+    /// creature: "I have too many cards...", a monster's line, ...</summary>
+    internal static void RecordBubble(string kind, LocString? line, Creature? speaker)
+    {
+        var sink = _eventSink;
+        if (sink == null || line == null) return;
+        try
+        {
+            var text = TryFormat(() => line.GetFormattedText());
+            if (text == null)
+            {
+                var raw = _loc.Bilingual(line.LocTable, line.LocEntryKey);
+                text = raw == line.LocEntryKey ? null : LocLookup.Clean(raw).Trim();
+            }
+            if (string.IsNullOrWhiteSpace(text)) return;
+            lock (sink._evLock)
+            {
+                if (kind == "thought" && line.LocTable == "combat_messages" && line.LocEntryKey == "HAND_FULL"
+                    && sink._lastGeneratedAdd is { } added && added.GetValueOrDefault("pile") as string == "discard")
+                    added["redirected"] = "hand_full";
+                var e = new Dictionary<string, object?> { ["type"] = kind, ["speaker"] = CreatureName(speaker), ["text"] = text };
+                try { e["key"] = line.LocTable + "." + line.LocEntryKey; } catch { }
+                sink.AddEventLocked(e);
+            }
+        }
+        catch { }
+    }
+
     private void AddEventLocked(Dictionary<string, object?> e)
     {
         if (_events.Count < MaxEvents) _events.Add(e);
@@ -1072,7 +1154,9 @@ public partial class RunSimulator
         try
         {
             if (c.IsPlayer) return _loc.Bilingual("characters", (c.Player?.Character?.Id.Entry ?? "IRONCLAD") + ".title");
-            return _loc.Monster(c.Monster?.Id.Entry ?? "UNKNOWN");
+            // The creature's current title (Tough Egg -> Hatchling once it hatches), as the
+            // enemies list shows it at the time of the event.
+            return MonsterName(c.Monster);
         }
         catch { return "?"; }
     }
@@ -1124,7 +1208,7 @@ public partial class RunSimulator
             case MonsterPerformedMoveEntry mv:
             {
                 // The combat screen shows the move's intents (move names are Bestiary-only).
-                e = new() { ["type"] = "enemy_move", ["enemy"] = _loc.Monster(mv.Monster?.Id.Entry ?? "UNKNOWN") };
+                e = new() { ["type"] = "enemy_move", ["enemy"] = MonsterName(mv.Monster) };
                 try
                 {
                     var intents = mv.Move?.Intents?.Select(i => i.IntentType.ToString()).ToList();
@@ -1153,7 +1237,14 @@ public partial class RunSimulator
                 break;
             case CardGeneratedEntry cg:
                 e = new() { ["type"] = "card_added", ["card"] = CardName(cg.Card) };
-                try { if (cg.Card.Pile != null) e["pile"] = cg.Card.Pile.Type.ToString().ToLowerInvariant(); } catch { }
+                // CardPileCmd.AddGeneratedCardsToCombat records the card before adding it: the
+                // pile it lands in is filled in by CardPileAddInternalPostfix.
+                try
+                {
+                    if (cg.Card.Pile != null) e["pile"] = PileName(cg.Card.Pile.Type);
+                    else _pendingGenerated[cg.Card] = e;
+                }
+                catch { }
                 break;
             case CardAfflictedEntry ca:
                 e = new() { ["type"] = "afflicted", ["card"] = CardName(ca.Card) };
@@ -1239,6 +1330,8 @@ public partial class RunSimulator
             OnHistoryChangedUnlocked();
             evs = _events;
             _events = new List<Dictionary<string, object?>>();
+            _pendingGenerated.Clear();
+            _lastGeneratedAdd = null;
         }
         var now = TakeSnapshot();
         var prev = _snapshot;
@@ -1246,10 +1339,14 @@ public partial class RunSimulator
         if (prev == null || now == null) return evs;
         // The blow that ends a combat is not in CombatHistory (it stops recording once the
         // combat is ending), but the player sees the enemy die.
-        foreach (var (creature, name) in prev.Enemies)
+        foreach (var (creature, snapName) in prev.Enemies)
         {
             bool dead;
             try { dead = creature.IsDead; } catch { continue; }
+            // Its name when it died, not when the previous decision was taken (it may have
+            // changed since: a Tough Egg hatches into a Hatchling).
+            var name = CreatureName(creature);
+            if (name == "?") name = snapName;
             if (dead && !evs.Any(e => e.GetValueOrDefault("killed") is true && e.GetValueOrDefault("target") as string == name))
                 evs.Add(new() { ["type"] = "enemy_died", ["enemy"] = name });
         }

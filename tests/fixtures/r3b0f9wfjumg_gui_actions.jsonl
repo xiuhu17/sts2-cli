@@ -1,0 +1,263 @@
+{"cmd": "start_run", "character": "Ironclad", "seed": "R3B0F9WFJUMG", "lang": "zh"}
+{"cmd": "action", "action": "choose_option", "args": {"option_index": 1}}
+{"cmd": "action", "action": "claim_reward", "args": {"reward_index": 0}}
+{"cmd": "action", "action": "claim_reward", "args": {"reward_index": 1}}
+{"cmd": "action", "action": "select_card_reward", "args": {"card_index": 1}}
+{"cmd": "action", "action": "choose_option", "args": {"option_index": 0}}
+{"cmd": "action", "action": "select_map_node", "args": {"col": 1, "row": 1}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 0, "target_index": 1}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 1}}
+{"cmd": "action", "action": "end_turn", "args": {}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 1}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 0, "target_index": 1}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 1, "target_index": 1}}
+{"cmd": "action", "action": "end_turn", "args": {}}
+{"cmd": "action", "action": "use_potion", "args": {"potion_index": 0}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 0, "target_index": 0}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 0, "target_index": 0}}
+{"cmd": "action", "action": "claim_reward", "args": {"reward_index": 0}}
+{"cmd": "action", "action": "claim_reward", "args": {"reward_index": 1}}
+{"cmd": "action", "action": "skip_card_reward", "args": {}}
+{"cmd": "action", "action": "proceed", "args": {}}
+{"cmd": "action", "action": "select_map_node", "args": {"col": 1, "row": 2}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 1, "target_index": 0}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 2, "target_index": 0}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 0}}
+{"cmd": "action", "action": "end_turn", "args": {}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 2, "target_index": 0}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 0, "target_index": 0}}
+{"cmd": "action", "action": "end_turn", "args": {}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 3, "target_index": 0}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 2, "target_index": 0}}
+{"cmd": "action", "action": "claim_reward", "args": {"reward_index": 0}}
+{"cmd": "action", "action": "claim_reward", "args": {"reward_index": 1}}
+{"cmd": "action", "action": "select_card_reward", "args": {"card_index": 2}}
+{"cmd": "action", "action": "select_map_node", "args": {"col": 1, "row": 3}}
+{"cmd": "action", "action": "choose_option", "args": {"option_index": 0}}
+{"cmd": "action", "action": "select_cards", "args": {"indices": 6}}
+{"cmd": "action", "action": "choose_option", "args": {"option_index": 0}}
+{"cmd": "action", "action": "select_map_node", "args": {"col": 0, "row": 4}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 4, "target_index": 0}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 1, "target_index": 0}}
+{"cmd": "action", "action": "end_turn", "args": {}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 3, "target_index": 0}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 1, "target_index": 0}}
+{"cmd": "action", "action": "end_turn", "args": {}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 0, "target_index": 0}}
+{"cmd": "action", "action": "claim_reward", "args": {"reward_index": 0}}
+{"cmd": "action", "action": "claim_reward", "args": {"reward_index": 1}}
+{"cmd": "action", "action": "proceed", "args": {}}
+{"cmd": "action", "action": "select_map_node", "args": {"col": 0, "row": 5}}
+{"cmd": "action", "action": "buy_card", "args": {"card_index": 0}}
+{"cmd": "action", "action": "remove_card", "args": {}}
+{"cmd": "action", "action": "select_cards", "args": {"indices": 0}}
+{"cmd": "action", "action": "leave_room", "args": {}}
+{"cmd": "action", "action": "select_map_node", "args": {"col": 0, "row": 6}}
+{"cmd": "action", "action": "choose_option", "args": {"option_index": 1}}
+{"cmd": "action", "action": "skip_select", "args": {}}
+{"cmd": "action", "action": "choose_option", "args": {"option_index": 1}}
+{"cmd": "action", "action": "select_cards", "args": {"indices": 8}}
+{"cmd": "action", "action": "leave_room", "args": {}}
+{"cmd": "action", "action": "select_map_node", "args": {"col": 1, "row": 7}}
+{"cmd": "action", "action": "use_potion", "args": {"potion_index": 0}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 1, "target_index": 0}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 3}}
+{"cmd": "action", "action": "end_turn", "args": {}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 0, "target_index": 0}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 1, "target_index": 0}}
+{"cmd": "action", "action": "end_turn", "args": {}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 3, "target_index": 0}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 1, "target_index": 0}}
+{"cmd": "action", "action": "end_turn", "args": {}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 0, "target_index": 0}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 0, "target_index": 0}}
+{"cmd": "action", "action": "claim_reward", "args": {"reward_index": 0}}
+{"cmd": "action", "action": "claim_reward", "args": {"reward_index": 1}}
+{"cmd": "action", "action": "select_card_reward", "args": {"card_index": 1}}
+{"cmd": "action", "action": "select_map_node", "args": {"col": 2, "row": 8}}
+{"cmd": "action", "action": "choose_option", "args": {"option_index": 0}}
+{"cmd": "action", "action": "leave_room", "args": {}}
+{"cmd": "action", "action": "select_map_node", "args": {"col": 1, "row": 9}}
+{"cmd": "action", "action": "select_treasure_relic", "args": {"relic_index": 0}}
+{"cmd": "action", "action": "select_map_node", "args": {"col": 2, "row": 10}}
+{"cmd": "action", "action": "choose_option", "args": {"option_index": 1}}
+{"cmd": "action", "action": "choose_option", "args": {"option_index": 0}}
+{"cmd": "action", "action": "select_map_node", "args": {"col": 3, "row": 11}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 0, "target_index": 0}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 2, "target_index": 0}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 2, "target_index": 0}}
+{"cmd": "action", "action": "end_turn", "args": {}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 2}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 3, "target_index": 0}}
+{"cmd": "action", "action": "end_turn", "args": {}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 0}}
+{"cmd": "action", "action": "select_cards", "args": {"indices": 2}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 1, "target_index": 1}}
+{"cmd": "action", "action": "end_turn", "args": {}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 1, "target_index": 0}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 2, "target_index": 0}}
+{"cmd": "action", "action": "end_turn", "args": {}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 2, "target_index": 1}}
+{"cmd": "action", "action": "claim_reward", "args": {"reward_index": 1}}
+{"cmd": "action", "action": "skip_card_reward", "args": {}}
+{"cmd": "action", "action": "proceed", "args": {}}
+{"cmd": "action", "action": "select_map_node", "args": {"col": 3, "row": 12}}
+{"cmd": "action", "action": "choose_option", "args": {"option_index": 1}}
+{"cmd": "action", "action": "select_cards", "args": {"indices": 9}}
+{"cmd": "action", "action": "leave_room", "args": {}}
+{"cmd": "action", "action": "select_map_node", "args": {"col": 3, "row": 13}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 2, "target_index": 2}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 2, "target_index": 2}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 2}}
+{"cmd": "action", "action": "end_turn", "args": {}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 2, "target_index": 2}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 3, "target_index": 2}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 1}}
+{"cmd": "action", "action": "end_turn", "args": {}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 1, "target_index": 3}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 3, "target_index": 2}}
+{"cmd": "get_state"}
+{"cmd": "action", "action": "end_turn", "args": {}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 4, "target_index": 2}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 2}}
+{"cmd": "action", "action": "end_turn", "args": {}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 0, "target_index": 1}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 1, "target_index": 0}}
+{"cmd": "action", "action": "claim_reward", "args": {"reward_index": 2}}
+{"cmd": "action", "action": "claim_reward", "args": {"reward_index": 1}}
+{"cmd": "action", "action": "claim_reward", "args": {"reward_index": 0}}
+{"cmd": "action", "action": "claim_reward", "args": {"reward_index": 3}}
+{"cmd": "action", "action": "select_card_reward", "args": {"card_index": 2}}
+{"cmd": "action", "action": "select_map_node", "args": {"col": 2, "row": 14}}
+{"cmd": "action", "action": "use_potion", "args": {"potion_index": 0}}
+{"cmd": "action", "action": "select_cards", "args": {"indices": 2}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 0, "target_index": 0}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 4, "target_index": 0}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 0, "target_index": 0}}
+{"cmd": "action", "action": "claim_reward", "args": {"reward_index": 0}}
+{"cmd": "action", "action": "proceed", "args": {}}
+{"cmd": "action", "action": "select_map_node", "args": {"col": 2, "row": 15}}
+{"cmd": "action", "action": "choose_option", "args": {"option_index": 0}}
+{"cmd": "action", "action": "leave_room", "args": {}}
+{"cmd": "action", "action": "select_map_node", "args": {"col": 3, "row": 16}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 4, "target_index": 0}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 1, "target_index": 0}}
+{"cmd": "action", "action": "end_turn", "args": {}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 4, "target_index": 0}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 2, "target_index": 0}}
+{"cmd": "action", "action": "end_turn", "args": {}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 3}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 1}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 1}}
+{"cmd": "action", "action": "end_turn", "args": {}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 2, "target_index": 0}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 3, "target_index": 0}}
+{"cmd": "action", "action": "end_turn", "args": {}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 0}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 3}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 0}}
+{"cmd": "action", "action": "select_cards", "args": {"indices": 1}}
+{"cmd": "action", "action": "end_turn", "args": {}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 0, "target_index": 0}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 0, "target_index": 0}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 2}}
+{"cmd": "action", "action": "end_turn", "args": {}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 4}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 2}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 1, "target_index": 0}}
+{"cmd": "action", "action": "end_turn", "args": {}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 0}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 0}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 1}}
+{"cmd": "action", "action": "end_turn", "args": {}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 2, "target_index": 0}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 1}}
+{"cmd": "action", "action": "end_turn", "args": {}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 0}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 2}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 1}}
+{"cmd": "action", "action": "end_turn", "args": {}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 0, "target_index": 0}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 0, "target_index": 0}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 0}}
+{"cmd": "action", "action": "end_turn", "args": {}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 3, "target_index": 0}}
+{"cmd": "action", "action": "claim_reward", "args": {"reward_index": 0}}
+{"cmd": "action", "action": "claim_reward", "args": {"reward_index": 1}}
+{"cmd": "action", "action": "claim_reward", "args": {"reward_index": 2}}
+{"cmd": "action", "action": "select_card_reward", "args": {"card_index": 1}}
+{"cmd": "get_state"}
+{"cmd": "action", "action": "select_map_node", "args": {"col": 3, "row": 0}}
+{"cmd": "action", "action": "choose_option", "args": {"option_index": 1}}
+{"cmd": "action", "action": "select_cards", "args": {"indices": "0,1,4,5"}}
+{"cmd": "action", "action": "choose_option", "args": {"option_index": 0}}
+{"cmd": "action", "action": "select_map_node", "args": {"col": 5, "row": 1}}
+{"cmd": "action", "action": "use_potion", "args": {"potion_index": 0}}
+{"cmd": "action", "action": "skip_select", "args": {}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 4, "target_index": 1}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 1, "target_index": 1}}
+{"cmd": "action", "action": "end_turn", "args": {}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 0}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 2, "target_index": 0}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 2}}
+{"cmd": "action", "action": "end_turn", "args": {}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 3, "target_index": 0}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 1}}
+{"cmd": "action", "action": "end_turn", "args": {}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 4, "target_index": 0}}
+{"cmd": "action", "action": "claim_reward", "args": {"reward_index": 0}}
+{"cmd": "action", "action": "proceed", "args": {}}
+{"cmd": "action", "action": "select_map_node", "args": {"col": 5, "row": 2}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 0, "target_index": 1}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 3, "target_index": 1}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 2}}
+{"cmd": "action", "action": "end_turn", "args": {}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 0, "target_index": 1}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 0}}
+{"cmd": "action", "action": "end_turn", "args": {}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 2, "target_index": 1}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 3, "target_index": 1}}
+{"cmd": "action", "action": "end_turn", "args": {}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 0}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 0, "target_index": 0}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 0}}
+{"cmd": "action", "action": "claim_reward", "args": {"reward_index": 0}}
+{"cmd": "action", "action": "claim_reward", "args": {"reward_index": 1}}
+{"cmd": "action", "action": "proceed", "args": {}}
+{"cmd": "action", "action": "select_map_node", "args": {"col": 4, "row": 3}}
+{"cmd": "action", "action": "choose_option", "args": {"option_index": 1}}
+{"cmd": "action", "action": "select_cards", "args": {"indices": 4}}
+{"cmd": "action", "action": "choose_option", "args": {"option_index": 0}}
+{"cmd": "action", "action": "select_map_node", "args": {"col": 5, "row": 4}}
+{"cmd": "action", "action": "buy_relic", "args": {"relic_index": 2}}
+{"cmd": "action", "action": "buy_potion", "args": {"potion_index": 1}}
+{"cmd": "action", "action": "buy_card", "args": {"card_index": 4}}
+{"cmd": "action", "action": "leave_room", "args": {}}
+{"cmd": "action", "action": "select_map_node", "args": {"col": 6, "row": 5}}
+{"cmd": "action", "action": "choose_option", "args": {"option_index": 0}}
+{"cmd": "action", "action": "select_cards", "args": {"indices": "1,3"}}
+{"cmd": "action", "action": "choose_option", "args": {"option_index": 0}}
+{"cmd": "action", "action": "select_map_node", "args": {"col": 6, "row": 6}}
+{"cmd": "action", "action": "choose_option", "args": {"option_index": 0}}
+{"cmd": "action", "action": "leave_room", "args": {}}
+{"cmd": "action", "action": "select_map_node", "args": {"col": 6, "row": 7}}
+{"cmd": "action", "action": "use_potion", "args": {"potion_index": 1, "target_index": 0}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 2, "target_index": 0}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 2}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 0, "target_index": 0}}
+{"cmd": "action", "action": "end_turn", "args": {}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 0, "target_index": 3}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 1}}
+{"cmd": "action", "action": "end_turn", "args": {}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 0, "target_index": 3}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 1, "target_index": 3}}
+{"cmd": "action", "action": "play_card", "args": {"card_index": 0}}
+{"cmd": "action", "action": "claim_reward", "args": {"reward_index": 0}}
+{"cmd": "action", "action": "claim_reward", "args": {"reward_index": 1}}
+{"cmd": "action", "action": "claim_reward", "args": {"reward_index": 2}}
+{"cmd": "action", "action": "select_card_reward", "args": {"card_index": 1}}
+{"cmd": "action", "action": "select_map_node", "args": {"col": 6, "row": 8}}
+{"cmd": "action", "action": "skip_treasure_relic", "args": {}}
+{"cmd": "action", "action": "select_map_node", "args": {"col": 6, "row": 9}}
+{"cmd": "action", "action": "use_potion", "args": {"potion_index": 1}}
+{"cmd": "action", "action": "select_cards", "args": {"indices": 1}}

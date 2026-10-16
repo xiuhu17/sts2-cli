@@ -12,6 +12,28 @@ from engine import PROJECT, engine_command, find_dotnet  # noqa: E402
 DOTNET = find_dotnet() or "dotnet"
 
 
+STS2 = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin", "sts2")
+
+
+def stop_session(session, env):
+    """`sts2 stop --forget`, wait for the daemon to exit, then remove whatever session file is
+    left in $TMPDIR (socket, lock, log, run file): a test session leaves nothing behind."""
+    import time
+    from sts2_daemon import paths
+    subprocess.run([STS2, "stop", "--forget"], env=env, capture_output=True, timeout=60)
+    deadline = time.time() + 15
+    while time.time() < deadline and subprocess.run(["pgrep", "-f", f"sts2_daemon.py {session}$"],
+                                                    capture_output=True).returncode == 0:
+        time.sleep(0.05)
+    sock, log = paths(session)
+    base = sock[:-len(".sock")]
+    for p in (sock, log, base + ".lock", base + ".run.jsonl"):
+        try:
+            os.unlink(p)
+        except OSError:
+            pass
+
+
 class Game:
     """Wraps the headless C# process for testing."""
 

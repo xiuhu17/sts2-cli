@@ -7,6 +7,8 @@ import time
 
 import pytest
 
+from conftest import stop_session
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STS2 = os.path.join(ROOT, "bin", "sts2")
 
@@ -22,7 +24,7 @@ def sts2():
         return p.returncode, p.stdout
 
     yield run
-    run("stop")
+    stop_session(env["STS2_SESSION"], env)
 
 
 def test_play_a_few_steps(sts2):
@@ -118,7 +120,7 @@ def test_concurrent_first_calls_start_one_daemon():
         pids = subprocess.run(["pgrep", "-f", f"sts2_daemon.py {session}"], capture_output=True, text=True).stdout.split()
         assert len(pids) == 1, pids
     finally:
-        subprocess.run([STS2, "stop"], env=env, capture_output=True, timeout=60)
+        stop_session(session, env)
 
 
 @pytest.mark.parametrize("args", [[], ["--help"], ["-h"], ["help"], ["--json", "help"]])
@@ -178,3 +180,60 @@ def test_render_softlock_popup_and_dialogue_pool():
     out = sts2_daemon.render_decision(pop, list(enumerate(pop["legal_actions"], 1)))
     assert "one of 2 dialogues at random" in out and "- second" in out
     assert "[Are you sure?] A loss." in out and "dialogue_pool:" not in out
+
+
+@pytest.mark.parametrize("args", [["log", "x"], ["log", "0"], ["log", "-3"], ["log", "5", "6"], ["map", "extra"],
+                                  ["state", "x"], ["relics", "x"], ["potions", "--all"], ["deck", "--bogus"],
+                                  ["piles", "draw", "hand"], ["card", "0", "1"], ["status", "x"], ["stop", "now"]])
+def test_bad_arguments_are_usage_errors(sts2, args):
+    rc, out = sts2(*args)
+    assert rc == 1 and "usage: sts2 " + args[0] in out, (args, rc, out)
+
+
+def _session_files(session):
+    import sys
+    sys.path.insert(0, os.path.join(ROOT, "python"))
+    from sts2_daemon import paths
+    sock, log = paths(session)
+    base = sock[:-len(".sock")]
+    return {"sock": sock, "log": log, "lock": base + ".lock", "run": base + ".run.jsonl"}
+
+
+def _wait_daemon_gone(session):
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        if subprocess.run(["pgrep", "-f", f"sts2_daemon.py {session}$"], capture_output=True).returncode != 0:
+            return
+        time.sleep(0.05)
+    raise AssertionError("daemon did not exit")
+
+
+def test_stop_leaves_only_the_run_file():
+    """A stopped daemon removes its socket, lock and (empty) log; the run file stays so the
+    next call replays the run, and `stop --forget` removes it too."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("STS2_DEBUG")}
+    session = f"pytestfiles{os.getpid()}"
+    env["STS2_SESSION"] = session
+    files = _session_files(session)
+    try:
+        p = subprocess.run([STS2, "start", "--character", "Ironclad", "--seed", "files1"], capture_output=True,
+                           text=True, env=env, timeout=120)
+        assert p.returncode == 0, p.stdout
+        assert all(os.path.exists(files[k]) for k in ("sock", "lock", "run"))
+        subprocess.run([STS2, "stop"], capture_output=True, env=env, timeout=60)
+        _wait_daemon_gone(session)
+        assert not any(os.path.exists(files[k]) for k in ("sock", "lock", "log")), files
+        assert os.path.exists(files["run"])
+        # The run comes back on the next call.
+        p = subprocess.run([STS2, "--json", "state"], capture_output=True, text=True, env=env, timeout=120)
+        assert json.loads(p.stdout)["context"]["seed"] == "F1LES1"  # canonicalized like the game (I -> 1)
+        subprocess.run([STS2, "stop", "--forget"], capture_output=True, env=env, timeout=60)
+        _wait_daemon_gone(session)
+        assert not any(os.path.exists(f) for f in files.values()), files
+        # --forget without a daemon removes a leftover run file as well.
+        open(files["run"], "w").close()
+        p = subprocess.run([STS2, "stop", "--forget"], capture_output=True, text=True, env=env, timeout=60)
+        assert p.returncode == 0 and "not running" in p.stdout
+        assert not os.path.exists(files["run"])
+    finally:
+        stop_session(session, env)
