@@ -153,7 +153,9 @@ public partial class RunSimulator
     /// list fields and the upgrade preview.</summary>
     private Dictionary<string, object?> IndexedCardInfo(CardModel c, int index, PileType pile = PileType.Deck)
     {
-        var d = new Dictionary<string, object?> { ["index"] = index };
+        // uid: the card instance (the same id it has in hand), so a client can tell one
+        // screen's options from another's even when names match.
+        var d = new Dictionary<string, object?> { ["index"] = index, ["uid"] = Uid(c) };
         foreach (var kv in ListCardInfo(c, pile)) d[kv.Key] = kv.Value;
         d["after_upgrade"] = GetUpgradedInfo(c);
         return d;

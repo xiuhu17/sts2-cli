@@ -247,8 +247,8 @@ EVENT_FMT = {
     "card_added": lambda e: t("card added: ", "加入卡牌：") + str(e.get("card"))
                   + (" -> " + t(*_PILE_NAMES.get(e["pile"], (e["pile"], e["pile"]))) if e.get("pile") else "")
                   + (t(" (hand full)", "（手牌已满）") if e.get("redirected") == "hand_full" else ""),
-    "speech": lambda e: f"{e.get('speaker')}: \"{e.get('text')}\"",
-    "thought": lambda e: f"{e.get('speaker')} ({t('thinks', '心想')}): \"{e.get('text')}\"",
+    "speech": lambda e: f"{e.get('speaker')}: \"{_one_line(e.get('text'))}\"",
+    "thought": lambda e: f"{e.get('speaker')} ({t('thinks', '心想')}): \"{_one_line(e.get('text'))}\"",
     "afflicted": lambda e: f"{e.get('card')} <{e.get('affliction')}>",
     "orb_channeled": lambda e: t("channeled ", "生成 ") + str(e.get("orb")),
     "potion_used": lambda e: t("used ", "使用 ") + str(e.get("potion")) + (f" -> {e['target']}" if e.get("target") else ""),
@@ -474,9 +474,9 @@ _KNOWN_KEYS = {
                     "draw_pile_count", "discard_pile_count", "exhaust_pile_count", "player_powers", "orbs",
                     "orb_slots", "osty", "enemies", "hand", "inactive_enemies"},
     "card_select": {"purpose", "source", "min_select", "max_select", "prompt", "screen", "cancelable",
-                    "enchantment", "cards", "combat"},
-    "card_reward": {"cards", "can_skip", "alternatives", "from_event", "gold_earned"},
-    "bundle_select": {"bundles"},
+                    "enchantment", "cards", "combat", "selection_id"},
+    "card_reward": {"cards", "can_skip", "alternatives", "from_event", "gold_earned", "selection_id"},
+    "bundle_select": {"bundles", "selection_id"},
     "event_choice": {"event_name", "event_id", "description", "options", "dialogue", "finished", "popup",
                      "dialogue_pool", "dialogue_random", "softlocked", "softlock_reason", "message"},
     "rest_site": {"options", "can_leave", "softlocked", "softlock_reason", "message"},
@@ -896,9 +896,11 @@ class Refs:
       uid (a per-instance id the engine sends) at its current index; gone -> stop.
     - E#: the enemy shown as E#, found again by combat_id; dead or untargetable -> stop.
     - screen indices (choose N, pick N, claim N, buy card N, select i,j, go N, alt N, ...):
-      only on the same kind of screen as shown and only while the item at that index is
-      still the same; otherwise stop. A claimed reward / bought item is left to the engine,
-      whose error then says so.
+      only on the very screen instance that was shown (screen_sig: decision, room, source,
+      purpose, prompt, the offered options' identities and the engine's selection_id) and
+      only while the item at that index is still the same; otherwise stop. Two card
+      selections with the same cards (Burning Pact's, then True Grit+'s) are different
+      screens. A claimed reward / bought item is left to the engine, whose error says so.
     - action number N: the action numbered N in the shown list, remapped the same way.
 
     The first step of a chain is read against that very state, so nothing changes for it."""
@@ -915,6 +917,7 @@ class Refs:
         self.numbered = list(numbered or [])
         self.first = True
         self.moved = []     # "H2 -> H0" notes for the current step
+        self.typed = {}     # (prefix, current index) -> (typed index, name shown) for the current step
 
     @staticmethod
     def combat_of(st):
@@ -960,6 +963,7 @@ class Refs:
                              f"不会改用{ {'card': '另一张牌', 'enemy': '另一个敌人', 'potion': '另一瓶药水'}[what] }"))
         if cur.get("index") != i:
             self.moved.append(f"{prefix}{i} -> {prefix}{cur.get('index')}")
+            self.typed[(prefix, cur.get("index"))] = (i, old.get("name"))
         return cur.get("index")
 
     def hand(self, i, st):
@@ -979,6 +983,7 @@ class Refs:
             raise StopStep(t(f"'{what} {i}' would pick from a {cd} screen this chain has not shown you "
                              f"(it started at {sd}); look at it first",
                              f"'{what} {i}' 会在指令链未显示过的 {cd} 界面上选择（链开始于 {sd}）；请先查看"))
+        self.same_screen(f"{what} {i}", st)
         old = next((x for x in self.snap.get(key) or [] if isinstance(x, dict) and x.get("index") == i), None)
         new = next((x for x in (st or {}).get(key) or [] if isinstance(x, dict) and x.get("index") == i), None)
         if old is None:
@@ -992,6 +997,16 @@ class Refs:
             raise StopStep(t(f"{what} {i} is now {_item_label(new)} (it was {_item_label(old)} when this chain started)",
                              f"{what} {i} 现在是 {_item_label(new)}（指令链开始时是 {_item_label(old)}）"))
         return i
+
+    def same_screen(self, step, st):
+        """Stop unless `st` is the screen instance the chain started on."""
+        if self.first or same_screen(self.snap, st):
+            return
+        raise StopStep(t(f"'{step}' would pick from a different {(st or {}).get('decision')} screen than the one "
+                         f"this chain started on (now: {screen_desc(st)}; shown: {screen_desc(self.snap)}); "
+                         "look at it first",
+                         f"'{step}' 会在另一个 {(st or {}).get('decision')} 界面上选择，而不是指令链开始时的那个"
+                         f"（现在：{screen_desc(st)}；当时显示：{screen_desc(self.snap)}）；请先查看"))
 
     def numbered_action(self, n, st, act):
         """The action numbered n in the shown list, its references resolved against `st`."""
@@ -1009,13 +1024,95 @@ class Refs:
             for x in str(args["indices"]).split(","):
                 if x.strip().isdigit():
                     self.screen("cards", int(x), st, "select")
-        if a == "select_map_node" and (st or {}).get("decision") != self.snap.get("decision"):
-            raise StopStep(t(f"action {n} was a map move; the game is now at {(st or {}).get('decision')}",
-                             f"操作 {n} 是地图移动；游戏现在处于 {(st or {}).get('decision')}"))
+        if a == "select_map_node" and not same_screen(self.snap, st):
+            raise StopStep(t(f"action {n} was a move on the map you saw; the game is now at {screen_desc(st)}",
+                             f"操作 {n} 是你看到的地图上的移动；游戏现在处于 {screen_desc(st)}"))
         if a in self._SCREEN:
             key, arg, what = self._SCREEN[a]
             self.screen(key, args.get(arg), st, what)
         return {"action": a, **({"args": args} if args else {})}
+
+
+def _opt_id(x):
+    """One offered option's identity: its instance id when the engine sends one."""
+    if not isinstance(x, dict):
+        return json.dumps(x, sort_keys=True)
+    if x.get("uid") is not None:
+        return ("uid", x["uid"], x.get("index"))
+    return (x.get("index"),) + _item_key(x)
+
+
+def screen_sig(st):
+    """What identifies one screen instance (see Refs): two states with the same signature
+    are the same screen as far as an index step can tell. Rewards / shop screens lose items
+    as they are taken: same_screen compares their items as a subset."""
+    st = st or {}
+    d = st.get("decision")
+    ctx = st.get("context") or {}
+    room = (ctx.get("act"), ctx.get("floor"), ctx.get("total_floor"))
+    src = st.get("source") if isinstance(st.get("source"), dict) else {"name": st.get("source")}
+    opts = lambda key: tuple(_opt_id(x) for x in st.get(key) or [])
+    if d == "card_select":
+        return (d, room, st.get("selection_id"), src.get("name"), src.get("kind"), st.get("purpose"),
+                st.get("prompt"), st.get("screen"), st.get("min_select"), st.get("max_select"), opts("cards"))
+    if d == "card_reward":
+        return (d, room, st.get("selection_id"), st.get("from_event"), opts("cards"), opts("alternatives"))
+    if d == "bundle_select":
+        return (d, room, st.get("selection_id"), opts("bundles"))
+    if d == "event_choice":
+        return (d, room, st.get("event_id") or st.get("event_name"), _one_line(st.get("description")),
+                tuple((o.get("index"), o.get("title"), o.get("option_id"), o.get("text_key"))
+                      for o in st.get("options") or [] if isinstance(o, dict)))
+    if d == "rest_site":
+        return (d, room, tuple((o.get("index"), o.get("option_id"), o.get("title"))
+                               for o in st.get("options") or [] if isinstance(o, dict)))
+    if d == "treasure_relic":
+        return (d, room, opts("relics"))
+    if d == "map_select":
+        return (d, ctx.get("act"), ctx.get("floor"),
+                tuple((c.get("col"), c.get("row")) for c in st.get("choices") or [] if isinstance(c, dict)))
+    if d in ("rewards", "shop"):
+        return (d, room, src.get("name"))
+    return (d, room)
+
+
+def same_screen(a, b):
+    if screen_sig(a) != screen_sig(b):
+        return False
+    d = (a or {}).get("decision")
+    if d in ("rewards", "shop"):
+        # Taking an item removes it (or marks it sold): every item still listed must be one
+        # that was shown, at the same index.
+        for key in ("rewards",) if d == "rewards" else ("cards", "relics", "potions"):
+            shown = {x.get("index"): _item_key(x) for x in (a or {}).get(key) or [] if isinstance(x, dict)}
+            for x in (b or {}).get(key) or []:
+                if isinstance(x, dict) and x.get("is_stocked") is not False and shown.get(x.get("index")) != _item_key(x):
+                    return False
+    return True
+
+
+def screen_desc(st):
+    """A short description of a screen instance, for "different screen" messages."""
+    st = st or {}
+    d = st.get("decision")
+    if d == "card_select":
+        src = (st.get("source") or {}).get("name") if isinstance(st.get("source"), dict) else st.get("source")
+        bits = [f"[{st.get('purpose', 'choose')}]"]
+        if _one_line(st.get("prompt")):
+            bits.append(_one_line(st.get("prompt")))
+        if src:
+            bits.append(t(f"from {src}", f"来自 {src}"))
+        bits.append(t("cards: ", "卡牌：") + ", ".join(f"{c.get('index')} {c.get('name')}" for c in st.get("cards") or []
+                                                      if isinstance(c, dict)))
+        return f"{d} " + " ".join(bits)
+    if d == "card_reward":
+        return f"{d} " + ", ".join(f"{c.get('index')} {c.get('name')}" for c in st.get("cards") or [] if isinstance(c, dict))
+    if d == "event_choice":
+        return f"{d}{' ' + str(st['event_name']) if st.get('event_name') else ''}: " + ", ".join(
+            f"{o.get('index')} {o.get('title')}" for o in st.get("options") or [] if isinstance(o, dict))
+    if d == "map_select":
+        return f"{d} " + ", ".join(f"go {c.get('col')} {c.get('row')}" for c in st.get("choices") or [] if isinstance(c, dict))
+    return str(d)
 
 
 def _item_key(x):
@@ -1031,6 +1128,54 @@ def _item_label(x):
     if x.get("col") is not None and x.get("row") is not None:
         return f"({x['col']},{x['row']}) {zh_term('room', x.get('type'))}"
     return f"'{name}'"
+
+
+def index_range(indices, word=""):
+    """'0-3' / '0, 2, 5' / 'none' for a list of indices: never an empty or negative range."""
+    xs = sorted({x for x in indices if isinstance(x, int)})
+    if not xs:
+        return t("none", "无")
+    if xs == list(range(xs[0], xs[-1] + 1)) and len(xs) > 2:
+        return f"{word}{xs[0]}-{word}{xs[-1]}"
+    return ", ".join(f"{word}{x}" for x in xs)
+
+
+def legal_now(st, limit=12):
+    """The legal actions of `st` as short labels (for "not here" errors)."""
+    acts = [a for a in (st or {}).get("legal_actions") or [] if isinstance(a, dict)]
+    labels = [f"[{n}] {action_label(a, st)}" for n, a in enumerate(acts, 1)]
+    if not labels:
+        return t("none", "无")
+    more = len(labels) - limit
+    return "; ".join(labels[:limit]) + (t(f"; ... ({more} more: sts2 state)", f"；……（另有 {more} 项：sts2 state）") if more > 0 else "")
+
+
+# verb -> (decisions it picks from, what it picks: en, zh)
+_SCREEN_VERBS = {
+    "choose": (("event_choice", "rest_site"), ("an event or rest site option", "事件或休息处选项")),
+    "go": (("map_select",), ("a map choice", "地图选项")),
+    "pick": (("card_reward", "treasure_relic", "rewards", "card_select", "bundle_select"),
+             ("a card reward card, treasure relic, reward, card or pack", "卡牌奖励、宝箱遗物、奖励、卡牌或卡包")),
+    "select": (("card_select",), ("cards on a card selection screen", "选牌界面上的卡牌")),
+    "alt": (("card_reward",), ("a card reward alternative", "卡牌奖励的其他选项")),
+    "claim": (("rewards",), ("a reward on the rewards screen", "奖励界面上的奖励")),
+    "buy": (("shop",), ("a shop item", "商店商品")),
+    "bundle": (("bundle_select",), ("a card pack", "卡包")),
+    "relic": (("treasure_relic",), ("a treasure relic", "宝箱遗物")),
+    "skip": (("card_reward", "card_select", "treasure_relic", "rewards"),
+             ("a card reward, card selection, treasure or rewards screen", "卡牌奖励、选牌、宝箱或奖励界面")),
+}
+
+
+def _needs_screen(verb, step, st):
+    """VerbError unless the current decision has what `verb` picks from."""
+    decs, (en, zh) = _SCREEN_VERBS[verb]
+    dec = (st or {}).get("decision")
+    if dec in decs:
+        return
+    raise VerbError(t(f"'{step}' picks {en}, but the current decision is {dec}: there is none here now. "
+                      f"Legal now: {legal_now(st)}",
+                      f"'{step}' 用于选择{zh}，但当前决策是 {dec}：现在这里没有这类选项。现在可选：{legal_now(st)}"))
 
 
 def _int(s, what):
@@ -1134,7 +1279,8 @@ def parse_verb(text, st, numbered, refs=None):
                 if "choose" in act or "choose_cell" in act:
                     raise VerbError(f"action {n} needs arguments: {action_label(act, refs.snap if not refs.first else st)}")
                 return refs.numbered_action(n, st, act)
-        raise VerbError(f"no action number {n} (have 1-{len(shown)}; run 'sts2 state')")
+        raise VerbError(t(f"no action number {n} (have {index_range([m for m, _ in shown])}; run 'sts2 state')",
+                          f"没有操作编号 {n}（现有：{index_range([m for m, _ in shown])}；运行 'sts2 state'）"))
     if v == "raw":
         try:
             obj = json.loads(" ".join(a))
@@ -1174,6 +1320,7 @@ def parse_verb(text, st, numbered, refs=None):
     if v in ("discard", "toss"):
         return {"action": "discard_potion", "args": {"potion_index": refs.potion(_int(a[0] if a else "", "potion"), st)}}
     if v in ("choose", "opt", "option", "o", "c"):
+        _needs_screen("choose", text, st)
         return {"action": "choose_option", "args": {"option_index": refs.screen("options", _int(a[0] if a else "", "option"), st, "choose")}}
     if v in ("go", "node", "n", "path"):
         a = " ".join(a).replace("(", " ").replace(")", " ").replace(",", " ").split()  # go (3,5) / go 3,5
@@ -1183,15 +1330,21 @@ def parse_verb(text, st, numbered, refs=None):
         i = _int(a[0] if a else "", "choice")
         if not refs.first:
             # go N = the Nth listed move: only on the map screen the chain started from.
-            if dec != refs.snap.get("decision") or [(c.get("col"), c.get("row")) for c in choices] != \
-                    [(c.get("col"), c.get("row")) for c in refs.snap.get("choices") or []]:
-                raise StopStep(t(f"'go {i}' means the {i}th move on the map you saw; the game is now at {dec} - use go COL ROW",
-                                 f"'go {i}' 指你看到的地图上的第 {i} 个选项；游戏现在处于 {dec}——请用 go COL ROW"))
+            if not same_screen(refs.snap, st):
+                raise StopStep(t(f"'go {i}' means move {i} on the map you saw; the game is now at {screen_desc(st)} "
+                                 "- use go COL ROW",
+                                 f"'go {i}' 指你看到的地图上的第 {i} 个选项；游戏现在处于 {screen_desc(st)}——请用 go COL ROW"))
+        _needs_screen("go", text, st)
         if not 0 <= i < len(choices):
-            raise VerbError(f"go <0-{len(choices) - 1}> picks a map choice (or go <col> <row>)")
+            have = "; ".join(f"go {n} = go {c.get('col')} {c.get('row')} {zh_term('room', c.get('type'))}"
+                             for n, c in enumerate(choices)) or t("none", "无")
+            raise VerbError(t(f"there is no map choice {i}: the map has {len(choices)} choice(s) now ({have}); "
+                              "or go COL ROW (sts2 map)",
+                              f"没有地图选项 {i}：地图现在有 {len(choices)} 个选项（{have}）；也可以用 go COL ROW（sts2 map）"))
         return {"action": "select_map_node", "args": {"col": choices[i]["col"], "row": choices[i]["row"]}}
     if v in ("pick", "take"):
         n = _int(a[0] if a else "", "index")
+        _needs_screen("pick", text, st)
         if dec == "card_reward":
             return {"action": "select_card_reward", "args": {"card_index": refs.screen("cards", n, st, "pick")}}
         if dec == "treasure_relic":
@@ -1202,13 +1355,14 @@ def parse_verb(text, st, numbered, refs=None):
             return {"action": "select_cards", "args": {"indices": str(refs.screen("cards", n, st, "pick"))}}
         if dec == "bundle_select":
             return {"action": "select_bundle", "args": {"bundle_index": refs.screen("bundles", n, st, "pick")}}
-        raise VerbError(f"'pick' does not apply to {dec}")
     if v in ("select", "sel", "s"):
         if [x.lower() for x in a] in (["none"], ["-"]):
+            _needs_screen("select", text, st)
             return {"action": "select_cards", "args": {"indices": ""}}  # confirm nothing (min_select 0)
         idx = ",".join(x for part in a for x in part.split(",") if x.strip())
         if not idx:
             raise VerbError("select <i,j,...> (or select none: confirm with no card when min_select is 0)")
+        _needs_screen("select", text, st)
         for x in idx.split(","):
             if x.strip().isdigit():
                 refs.screen("cards", int(x), st, "select")
@@ -1219,13 +1373,14 @@ def parse_verb(text, st, numbered, refs=None):
         # A min-0 screen without a cancel button: "skip" is confirming with nothing selected.
         if dec == "card_select" and not (st or {}).get("cancelable") and (st or {}).get("min_select") == 0:
             return {"action": "select_cards", "args": {"indices": ""}}
-        if dec not in m:
-            raise VerbError(f"'skip' does not apply to {dec}")
+        _needs_screen("skip", text, st)
         return {"action": m[dec]}
     if v in ("alt", "alternative", "reroll"):
+        _needs_screen("alt", text, st)
         return {"action": "select_card_alternative",
                 "args": {"alternative_index": refs.screen("alternatives", _int(a[0] if a else "", "alternative"), st, "alt")}}
     if v == "claim":
+        _needs_screen("claim", text, st)
         return {"action": "claim_reward", "args": {"reward_index": refs.screen("rewards", _int(a[0] if a else "", "reward"), st, "claim")}}
     if v == "buy":
         if not a:
@@ -1238,6 +1393,7 @@ def parse_verb(text, st, numbered, refs=None):
         if not verb or idx is None:
             raise VerbError("buy card|relic|potion <index>")
         key = {"c": "cards", "r": "relics", "p": "potions"}[k]
+        _needs_screen("buy", text, st)
         return {"action": verb[0], "args": {verb[1]: refs.screen(key, _int(idx, "index"), st, f"buy {key[:-1]}")}}
     if v in ("remove", "removal"):
         return {"action": "remove_card"}
@@ -1246,8 +1402,10 @@ def parse_verb(text, st, numbered, refs=None):
     if v in ("leave", "exit"):
         return {"action": "leave_room"}
     if v in ("bundle", "pack"):
+        _needs_screen("bundle", text, st)
         return {"action": "select_bundle", "args": {"bundle_index": refs.screen("bundles", _int(a[0] if a else "", "bundle"), st, "bundle")}}
     if v == "relic":
+        _needs_screen("relic", text, st)
         return {"action": "select_treasure_relic", "args": {"relic_index": refs.screen("relics", _int(a[0] if a else "", "relic"), st, "relic")}}
     if v == "click":
         if len(a) < 2:
@@ -1288,12 +1446,23 @@ def card_ref_text(c):
     return s
 
 
-def describe_refs(action, st, rewards_seen=None):
-    """What each index in an engine action refers to in `st` (for error messages)."""
+def describe_refs(action, st, rewards_seen=None, typed=None):
+    """What each index in an engine action refers to in `st` (for error messages). `typed`
+    (Refs.typed) maps a remapped index back to the one the step was written with, so the
+    message talks about the index that was typed: "H2 (Defend as shown when the chain
+    started, now H1) is ..."."""
     a = action.get("action")
     args = action.get("args") or {}
     out = []
     cb = Refs.combat_of(st) or {}
+    typed = typed or {}
+
+    def ref(prefix, i):
+        if (prefix, i) not in typed:
+            return f"{prefix}{i}"
+        n, name = typed[(prefix, i)]
+        return t(f"{prefix}{n} ({name} as shown when the chain started, now {prefix}{i})",
+                 f"{prefix}{n}（指令链开始时显示的 {name}，现在是 {prefix}{i}）")
 
     def listing(items, prefix):
         return ", ".join(f"{prefix}{x.get('index')} {x.get('name') or x.get('title')}" for x in items if isinstance(x, dict)) \
@@ -1302,7 +1471,8 @@ def describe_refs(action, st, rewards_seen=None):
     if "card_index" in args and a == "play_card":
         i, hand = args["card_index"], cb.get("hand") or []
         c = next((x for x in hand if x.get("index") == i), None)
-        out.append(t(f"H{i} is now {card_ref_text(c)}", f"H{i} 现在是 {card_ref_text(c)}") if c else
+        out.append((t(f"{ref('H', i)} is {card_ref_text(c)}", f"{ref('H', i)}是 {card_ref_text(c)}") if ("H", i) in typed else
+                    t(f"H{i} is now {card_ref_text(c)}", f"H{i} 现在是 {card_ref_text(c)}")) if c else
                    t(f"there is no H{i} (hand: {listing(hand, 'H')})", f"没有 H{i}（手牌：{listing(hand, 'H')}）"))
     if "potion_index" in args and a in ("use_potion", "discard_potion"):
         i = args["potion_index"]
@@ -1310,16 +1480,16 @@ def describe_refs(action, st, rewards_seen=None):
         p = next((x for x in pots if x.get("index") == i), None)
         if p:
             tt = _TARGET_TEXT.get(p.get("target_type"))
-            out.append(t(f"P{i} is now {p.get('name')} ({tt[0] if tt else p.get('target_type')}, {p.get('usage')}"
+            out.append(t(f"{ref('P', i)} is{'' if ('P', i) in typed else ' now'} {p.get('name')} ({tt[0] if tt else p.get('target_type')}, {p.get('usage')}"
                          + ("" if p.get("can_use", True) else ", can't be used now") + ")",
-                         f"P{i} 现在是 {p.get('name')}（{tt[1] if tt else p.get('target_type')}，{p.get('usage')}"
+                         f"{ref('P', i)}{'是' if ('P', i) in typed else ' 现在是'} {p.get('name')}（{tt[1] if tt else p.get('target_type')}，{p.get('usage')}"
                          + ("" if p.get("can_use", True) else "，现在不能使用") + "）"))
         else:
             out.append(t(f"there is no P{i} (potions: {listing(pots, 'P')})", f"没有 P{i}（药水：{listing(pots, 'P')}）"))
     if "target_index" in args:
         j, ens = args["target_index"], cb.get("enemies") or []
         e = next((x for x in ens if x.get("index") == j), None)
-        out.append(t(f"E{j} is {e.get('name')} (HP {e.get('hp')}/{e.get('max_hp')})", f"E{j} 是 {e.get('name')}（生命 {e.get('hp')}/{e.get('max_hp')}）")
+        out.append(t(f"{ref('E', j)} is {e.get('name')} (HP {e.get('hp')}/{e.get('max_hp')})", f"{ref('E', j)}{'' if ('E', j) in typed else ' '}是 {e.get('name')}（生命 {e.get('hp')}/{e.get('max_hp')}）")
                    if e else t(f"there is no E{j} (targets: {listing(ens, 'E')})", f"没有 E{j}（可选目标：{listing(ens, 'E')}）"))
     if a in Refs._SCREEN:
         key, arg, what = Refs._SCREEN[a]
@@ -1354,7 +1524,7 @@ def describe_refs(action, st, rewards_seen=None):
             x = x.strip()
             c = cards.get(int(x)) if x.isdigit() else None
             out.append(t(f"card {x} is {c.get('name')}", f"卡牌 {x} 是 {c.get('name')}") if c else
-                       t(f"there is no card {x} (0-{len(cards) - 1})", f"没有卡牌 {x}（0-{len(cards) - 1}）"))
+                       t(f"there is no card {x} (have: {index_range(cards)})", f"没有卡牌 {x}（现有：{index_range(cards)}）"))
         if st.get("min_select") is not None:
             out.append(t(f"this screen takes {st.get('min_select')}-{st.get('max_select')} cards",
                          f"此界面需选择 {st.get('min_select')}-{st.get('max_select')} 张牌"))
@@ -1398,15 +1568,19 @@ shown when you submitted it (the last state/do reply):
             exhausted, transformed) -> the chain stops, never a different card.
             "play H0; play H1" = the cards shown as H0 and H1; "play H0; play H0" stops.
   E#        that enemy (by combat_id); dead -> stop.     N   that numbered action, remapped.
-  choose / pick / claim / buy / select / alt / go N   only on the same kind of screen and
-            while that item is unchanged; a screen you have not seen yet (the card reward
-            `claim 2` opens) stops the chain before such a step. raw / engine verbs: as written.
+  choose / pick / claim / buy / select / alt / go N   only on the very screen shown (same
+            source, prompt and offered items: True Grit+'s exhaust screen after Burning
+            Pact's is another screen) and while that item is unchanged; a screen you have
+            not seen yet (the card reward `claim 2` opens) stops the chain before such a
+            step. raw / engine verbs: as written.
 The chain goes on while the next step is legal and unambiguous where the game is now, also
 after the decision type changed ("pick 1; proceed", "select 1; end" after a mid-turn card
 selection). It stops before the next step on a new room, a fight starting or ending, a new
 turn, the end of the run, a step that does not apply to the new decision, a potion step on
 another screen than the chain started at, an index that can't be resolved (above), and at
-the first error (which says what each index refers to now).
+the first error (which says what each index refers to now, by the index you typed:
+"H2 (Defend as shown when the chain started, now H1) is ..."). A screen verb on a decision
+without that screen (go N in a fight) says what the decision is and lists the legal actions.
 Reward numbers are STABLE: claiming one does not renumber the rest ("claim 0; claim 1" is
 fine); claiming a gone index says it was already claimed.
 
@@ -1761,6 +1935,7 @@ class Daemon:
             dec = st.get("decision") if st else None
             refs.first = i == 0
             refs.moved = []
+            refs.typed = {}
             if i > 0:
                 why = self._boundary(start, st)
                 if why:
@@ -1798,7 +1973,7 @@ class Daemon:
                 label += "  (" + t("shown as ", "原为 ") + ", ".join(m.split(" -> ")[0] for m in refs.moved) + ")"
             r = self.send({"cmd": "action", **action}, record=True)
             if r.get("type") == "error":
-                results.append({"step": step, "ok": False, "error": self._explain(action, st, r)})
+                results.append({"step": step, "ok": False, "error": self._explain(action, st, r, refs.typed)})
                 if r.get("code") == "flow_failed" and isinstance(r.get("state"), dict):
                     self._set_last(r["state"])
                     events.extend(r["state"].get("events") or [])
@@ -1833,7 +2008,7 @@ class Daemon:
     def _events_key(st):
         return json.dumps((st or {}).get("events") or [], sort_keys=True, ensure_ascii=False)
 
-    def _explain(self, action, st, r):
+    def _explain(self, action, st, r, typed=None):
         """An engine error for one step, led by what each index in it refers to now."""
         import re
         msg = str(r.get("message") or r.get("code"))
@@ -1844,7 +2019,7 @@ class Daemon:
         inner = re.search(r"is not one of the legal actions \((.*)\)\.?$", reason)
         if inner:
             reason = inner.group(1)
-        refs = describe_refs(action, st or {}, self._rewards_seen)
+        refs = describe_refs(action, st or {}, self._rewards_seen, typed)
         if not refs:
             return msg
         if action.get("action") == "claim_reward" and (action.get("args") or {}).get("reward_index") in self._rewards_seen \

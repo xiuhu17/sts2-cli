@@ -117,8 +117,12 @@ def test_screen_indices_need_the_same_screen_and_item():
     ev = {"decision": "event_choice", "options": [{"index": 0, "title": "Light Door"}]}
     refs = d.Refs(ev, [])
     refs.first = False
-    with pytest.raises(d.StopStep, match="choose 0 is now 'Leave' \\(it was 'Light Door'"):
+    # Another event page is another screen, even when its option 0 looks the same.
+    with pytest.raises(d.StopStep, match="different event_choice screen .*now: event_choice: 0 Leave; shown: event_choice: 0 Light Door"):
         d.parse_verb("choose 0", dict(ev, options=[{"index": 0, "title": "Leave"}]), [], refs)
+    with pytest.raises(d.StopStep, match="different event_choice screen"):
+        d.parse_verb("choose 0", dict(ev, description="The door opens."), [], refs)
+    assert d.parse_verb("choose 0", dict(ev), [], refs)["args"] == {"option_index": 0}  # the same page (a looping event)
 
 
 def test_index_errors_say_what_the_index_is_now():
@@ -323,3 +327,143 @@ def test_live_hand_indices_never_slip(sts2):
     assert out.count("ok: play") == 2 and "(shown as H2)" in out, out
     now = json.loads(sts2("--json", "state")[1])
     assert [c["uid"] for c in now["hand"]] == [shown[0]["uid"]] + [c["uid"] for c in shown[3:]]
+
+
+# ───────────────────────────── screen instances, typed indices, no-screen errors ─────────────────────────────
+
+def _sel(source, cards, sid, purpose="exhaust", prompt="Choose 1 card to Exhaust."):
+    return {"type": "decision", "decision": "card_select", "context": {"act": 1, "floor": 7}, "selection_id": sid,
+            "purpose": purpose, "prompt": prompt, "screen": "hand", "min_select": 1, "max_select": 1,
+            "source": {"name": source, "kind": "card"},
+            "cards": [dict(c, index=i) for i, c in enumerate(cards)],
+            "legal_actions": [{"action": "select_cards", "args": {"indices": str(i)}} for i in range(len(cards))]}
+
+
+def test_index_steps_only_on_the_screen_instance_shown():
+    strike, defend = _card(0, 21, "Strike"), _card(1, 22, "Defend", "Skill", "Self")
+    shown = _sel("Burning Pact", [strike, defend], 5)
+    refs = d.Refs(shown, [])
+    refs.first = False
+    # Same decision type, same cards, but True Grit+'s screen (another selection_id / source).
+    other = _sel("True Grit+", [strike, defend], 9)
+    with pytest.raises(d.StopStep, match="'select 0' would pick from a different card_select screen.*from True Grit\\+"
+                                         ".*shown: .*from Burning Pact"):
+        d.parse_verb("select 0", other, [], refs)
+    with pytest.raises(d.StopStep, match="different card_select screen"):
+        refs.numbered_action(1, other, {"action": "select_cards", "args": {"indices": "0"}})
+    # An engine without selection_id: the source / prompt / offered instances still tell them apart.
+    no_id = lambda st: {k: v for k, v in st.items() if k != "selection_id"}
+    refs = d.Refs(no_id(shown), [])
+    refs.first = False
+    with pytest.raises(d.StopStep):
+        d.parse_verb("select 0", no_id(other), [], refs)
+    with pytest.raises(d.StopStep):  # same source and prompt, other card instances
+        d.parse_verb("select 0", no_id(_sel("Burning Pact", [_card(0, 31, "Strike"), defend], None)), [], refs)
+    assert d.parse_verb("select 1", no_id(shown), [], refs)["args"] == {"indices": "1"}
+    # Card rewards: a reroll / second card reward is another screen.
+    cr = {"decision": "card_reward", "selection_id": 3, "cards": [{"index": 0, "uid": 40, "name": "Inflame"}]}
+    refs = d.Refs(cr, [])
+    refs.first = False
+    with pytest.raises(d.StopStep, match="different card_reward screen"):
+        d.parse_verb("pick 0", dict(cr, selection_id=4), [], refs)
+    # Rewards: claiming removes items (same screen); an item that was not shown means another screen.
+    rw = {"decision": "rewards", "context": {"act": 1, "floor": 7},
+          "rewards": [{"index": 0, "type": "gold", "amount": 8}, {"index": 1, "type": "potion", "name": "Fire Potion"}]}
+    refs = d.Refs(rw, [])
+    refs.first = False
+    assert d.parse_verb("claim 1", dict(rw, rewards=rw["rewards"][1:]), [], refs)["args"] == {"reward_index": 1}
+    with pytest.raises(d.StopStep, match="different rewards screen"):
+        d.parse_verb("claim 1", dict(rw, rewards=rw["rewards"][1:] + [{"index": 2, "type": "relic", "name": "Anchor"}]), [], refs)
+    # Map: go N only on the map shown.
+    mp = {"decision": "map_select", "context": {"act": 1, "floor": 3}, "choices": [{"col": 1, "row": 3, "type": "Shop"}]}
+    refs = d.Refs(mp, [])
+    refs.first = False
+    with pytest.raises(d.StopStep, match="'go 0' means move 0 on the map you saw"):
+        d.parse_verb("go 0", dict(mp, choices=[{"col": 2, "row": 3, "type": "Elite"}]), [], refs)
+
+
+def test_error_names_the_typed_index_and_its_remap():
+    st = _combat([_card(0, 12, "Bash"), _card(1, 13, "Defend", "Skill", "Self")])
+    act = {"action": "play_card", "args": {"card_index": 1, "target_index": 0}}
+    typed = {("H", 1): (2, "Defend"), ("E", 0): (1, "Toadpole")}
+    out = d.describe_refs(act, st, typed=typed)
+    assert out == ["H2 (Defend as shown when the chain started, now H1) is Defend (Skill, 1 energy, targets yourself)",
+                   "E1 (Toadpole as shown when the chain started, now E0) is Toadpole (HP 20/20)"]
+    d.LANG["lang"] = "zh"
+    assert d.describe_refs(act, st, typed={("H", 1): (2, "防御")})[0].startswith("H2（指令链开始时显示的 防御，现在是 H1）是 ")
+
+
+def test_no_screen_errors_name_the_decision_and_never_an_empty_range():
+    st = _combat(_hand3())
+    for step, what in (("go 0", "a map choice"), ("choose 1", "an event or rest site option"), ("claim 0", "a reward"),
+                       ("buy card 0", "a shop item"), ("select 0", "cards on a card selection screen"),
+                       ("select none", "cards"), ("alt 0", "a card reward alternative"), ("pick 0", "a card reward"),
+                       ("skip", "a card reward"), ("bundle 0", "a card pack"), ("relic 0", "a treasure relic")):
+        with pytest.raises(d.VerbError) as e:
+            d.parse_verb(step, st, [])
+        msg = str(e.value)
+        assert f"'{step}' picks {what}" in msg and "the current decision is combat_play: there is none here now" in msg, msg
+        assert "Legal now: [1] play H0 Defend; [2] play H1 Bash -> E0 Toadpole" in msg and "-1" not in msg, msg
+    mp = {"decision": "map_select", "choices": [{"col": 1, "row": 3, "type": "Shop"}]}
+    with pytest.raises(d.VerbError, match="there is no map choice 4: the map has 1 choice\\(s\\) now \\(go 0 = go 1 3 Shop\\)"):
+        d.parse_verb("go 4", mp, [])
+    sel = {"decision": "card_select", "cards": [], "min_select": 0, "max_select": 0}
+    assert d.describe_refs({"action": "select_cards", "args": {"indices": "0"}}, sel)[0] == "there is no card 0 (have: none)"
+    assert d.index_range([0, 1, 2, 3]) == "0-3" and d.index_range([]) == "none" and d.index_range([1, 4]) == "1, 4"
+    d.LANG["lang"] = "zh"
+    with pytest.raises(d.VerbError, match="'go 0' 用于选择地图选项，但当前决策是 combat_play：现在这里没有这类选项。现在可选：\\[1\\]"):
+        d.parse_verb("go 0", st, [])
+
+
+class EngineDaemon(d.Daemon):
+    """A Daemon on the debug test engine (conftest Game), for realistic chains."""
+
+    def __init__(self, game, st):
+        super().__init__("pytest-engine")
+        self.game = game
+        self._set_last(st)
+
+    def send(self, cmd, record=False):
+        return self.game.send(cmd)
+
+
+def _fight(game, deck, lang):
+    d.LANG["lang"] = lang
+    game.start("Ironclad", seed="LP3RCEHPWTWW", ascension=10, lang=lang)
+    game.set_player(deck=deck)
+    return EngineDaemon(game, game.enter_room("combat", encounter="SHRINKER_BEETLE_WEAK"))
+
+
+def test_live_chain_stops_on_a_later_card_select(game):
+    # The agent-run repro: Burning Pact's exhaust screen shown, then True Grit+'s opens mid-chain.
+    dm = _fight(game, ["ASCENDERS_BANE", "DEFEND_IRONCLAD", "STRIKE_IRONCLAD", "BURNING_PACT", "TRUE_GRIT+"], "zh")
+    out, code = dm.cmd_do(["play 燃烧契约"], False)
+    a = dm.last
+    assert code == 0 and a["decision"] == "card_select" and a["source"]["name"] == "燃烧契约", out
+    assert a.get("selection_id") is not None and all(c.get("uid") for c in a["cards"])
+    bane = next(c["index"] for c in a["cards"] if c["name"] == "进阶之灾")
+    out, code = dm.cmd_do([f"select {bane}; play 坚毅+; select 0"], False)
+    b = dm.last
+    assert code == 0 and b["decision"] == "card_select" and b["source"]["name"] == "坚毅+", out
+    assert b["selection_id"] != a["selection_id"]
+    assert "ok: play H" in out and "stopped before 'select 0': 未执行：'select 0' 会在另一个 card_select 界面上选择" in out, out
+    assert "来自 坚毅+" in out and "当时显示：card_select [exhaust]" in out
+    assert "selection_id" not in out  # known field: not dumped as an extra line
+
+
+def test_live_remapped_index_error_names_the_typed_index(game):
+    # Armaments' upgrade screen; after "play H1" the card shown as H2 is H1 (or H0) now.
+    for lang in ("en", "zh"):
+        dm = _fight(game, ["ARMAMENTS", "STRIKE_IRONCLAD", "DEFEND_IRONCLAD", "BASH", "ASCENDERS_BANE"], lang)
+        arm = next(c["index"] for c in dm.last["hand"] if c["id"] == "CARD.ARMAMENTS")
+        dm.cmd_do([f"play H{arm}"], False)
+        hand = dm.last["combat"]["hand"]
+        assert dm.last["decision"] == "card_select" and [c["id"] for c in hand][1:3] == ["CARD.BASH", "CARD.ASCENDERS_BANE"], hand
+        name = hand[2]["name"]
+        out, code = dm.cmd_do(["select 0; play H1 E0; play H2 E0"], False)
+        now = next(c["index"] for c in dm.last["hand"] if c["name"] == name)
+        assert code == 1 and now != 2
+        want = (f"error in 'play H2 E0': H2 ({name} as shown when the chain started, now H{now}) is {name} (Curse"
+                if lang == "en" else f"error in 'play H2 E0': H2（指令链开始时显示的 {name}，现在是 H{now}）是 {name}（")
+        assert want in out, out
+        assert f"H{now} is now" not in out and f"H{now} 现在是" not in out

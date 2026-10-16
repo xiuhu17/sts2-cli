@@ -2343,6 +2343,7 @@ public partial class RunSimulator
                 ["type"] = "decision",
                 ["decision"] = "bundle_select",
                 ["context"] = RunContext(),
+                ["selection_id"] = Uid(_pendingBundleTcs),
                 ["bundles"] = bundles,
                 ["player"] = PlayerSummary(player),
             };
@@ -2364,6 +2365,7 @@ public partial class RunSimulator
                 ["type"] = "decision",
                 ["decision"] = "card_reward",
                 ["context"] = RunContext(),
+                ["selection_id"] = _cardSelector.PendingRewardToken is { } rwTok ? Uid(rwTok) : null,
                 ["cards"] = cards,
                 ["can_skip"] = alts.Any(a => a["id"] as string == "Skip"),
                 ["alternatives"] = alts,
@@ -2387,6 +2389,9 @@ public partial class RunSimulator
                 ["type"] = "decision",
                 ["decision"] = "card_select",
                 ["context"] = RunContext(),
+                // One id per selection screen the game opened (not game data): two screens
+                // with the same cards (Burning Pact, then True Grit+) differ.
+                ["selection_id"] = _cardSelector.PendingToken is { } selTok ? Uid(selTok) : null,
                 ["cards"] = opts,
                 ["min_select"] = _cardSelector.PendingMinSelect,
                 ["max_select"] = _cardSelector.PendingMaxSelect,
@@ -5049,6 +5054,8 @@ public partial class RunSimulator
         private TaskCompletionSource<IEnumerable<CardModel>>? _pendingTcs;
 
         public bool HasPending => _pendingTcs != null && !_pendingTcs.Task.IsCompleted;
+        // Identifies the pending selection screen (one object per screen opened).
+        public object? PendingToken => _pendingTcs;
 
         public Task<IEnumerable<CardModel>> GetSelectedCards(
             IEnumerable<CardModel> options, int minSelect, int maxSelect)
@@ -5232,6 +5239,7 @@ public partial class RunSimulator
         }
 
         public bool HasPendingReward => PendingRewardCards != null && _rewardWait != null;
+        public object? PendingRewardToken => _rewardWait;
 
         // Run-generation guard: Reset() closes the selector and bumps the generation, so a
         // reward flow of the torn-down run that publishes late, or is waiting, is cancelled.
