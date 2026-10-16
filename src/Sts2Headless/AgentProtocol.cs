@@ -321,7 +321,7 @@ public partial class RunSimulator
                         cards[i]["transforms_to"] = new Dictionary<string, object?>
                         {
                             ["name"] = _loc.Card(tr.Replacement.Id.Entry) + (tr.Replacement.IsUpgraded ? "+" : ""),
-                            ["description"] = CardText(tr.Replacement),
+                            ["description"] = tr.Replacement.IsMutable ? PreviewedCard(tr.Replacement, PileType.None).text : CardText(tr.Replacement),
                         };
                     else if (tr.ReplacementOptions != null)
                         cards[i]["transform_options"] = tr.ReplacementOptions
@@ -357,16 +357,15 @@ public partial class RunSimulator
             clone.EnchantInternal(e, amount);
             clone.IsEnchantmentPreview = true;
             e.ModifyCard();
-            // NCard.UpdateVisuals(PileType.None, Normal): the enchantment's hooks (Sharp's
-            // extra damage, ...) show up in the previewed values.
-            try { clone.UpdateDynamicVarPreview(MegaCrit.Sts2.Core.Entities.Cards.CardPreviewMode.Normal, null, clone.DynamicVars); } catch { }
-            var stats = new Dictionary<string, object?>();
-            try { foreach (var dv in clone.DynamicVars.Values) stats[dv.Name.ToLowerInvariant()] = (int)dv.PreviewValue; } catch { }
+            // NCard.UpdateVisuals(PileType.None, Normal): the card's and the new enchantment's
+            // vars are previewed, so its hooks (Sharp's extra damage, ...) and its own extra
+            // text values show up.
+            var (text, stats) = PreviewedCard(clone, PileType.None);
             return new Dictionary<string, object?>
             {
                 ["cost"] = clone.EnergyCost?.GetResolved() ?? 0,
                 ["stats"] = stats.Count > 0 ? stats : null,
-                ["description"] = CardText(clone, PileType.None),
+                ["description"] = text,
             };
         }
         catch (Exception ex)
@@ -802,13 +801,20 @@ public partial class RunSimulator
                 c.DynamicVars.ClearPreview();
                 c.UpdateDynamicVarPreview(MegaCrit.Sts2.Core.Entities.Cards.CardPreviewMode.Normal, c.CurrentTarget, c.DynamicVars);
                 foreach (var dv in c.DynamicVars.Values) stats[dv.Name.ToLowerInvariant()] = (int)dv.PreviewValue;
+                if (c.Enchantment != null)
+                {
+                    c.Enchantment.DynamicVars.ClearPreview();
+                    c.UpdateDynamicVarPreview(MegaCrit.Sts2.Core.Entities.Cards.CardPreviewMode.Normal, c.CurrentTarget, c.Enchantment.DynamicVars);
+                }
                 text = CardText(c, PileType.Hand, c.CurrentTarget);
             }
             catch { stats.Clear(); text = null; }
-            finally { try { c.DynamicVars.ClearPreview(); } catch { } }
+            finally { try { c.DynamicVars.ClearPreview(); c.Enchantment?.DynamicVars.ClearPreview(); } catch { } }
         }
-        if (stats.Count == 0)
-            try { foreach (var dv in c.DynamicVars.Values) stats[dv.Name.ToLowerInvariant()] = (int)dv.BaseValue; } catch { }
+        // Elsewhere (deck view, piles) the card shows as UpdateVisuals draws it: enchantment-
+        // modified values (Sharp), no global hooks.
+        if (text == null)
+            (text, stats) = PreviewedCard(c, pile);
         var kws = c.Keywords?.Where(k => k != CardKeyword.None).Select(k => k.ToString()).ToList();
         var d = new Dictionary<string, object?>();
         if (index != null) d["index"] = index;
@@ -1340,7 +1346,7 @@ public partial class RunSimulator
             ["play_card"] = "{card_index, target_index? | target_id?} (a target is required for AnyEnemy cards when 2+ enemies; target_id = enemy combat_id)",
             ["end_turn"] = "{}",
             ["use_potion"] = "{potion_index, target_index? | target_id?} (only when the potion's can_use is true)",
-            ["discard_potion"] = "{potion_index}",
+            ["discard_potion"] = "{potion_index} (not while the potion is queued)",
             ["choose_option"] = "{option_index} (events, rest site)",
             ["select_card_reward"] = "{card_index}",
             ["skip_card_reward"] = "{} (only when can_skip)",

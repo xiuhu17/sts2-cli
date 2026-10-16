@@ -1905,10 +1905,25 @@ public partial class RunSimulator
         Log($"Using potion: {potion.GetType().Name} at slot {idx} target={target?.GetType().Name ?? "none"}");
         try
         {
-            var action = new MegaCrit.Sts2.Core.GameActions.UsePotionAction(potion, target, CombatManager.Instance.IsInProgress);
-            RunManager.Instance.ActionQueueSet.EnqueueWithoutSynchronizing(action);
+            // PotionModel.EnqueueManualUse: marks the potion IsQueued (the popup then disables
+            // Use and Discard) and enqueues its UsePotionAction; a cancelled use clears the flag
+            // (AfterUsageCanceled).
+            potion.EnqueueManualUse(target);
             WaitForActionExecutor();
             _syncCtx.Pump();
+
+            // Used while a card's selection is still running (True Grit's exhaust choice, ...):
+            // the action waits in the queue behind that card, as in the game. Say so.
+            if (potion.IsQueued && (player.Potions?.Contains(potion)) == true)
+            {
+                lock (_evLock)
+                    AddEventLocked(new Dictionary<string, object?>
+                    {
+                        ["type"] = "potion_queued",
+                        ["potion"] = _loc.Potion(potion.Id.Entry),
+                    });
+                return DetectDecisionPoint();
+            }
 
             // Effect may open a prompt (card_select, bundle, ...) before the potion slot clears.
             if (HasPendingPrompt)
@@ -2220,24 +2235,8 @@ public partial class RunSimulator
             var bundles = _pendingBundles.Select((bundle, i) => new Dictionary<string, object?>
             {
                 ["index"] = i,
-                ["cards"] = bundle.Select(card =>
-                {
-                    var stats = new Dictionary<string, object?>();
-                    try { foreach (var dv in card.DynamicVars.Values) stats[dv.Name.ToLowerInvariant()] = (int)dv.BaseValue; } catch { }
-                    var bkws = card.Keywords?.Where(k => k != CardKeyword.None).Select(k => k.ToString()).ToList();
-                    return WithCardMeta(new Dictionary<string, object?>
-                    {
-                        ["id"] = card.Id.ToString(),
-                        ["name"] = CardName(card),
-                        ["cost"] = card.EnergyCost?.GetResolved() ?? 0,
-                        ["type"] = card.Type.ToString(),
-                        ["rarity"] = card.Rarity.ToString(),
-                        ["description"] = CardText(card),
-                        ["tips"] = Tips(() => card.HoverTips, _loc.Card(card.Id.Entry)),
-                        ["stats"] = stats.Count > 0 ? stats : null,
-                        ["keywords"] = bkws?.Count > 0 ? bkws : null,
-                    }, card);
-                }).ToList(),
+                // NChooseABundleSelectionScreen: UpdateVisuals(PileType.None, Normal).
+                ["cards"] = bundle.Select(card => ListCardInfo(card, PileType.None)).ToList(),
             }).ToList();
 
             return new Dictionary<string, object?>
@@ -2254,26 +2253,8 @@ public partial class RunSimulator
         if (_cardSelector.HasPendingReward)
         {
             var rewardCards = _cardSelector.PendingRewardCards!;
-            var cards = rewardCards.Select((cr, i) =>
-            {
-                var stats = new Dictionary<string, object?>();
-                try { foreach (var dv in cr.Card.DynamicVars.Values) stats[dv.Name.ToLowerInvariant()] = (int)dv.BaseValue; } catch { }
-                var rrkws = cr.Card.Keywords?.Where(k => k != CardKeyword.None).Select(k => k.ToString()).ToList();
-                return WithCardMeta(new Dictionary<string, object?>
-                {
-                    ["index"] = i,
-                    ["id"] = cr.Card.Id.ToString(),
-                    ["name"] = CardName(cr.Card),
-                    ["cost"] = cr.Card.EnergyCost?.GetResolved() ?? 0,
-                    ["type"] = cr.Card.Type.ToString(),
-                    ["rarity"] = cr.Card.Rarity.ToString(),
-                    ["description"] = CardText(cr.Card),
-                    ["tips"] = Tips(() => cr.Card.HoverTips, _loc.Card(cr.Card.Id.Entry)),
-                    ["stats"] = stats.Count > 0 ? stats : null,
-                    ["keywords"] = rrkws?.Count > 0 ? rrkws : null,
-                    ["after_upgrade"] = GetUpgradedInfo(cr.Card),
-                }, cr.Card);
-            }).ToList();
+            // NCardRewardSelectionScreen: UpdateVisuals(PileType.None, Normal).
+            var cards = rewardCards.Select((cr, i) => IndexedCardInfo(cr.Card, i, PileType.None)).ToList();
 
             // Alternatives the game shows next to the cards (CardRewardAlternative.Generate):
             // Skip (absent under Draft), Reroll (Driftwood), Sacrifice (Pael's Wing).
@@ -2298,27 +2279,9 @@ public partial class RunSimulator
         checkCardSelect:
         if (_cardSelector.HasPending && _cardSelector.PendingOptions != null)
         {
-            var opts = _cardSelector.PendingOptions.Select((card, i) =>
-            {
-                var stats = new Dictionary<string, object?>();
-                try { foreach (var dv in card.DynamicVars.Values) stats[dv.Name.ToLowerInvariant()] = (int)dv.BaseValue; } catch { }
-                var selkws = card.Keywords?.Where(k => k != CardKeyword.None).Select(k => k.ToString()).ToList();
-                return WithCardMeta(new Dictionary<string, object?>
-                {
-                    ["index"] = i,
-                    ["id"] = card.Id.ToString(),
-                    ["name"] = CardName(card),
-                    ["cost"] = card.EnergyCost?.GetResolved() ?? 0,
-                    ["type"] = card.Type.ToString(),
-                    ["rarity"] = card.Rarity.ToString(),
-                    ["upgraded"] = card.IsUpgraded,
-                    ["stats"] = stats.Count > 0 ? stats : null,
-                    ["description"] = CardText(card),
-                    ["tips"] = Tips(() => card.HoverTips, _loc.Card(card.Id.Entry)),
-                    ["keywords"] = selkws?.Count > 0 ? selkws : null,
-                    ["after_upgrade"] = GetUpgradedInfo(card),
-                }, card);
-            }).ToList();
+            // Grid selections (NDeckCardSelectScreen, smith, ...) draw each card through
+            // UpdateVisuals, so enchantment-modified values show.
+            var opts = _cardSelector.PendingOptions.Select((card, i) => IndexedCardInfo(card, i)).ToList();
 
             var selectState = new Dictionary<string, object?>
             {
@@ -2603,14 +2566,23 @@ public partial class RunSimulator
                 {
                     stats[dv.Name.ToLowerInvariant()] = (int)dv.PreviewValue;
                 }
+                // NCard.UpdateVisuals previews the enchantment's vars too: its extra card text
+                // (Adroit's "Gain X Block") shows Dexterity/Frail in hand.
+                if (c.Enchantment != null)
+                {
+                    c.Enchantment.DynamicVars.ClearPreview();
+                    c.UpdateDynamicVarPreview(MegaCrit.Sts2.Core.Entities.Cards.CardPreviewMode.Normal,
+                        c.CurrentTarget, c.Enchantment.DynamicVars);
+                }
                 // Description with the same live values (Strength, Weak, ...), like the hand UI.
                 handText = CardText(c, PileType.Hand, c.CurrentTarget, handKw);
                 // Restore the live card to base state. UpdateDynamicVarPreview mutates the
                 // card's preview (and for self-cost cards like Momentum Strike, leaving it in
                 // preview state corrupts the subsequent PlayCardAction — card stays in hand).
                 c.DynamicVars.ClearPreview();
+                c.Enchantment?.DynamicVars.ClearPreview();
             }
-            catch { }
+            catch { try { c.DynamicVars.ClearPreview(); c.Enchantment?.DynamicVars.ClearPreview(); } catch { } }
 
             // Per-target resolved damage for attack cards: the scalar `stats` above use the
             // card's CurrentTarget, but a single value can't capture target-specific modifiers
@@ -2647,10 +2619,9 @@ public partial class RunSimulator
                         int repeat;
                         if (tstats.TryGetValue("calculatedhits", out var chv) && chv is int chi) { repeat = chi; hasHitCount = true; }
                         else repeat = tstats.TryGetValue("repeat", out var rv) && rv is int ri && ri > 0 ? ri : 1;
-                        if (!hasHitCount && repeat == 1 && c.EnergyCost?.CostsX == true && pcs != null)
-                            repeat = pcs.Energy;
-                        else if (!hasHitCount && repeat == 1 && c.HasStarCostX && pcs != null)
-                            repeat = pcs.Stars;
+                        // X goes through Hook.ModifyXValue (Chemical X), as ResolveEnergyXValue does.
+                        if (!hasHitCount && repeat == 1 && (c.EnergyCost?.CostsX == true || c.HasStarCostX) && pcs != null)
+                            repeat = XValue(c, pcs) ?? repeat;
                         // Dismantle hits twice when the target is Vulnerable (#78). The doubled
                         // hit count lives in Dismantle.OnPlay, not in any DynamicVar preview or
                         // the Hook.ModifyAttackHitCount path (which needs an AttackCommand we
@@ -3731,11 +3702,17 @@ public partial class RunSimulator
                 var entry = card?.Id.Entry ?? "?";
                 var stats = new Dictionary<string, object?>();
                 int cardCost = 0;
+                string? shopText = null;
                 try
                 {
                     if (card != null)
                     {
                         cardCost = card.EnergyCost?.GetResolved() ?? 0;
+                        // NMerchantCard draws the card through UpdateVisuals (enchantment-modified values).
+                        (shopText, stats) = PreviewedCard(card);
+                    }
+                    if (card != null && stats.Count == 0)
+                    {
                         // The shop entry's card can have uninitialized DynamicVars (stats: null
                         // while after_upgrade is populated, #68). Read base stats from a fresh
                         // ModelDb clone at the card's current upgrade level, like GetUpgradedInfo.
@@ -3761,7 +3738,7 @@ public partial class RunSimulator
                     // The merchant's second row (MerchantInventory.ColorlessCardEntries).
                     ["colorless"] = i >= inv.CharacterCardEntries.Count,
                     ["card_cost"] = cardCost,
-                    ["description"] = card != null ? CardText(card) : null,
+                    ["description"] = shopText ?? (card != null ? CardText(card) : null),
                     ["tips"] = card != null ? Tips(() => card.HoverTips, _loc.Card(card.Id.Entry)) : null,
                     ["stats"] = stats.Count > 0 ? stats : null,
                     ["keywords"] = shopkws?.Count > 0 ? shopkws : null,
@@ -3771,7 +3748,7 @@ public partial class RunSimulator
                     ["on_sale"] = e.IsOnSale,
                 };
                 // The shop's "cost" is the gold price; the energy cost is "card_cost".
-                if (card != null) AddCardMeta(shopCard, card, energyCostKey: "card_cost");
+                if (card != null) { AddCardMeta(shopCard, card, energyCostKey: "card_cost"); AddCardMods(shopCard, card); }
                 return shopCard;
             }).ToList();
 
@@ -4360,7 +4337,9 @@ public partial class RunSimulator
             key = CacheKey(card, $"{card.CurrentUpgradeLevel}|{pile}|{card.Enchantment?.Id}|{card.Enchantment?.Amount}|{resolvedCost ?? card.EnergyCost?.GetResolved()}" +
                 $"|{card.Affliction?.Id}|{card.Affliction?.Amount}|{kws}|{card.GetEnchantedReplayCount()}" +
                 $"|{CombatManager.Instance.IsInProgress}|{target != null}",
-                card.DynamicVars.Values.Select(v => v.PreviewValue));
+                card.Enchantment == null ? card.DynamicVars.Values.Select(v => v.PreviewValue)
+                    : card.DynamicVars.Values.Select(v => v.PreviewValue).Append(-1m)
+                        .Concat(card.Enchantment.DynamicVars.Values.Select(v => v.PreviewValue)));
             if (_textCache.TryGetValue(key, out var cached)) return cached;
         }
         catch { key = null; }
@@ -4397,19 +4376,34 @@ public partial class RunSimulator
     {
         try
         {
-            var clone = ModelDb.GetById<CardModel>(card.Id).ToMutable();
-            // Apply existing upgrades first
-            for (int i = 0; i < card.CurrentUpgradeLevel; i++)
+            CardModel clone;
+            var modded = card.Enchantment != null || card.Affliction != null;
+            if (modded)
             {
-                clone.UpgradeInternal();
-                clone.FinalizeUpgradeInternal();
+                // The upgrade preview (NUpgradePreview / NDeckUpgradeSelectScreen) upgrades a
+                // clone of the card itself, enchantment included. The clone is not added to the run.
+                clone = (CardModel)card.ClonePreservingMutability();
+            }
+            else
+            {
+                clone = ModelDb.GetById<CardModel>(card.Id).ToMutable();
+                // Apply existing upgrades first
+                for (int i = 0; i < card.CurrentUpgradeLevel; i++)
+                {
+                    clone.UpgradeInternal();
+                    clone.FinalizeUpgradeInternal();
+                }
             }
             // Apply one more upgrade
             clone.UpgradeInternal();
             clone.FinalizeUpgradeInternal();
 
             var stats = new Dictionary<string, object?>();
-            try { foreach (var dv in clone.DynamicVars.Values) stats[dv.Name.ToLowerInvariant()] = (int)dv.BaseValue; } catch { }
+            string? modText = null;
+            if (modded)
+                (modText, stats) = PreviewedCard(clone);
+            else
+                try { foreach (var dv in clone.DynamicVars.Values) stats[dv.Name.ToLowerInvariant()] = (int)dv.BaseValue; } catch { }
 
             // Compare keywords before/after upgrade
             var oldKws = card.Keywords?.Where(k => k != CardKeyword.None).Select(k => k.ToString()).ToHashSet() ?? new();
@@ -4421,7 +4415,7 @@ public partial class RunSimulator
             {
                 ["cost"] = clone.EnergyCost?.GetResolved() ?? 0,
                 ["stats"] = stats.Count > 0 ? stats : null,
-                ["description"] = CardText(clone),
+                ["description"] = modText ?? CardText(clone),
                 ["added_keywords"] = addedKws.Count > 0 ? addedKws : null,
                 ["removed_keywords"] = removedKws.Count > 0 ? removedKws : null,
             };
@@ -4480,39 +4474,18 @@ public partial class RunSimulator
                     ["usage"] = p.Usage.ToString(),
                     // Whether "Use" is enabled right now (in or out of combat), like the potion popup.
                     ["can_use"] = PotionUsable(player, p, out _),
+                    // Used, waiting in the action queue (EnqueueManualUse): the popup disables
+                    // Use and Discard until it runs.
+                    ["queued"] = p.IsQueued ? true : null,
                 };
             }).Where(x => x != null).ToList(),
             ["deck_size"] = player.Deck?.Cards?.Count(c => c != null) ?? 0,
+            // The deck view (NDeckViewScreen) draws each card through UpdateVisuals: enchantment-
+            // modified values, plus enchantment/affliction (#76).
             ["deck"] = OmitDeck ? null : player.Deck?.Cards?.Where(c => c != null).Select(c =>
             {
-                var dstats = new Dictionary<string, object?>();
-                try { foreach (var dv in c.DynamicVars.Values) dstats[dv.Name.ToLowerInvariant()] = (int)dv.BaseValue; } catch { }
-                var dkws = c.Keywords?.Where(k => k != CardKeyword.None).Select(k => k.ToString()).ToList();
-                var dcard = new Dictionary<string, object?>
-                {
-                    ["id"] = c.Id.ToString(),
-                    ["name"] = CardName(c),
-                    ["cost"] = c.EnergyCost?.GetResolved() ?? 0,
-                    ["type"] = c.Type.ToString(),
-                    ["upgraded"] = c.IsUpgraded,
-                    ["description"] = CardText(c),
-                    ["stats"] = dstats.Count > 0 ? dstats : null,
-                    ["keywords"] = dkws?.Count > 0 ? dkws : null,
-                    ["after_upgrade"] = GetUpgradedInfo(c),
-                };
-                AddCardMeta(dcard, c);
-                // Enchantment/affliction metadata, matching the combat hand export so clients
-                // can see e.g. Slither applied to a deck card after an event (#76).
-                if (c.Enchantment != null)
-                {
-                    dcard["enchantment"] = _loc.Bilingual("enchantments", c.Enchantment.Id.Entry + ".title");
-                    try { if (c.Enchantment.Amount != 0) dcard["enchantment_amount"] = c.Enchantment.Amount; } catch { }
-                }
-                if (c.Affliction != null)
-                {
-                    dcard["affliction"] = _loc.Bilingual("afflictions", c.Affliction.Id.Entry + ".title");
-                    try { if (c.Affliction.Amount != 0) dcard["affliction_amount"] = c.Affliction.Amount; } catch { }
-                }
+                var dcard = ListCardInfo(c, PileType.Deck, withTips: false);
+                dcard["after_upgrade"] = GetUpgradedInfo(c);
                 return dcard;
             }).ToList(),
         };

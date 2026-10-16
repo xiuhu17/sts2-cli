@@ -203,7 +203,8 @@ internal static class LegalActions
         // Discarding a potion is allowed at any decision point, unless an event locks potions.
         if (player?.GetValueOrDefault("can_use_or_remove_potions") is not false)
             foreach (var p in Potions(player))
-                acts.Add(Act("discard_potion", ("potion_index", p["index"])));
+                if (p.GetValueOrDefault("queued") is not true)  // NPotionPopup disables Discard while queued
+                    acts.Add(Act("discard_potion", ("potion_index", p["index"])));
         return acts;
     }
 

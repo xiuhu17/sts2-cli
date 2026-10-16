@@ -288,6 +288,33 @@ class TestCardFixes:
 
 
 class TestPotionUsage:
+    def test_potion_used_during_card_select_is_queued(self, game):
+        """PotionModel.EnqueueManualUse: a potion used while a card's selection is open waits
+        behind that card; it is marked queued and can't be used or discarded again."""
+        game.start(seed="q1")
+        game.set_player(hp=30, deck=["TRUE_GRIT+"] * 10, potions=["BLOOD_POTION", "FIRE_POTION"])
+        state = game.enter_room("combat", encounter="SHRINKER_BEETLE_WEAK")
+        state = game.act("play_card", card_index=0)
+        assert state["decision"] == "card_select"
+        state = game.act("use_potion", potion_index=0)
+        assert state["decision"] == "card_select"
+        assert {"type": "potion_queued", "potion": "Blood Potion"} in state.get("events", [])
+        blood = state["player"]["potions"][0]
+        assert blood["queued"] is True and blood["can_use"] is False
+        for a in state["legal_actions"]:
+            if a["action"] in ("use_potion", "discard_potion"):
+                assert a["args"]["potion_index"] != 0, a
+        err = game.act("discard_potion", potion_index=0)
+        assert err["type"] == "error" and "queued" in err["message"]
+        err = game.act("use_potion", potion_index=0)
+        assert err["type"] == "error" and "queued" in err["message"]
+        state = game.act("select_cards", indices="0")
+        assert state["decision"] == "combat_play"
+        assert state["player"]["hp"] == 46  # healed 20% of 80 once the card finished
+        assert any(e["type"] == "potion_used" and e["potion"] == "Blood Potion" for e in state["events"])
+        assert [p["name"] for p in state["player"]["potions"]] == ["Fire Potion"]
+        assert all("queued" not in p for p in state["player"]["potions"])
+
     def test_automatic_potion_not_usable(self, game):
         game.neow(game.start(seed="fairy1"), 0)
         game.set_player(potions=["FAIRY_IN_A_BOTTLE"])

@@ -48,7 +48,8 @@ public partial class RunSimulator
             return new Dictionary<string, object?>
             {
                 ["title"] = name,
-                ["description"] = CardText(card),
+                // HoverTipFactory's card preview is an NCard drawn through UpdateVisuals.
+                ["description"] = card.IsMutable ? PreviewedCard(card, PileType.None).text : CardText(card),
                 ["card"] = card.Id.ToString(),
                 ["upgraded"] = card.IsUpgraded,
             };
@@ -296,25 +297,7 @@ public partial class RunSimulator
     private static readonly System.Reflection.FieldInfo? SpecialRewardCard =
         typeof(SpecialCardReward).GetField("_card", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
 
-    private Dictionary<string, object?> CardInfo(CardModel c)
-    {
-        var stats = new Dictionary<string, object?>();
-        try { foreach (var dv in c.DynamicVars.Values) stats[dv.Name.ToLowerInvariant()] = (int)dv.BaseValue; } catch { }
-        var kws = c.Keywords?.Where(k => k != CardKeyword.None).Select(k => k.ToString()).ToList();
-        return new Dictionary<string, object?>
-        {
-            ["id"] = c.Id.ToString(),
-            ["name"] = _loc.Card(c.Id.Entry),
-            ["cost"] = c.EnergyCost?.GetResolved() ?? 0,
-            ["type"] = c.Type.ToString(),
-            ["rarity"] = c.Rarity.ToString(),
-            ["upgraded"] = c.IsUpgraded,
-            ["description"] = CardText(c),
-            ["tips"] = Tips(() => c.HoverTips, _loc.Card(c.Id.Entry)),
-            ["stats"] = stats.Count > 0 ? stats : null,
-            ["keywords"] = kws?.Count > 0 ? kws : null,
-        };
-    }
+    private Dictionary<string, object?> CardInfo(CardModel c) => ListCardInfo(c, PileType.None);
 
     /// <summary>Fields for reward kinds beyond gold/relic/potion/card, plus the reward's own description.</summary>
     private void AddSpecialRewardInfo(Reward reward, Dictionary<string, object?> info)
