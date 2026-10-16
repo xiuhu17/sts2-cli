@@ -177,6 +177,14 @@ internal static class LegalActions
                 break;
         }
 
+        // AnyTime potions (Blood Potion, Fruit Juice, ...) can be drunk outside the combat turn
+        // too: the game's potion popup enables "Use" for them everywhere (NPotionPopup.RefreshButtons).
+        if (decision != "combat_play")
+            foreach (var p in Potions(player))
+                if (p.GetValueOrDefault("usage") as string == "AnyTime"
+                    && p.GetValueOrDefault("target_type") as string is not ("AnyEnemy" or "AllEnemies"))
+                    acts.Add(Act("use_potion", ("potion_index", p["index"])));
+
         // Discarding a potion is allowed at any decision point.
         foreach (var p in Potions(player))
             acts.Add(Act("discard_potion", ("potion_index", p["index"])));

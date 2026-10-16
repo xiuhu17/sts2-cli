@@ -95,3 +95,23 @@ def test_latency(sts2):
         sts2("log", "1")
     per_call = (time.time() - t0) / 10
     assert per_call < 0.2, per_call
+
+
+def test_concurrent_first_calls_start_one_daemon():
+    """Two clients that both find no daemon spawn one each; only one may serve (the other
+    used to unlink its socket and leave an orphaned daemon + engine running)."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("STS2_DEBUG")}
+    session = f"pytestrace{os.getpid()}"
+    env["STS2_SESSION"] = session
+    env["STS2_IDLE_TIMEOUT"] = "60"
+    procs = [subprocess.Popen([STS2, "status"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, env=env)
+             for _ in range(3)]
+    try:
+        outs = [p.communicate(timeout=60)[0] for p in procs]
+        assert all("daemon pid" in o for o in outs), outs
+        assert len({o.split()[2] for o in outs}) == 1, outs
+        time.sleep(1.0)  # losers exit once the winner's socket answers
+        pids = subprocess.run(["pgrep", "-f", f"sts2_daemon.py {session}"], capture_output=True, text=True).stdout.split()
+        assert len(pids) == 1, pids
+    finally:
+        subprocess.run([STS2, "stop"], env=env, capture_output=True, timeout=60)

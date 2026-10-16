@@ -750,7 +750,23 @@ public partial class RunSimulator
     private Dictionary<string, object?> CardDetail(CardModel c, int? index, bool upgrade, PileType pile = PileType.Deck)
     {
         var stats = new Dictionary<string, object?>();
-        try { foreach (var dv in c.DynamicVars.Values) stats[dv.Name.ToLowerInvariant()] = (int)dv.BaseValue; } catch { }
+        string? text = null;
+        if (pile == PileType.Hand && CombatManager.Instance.IsInProgress)
+        {
+            // In hand the card shows its live values (Strength, Weak, ...), as in the combat
+            // view. UpdateDynamicVarPreview mutates the live card: clear before and after.
+            try
+            {
+                c.DynamicVars.ClearPreview();
+                c.UpdateDynamicVarPreview(MegaCrit.Sts2.Core.Entities.Cards.CardPreviewMode.Normal, c.CurrentTarget, c.DynamicVars);
+                foreach (var dv in c.DynamicVars.Values) stats[dv.Name.ToLowerInvariant()] = (int)dv.PreviewValue;
+                text = CardText(c, PileType.Hand, c.CurrentTarget);
+            }
+            catch { stats.Clear(); text = null; }
+            finally { try { c.DynamicVars.ClearPreview(); } catch { } }
+        }
+        if (stats.Count == 0)
+            try { foreach (var dv in c.DynamicVars.Values) stats[dv.Name.ToLowerInvariant()] = (int)dv.BaseValue; } catch { }
         var kws = c.Keywords?.Where(k => k != CardKeyword.None).Select(k => k.ToString()).ToList();
         var d = new Dictionary<string, object?>();
         if (index != null) d["index"] = index;
@@ -762,7 +778,7 @@ public partial class RunSimulator
         d["type"] = c.Type.ToString();
         d["rarity"] = c.Rarity.ToString();
         d["upgraded"] = c.IsUpgraded;
-        d["description"] = CardText(c, pile);
+        d["description"] = text ?? CardText(c, pile);
         if (stats.Count > 0) d["stats"] = stats;
         if (kws?.Count > 0) d["keywords"] = kws;
         var tips = Tips(() => c.HoverTips, _loc.Card(c.Id.Entry));
@@ -1218,7 +1234,11 @@ public partial class RunSimulator
         foreach (var a in Minus(now.Relics, prev.Relics)) evs.Add(new() { ["type"] = "relic_obtained", ["relic"] = a });
         foreach (var a in Minus(prev.Relics, now.Relics)) evs.Add(new() { ["type"] = "relic_lost", ["relic"] = a });
         foreach (var a in Minus(now.Potions, prev.Potions)) evs.Add(new() { ["type"] = "potion_obtained", ["potion"] = a });
-        foreach (var a in Minus(prev.Potions, now.Potions)) evs.Add(new() { ["type"] = "potion_lost", ["potion"] = a });
+        // A drunk potion already has its potion_used line.
+        var used = evs.Where(e => e.GetValueOrDefault("type") as string == "potion_used")
+            .Select(e => e.GetValueOrDefault("potion") as string ?? "").ToList();
+        foreach (var a in Minus(prev.Potions, now.Potions))
+            if (!used.Remove(a)) evs.Add(new() { ["type"] = "potion_lost", ["potion"] = a });
         return evs;
     }
 

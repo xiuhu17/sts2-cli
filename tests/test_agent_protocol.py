@@ -139,6 +139,38 @@ class TestStrictActions:
         assert game.act("play_card", card_index="0")["type"] == "decision"
 
 
+class TestPotionRules:
+    """use_potion follows the game's Use button (NPotionPopup.RefreshButtons)."""
+
+    def test_combat_only_potion_rejected_outside_combat(self, game):
+        game.skip_neow(game.start(seed="ap9"))
+        game.set_player(hp=50, max_hp=80, potions=["FIRE_POTION", "BLOOD_POTION"])
+        state = game.send({"cmd": "get_state"})
+        assert state["decision"] == "map_select"
+        uses = [a for a in state["legal_actions"] if a["action"] == "use_potion"]
+        assert uses == [{"action": "use_potion", "args": {"potion_index": 1}}]
+        err = game.act("use_potion", potion_index=0)
+        assert err["type"] == "error" and "combat" in err["message"]
+        # Not lost: before, the potion was queued and then force-discarded.
+        state = game.send({"cmd": "get_state"})
+        assert [p["name"] for p in state["player"]["potions"]][:1] == ["Fire Potion"]
+        state = game.act("use_potion", potion_index=1)
+        assert state["type"] == "decision" and state["player"]["hp"] > 50
+
+    def test_combat_only_potion_rejected_in_card_select(self, game):
+        state = combat_with(game, ["BURNING_PACT"] * 7 + ["DEFEND_IRONCLAD"] * 3, seed="ap10")
+        game.set_player(potions=["FIRE_POTION"])
+        state = game.send({"cmd": "get_state"})
+        state = game.act("play_card", card_index=hand_names(state).index("Burning Pact"))
+        assert state["decision"] == "card_select"
+        assert "use_potion" not in legal_names(state)
+        err = game.act("use_potion", potion_index=0)
+        assert err["type"] == "error" and "selection" in err["message"]
+        state = game.act("select_cards", indices="0")
+        assert state["decision"] == "combat_play"
+        assert any(p["name"] == "Fire Potion" for p in state["player"]["potions"])
+
+
 class TestQueries:
     def test_queries_do_not_advance(self, game):
         state = combat_with(game, ["STRIKE_IRONCLAD"] * 5 + ["BASH", "DEFEND_IRONCLAD"] * 2)

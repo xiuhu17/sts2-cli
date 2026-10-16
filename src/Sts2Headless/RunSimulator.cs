@@ -1715,6 +1715,9 @@ public partial class RunSimulator
         if (potion.Usage == MegaCrit.Sts2.Core.Entities.Potions.PotionUsage.Automatic
             || potion.Usage == MegaCrit.Sts2.Core.Entities.Potions.PotionUsage.None)
             return Error($"Potion {potion.Id.Entry} can't be used manually (usage: {potion.Usage})");
+        var unusable = PotionUnusableReason(player, potion);
+        if (unusable != null)
+            return Error(unusable);
 
         // Determine target based on potion's TargetType first, then fall back to target_index
         Creature? target = null;
@@ -1786,6 +1789,30 @@ public partial class RunSimulator
         }
 
         return DetectDecisionPoint();
+    }
+
+    /// <summary>
+    /// When the game's potion popup enables "Use" (NPotionPopup.RefreshButtons): AnyTime
+    /// potions always; CombatOnly potions only in combat, on the player's side's turn, while
+    /// alive, with no card selection screen open and player actions enabled. Neither when
+    /// Player.CanUseOrRemovePotions is off. Without this, a CombatOnly potion used on the map
+    /// was queued (and then force-discarded), i.e. silently lost.
+    /// </summary>
+    private string? PotionUnusableReason(Player player, PotionModel potion)
+    {
+        if (!player.CanUseOrRemovePotions)
+            return "Potions can't be used right now";
+        if (potion.Usage != MegaCrit.Sts2.Core.Entities.Potions.PotionUsage.CombatOnly)
+            return null;
+        var cm = CombatManager.Instance;
+        var creature = player.Creature;
+        if (!cm.IsInProgress || creature?.CombatState == null)
+            return $"Potion {potion.Id.Entry} can only be used in combat";
+        if (creature.CombatState.CurrentSide != creature.Side || !creature.IsAlive || cm.PlayerActionsDisabled)
+            return $"Potion {potion.Id.Entry} can only be used during your turn";
+        if (_cardSelector.HasPending || _cardSelector.HasPendingReward || _pendingBundles != null)
+            return $"Potion {potion.Id.Entry} can't be used while a card selection is open (only AnyTime potions can)";
+        return null;
     }
 
     private Dictionary<string, object?> DoDiscardPotion(Player player, Dictionary<string, object?>? args)

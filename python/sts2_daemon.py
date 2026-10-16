@@ -1071,15 +1071,43 @@ class Daemon:
         self._stop = True
         return "stopped", 0
 
+    def _socket_alive(self):
+        c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            c.connect(self.sock_path)
+            return True
+        except OSError:
+            return False
+        finally:
+            c.close()
+
     def serve(self):
+        import fcntl
         import select
         import time
+        # Two clients that both found no daemon each spawn one. Only the first to get the
+        # lock serves; without this the second unlinked the first one's socket, leaving
+        # an orphaned daemon (and engine) running until its idle timeout.
+        self._lock_file = open(self.sock_path[:-len(".sock")] + ".lock", "w")
+        # (A daemon that is shutting down still holds it for a moment: wait briefly.)
+        for attempt in range(150):
+            try:
+                fcntl.flock(self._lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if attempt == 149 or self._socket_alive():
+                    return 0  # another daemon serves this session
+                time.sleep(0.02)
         try:
             os.unlink(self.sock_path)
         except OSError:
             pass
         srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        srv.bind(self.sock_path)
+        old_umask = os.umask(0o077)  # never world-connectable, even for a moment (/tmp fallback)
+        try:
+            srv.bind(self.sock_path)
+        finally:
+            os.umask(old_umask)
         os.chmod(self.sock_path, 0o600)
         srv.listen(8)
         self._stop = False
