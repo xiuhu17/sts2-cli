@@ -341,6 +341,14 @@ public partial class RunSimulator
     private readonly ManualResetEventSlim _turnStarted = new(false);
     private readonly ManualResetEventSlim _combatEnded = new(false);
     private static readonly LocLookup _loc = new();
+    // Per-instance ids for hand cards and potions ("uid"): the same card/potion object keeps its
+    // uid while it stays in hand / in its slot, so a client can tell "the card that was H2" from
+    // whatever card sits at index 2 now. Not game data; weak keys, so nothing is kept alive.
+    // Numbered from 1 per run (ResetUids on start_run / load_save), so a run replays with the same uids.
+    private static System.Runtime.CompilerServices.ConditionalWeakTable<object, object> _uids = new();
+    private static int _nextUid;
+    internal static int Uid(object o) => (int)_uids.GetValue(o, _ => System.Threading.Interlocked.Increment(ref _nextUid));
+    private static void ResetUids() { _uids = new(); _nextUid = 0; }
     private bool _eventOptionChosen;
     private int _lastEventOptionCount;
 
@@ -377,6 +385,7 @@ public partial class RunSimulator
             if (seed != null && seed.Trim().Length > MaxSeedLength)
                 return Error($"'seed' must be at most {MaxSeedLength} characters, got {seed.Trim().Length}", "bad_request");
             EnsureModelDbInitialized();
+            ResetUids();
             var mode = (gameMode ?? (modifiers?.Count > 0 ? "custom" : "standard")).ToLowerInvariant() switch
             {
                 "standard" => (GameMode?)GameMode.Standard,
@@ -750,6 +759,7 @@ public partial class RunSimulator
         try
         {
             EnsureModelDbInitialized();
+            ResetUids();
             if (ParityPatches.Failure != null) return Error(ParityPatches.Failure);
             if (RewardPatches.Failure != null) return Error(RewardPatches.Failure);
             ProgressState? progress = null;
@@ -2755,6 +2765,7 @@ public partial class RunSimulator
             var cardInfo = new Dictionary<string, object?>
             {
                 ["index"] = i,
+                ["uid"] = Uid(c),
                 ["id"] = c.Id.ToString(),
                 ["name"] = CardName(c),
                 ["cost"] = c.EnergyCost?.GetResolved() ?? 0,
@@ -4585,6 +4596,7 @@ public partial class RunSimulator
                 return new Dictionary<string, object?>
                 {
                     ["index"] = i,
+                    ["uid"] = Uid(p),
                     ["name"] = _loc.Potion(p.Id.Entry),
                     ["description"] = PotionText(p),
                     ["vars"] = pvars.Count > 0 ? pvars : null,

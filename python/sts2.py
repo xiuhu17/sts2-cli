@@ -9,8 +9,9 @@ a few milliseconds of overhead per step instead of an engine start-up.
     sts2 start --character Ironclad --seed abc [--ascension N] [--lang zh] [--profile PATH]
     sts2 state                 current decision as text, with numbered legal actions
     sts2 do 3                  take legal action #3
-    sts2 do "play Bash E0; play Strike; end"   several steps; stops at the first error or
-                               when a step no longer fits the current decision
+    sts2 do "play Bash E0; play Strike; end"   several steps; H#/E#/P# and numbers mean the
+                               view shown before the chain; stops at the first error, a new
+                               room/turn, or a step that no longer fits (sts2 help: Chains)
     sts2 deck | relics | potions | piles [draw] | map | card N | log [N]
     sts2 help                  all commands and action verbs (printed locally: no daemon starts)
     sts2 --json <command>      raw engine JSON instead of text

@@ -67,7 +67,11 @@ _LOC_CACHE = {}
 def loc(table, key):
     """Entry from the official localization tables (output language, English fallback)."""
     lang = "zhs" if LANG["lang"] == "zh" else "eng"
-    for l in (lang, "eng"):
+    return _loc_lang(lang, table, key) or _loc_lang("eng", table, key)
+
+
+def _loc_lang(lang, table, key):
+    for l in (lang,):
         k = (l, table)
         if k not in _LOC_CACHE:
             try:
@@ -162,6 +166,16 @@ def powers_text(powers, gl):
     return out
 
 
+def run_id_parts(ctx):
+    """Ascension and seed, as the game's top bar / run history show them."""
+    out = []
+    if ctx.get("ascension") is not None:
+        out.append(t(f"Ascension {ctx['ascension']}", f"进阶{ctx['ascension']}"))  # gameplay_ui ASCENSION_LEVEL
+    if ctx.get("seed"):
+        out.append(t(f"Seed {ctx['seed']}", f"种子：{ctx['seed']}"))  # main_menu_ui CUSTOM_RUN_SCREEN.SEED_LABEL
+    return out
+
+
 def header(st):
     ctx = st.get("context") or {}
     p = st.get("player") or {}
@@ -173,6 +187,7 @@ def header(st):
             parts.append(zh_term("room", ctx.get("room_type")))
         if (ctx.get("boss") or {}).get("name"):
             parts.append(f"Boss: {ctx['boss']['name']}")
+        parts.extend(run_id_parts(ctx))
     lines = [f"== {' | '.join(str(x) for x in parts)} =="] if parts else []
     if p:
         hp = f"{t('HP', '生命')} {p.get('hp')}/{p.get('max_hp')}"
@@ -200,14 +215,30 @@ def header(st):
 _PILE_NAMES = {"hand": ("hand", "手牌"), "draw": ("draw pile", "抽牌堆"), "discard": ("discard pile", "弃牌堆"),
                "exhaust": ("exhaust pile", "消耗堆")}
 
+def damage_text(e):
+    """One damage event: `amount` is the damage that got through (HP lost), `blocked` what
+    Block absorbed on top of it."""
+    amt, blk = e.get("amount") or 0, e.get("blocked") or 0
+    src = f"{e['source']} -> " if e.get("source") else ""
+    if blk and not amt:
+        s = src + t(f"{e.get('target')} blocked all {blk} damage", f"{e.get('target')} 格挡了全部 {blk} 点伤害")
+    else:
+        s = src + t(f"{e.get('target')} took {amt} damage", f"{e.get('target')} 受到 {amt} 点伤害")
+        if blk:
+            s += t(f" ({blk} more blocked)", f"（另有 {blk} 点被格挡）")
+    if e.get("card"):
+        s += f" [{e['card']}]"
+    if e.get("killed"):
+        s += t(" - KILLED", "，击杀")
+    return s
+
+
 EVENT_FMT = {
     "turn": lambda e: (t("-- your turn ", "-- 你的回合 ") if e.get("side") == "player" else t("-- enemy turn ", "-- 敌人回合 ")) + f"{e.get('round')} --",
     "card_played": lambda e: t("played ", "打出 ") + e.get("card", "?") + (f" -> {e['target']}" if e.get("target") else "") + (t(" (auto)", "（自动）") if e.get("auto") else ""),
-    "damage": lambda e: (f"{e['source']} " if e.get("source") else "") + t("hit ", "伤害 ") + f"{e.get('target')} {e.get('amount')}"
-              + (f" ({t('blocked', '格挡')} {e['blocked']})" if e.get("blocked") else "") + (f" [{e['card']}]" if e.get("card") else "")
-              + (t(" KILLED", " 击杀") if e.get("killed") else ""),
-    "block": lambda e: f"{e.get('target')} +{e.get('amount')} {t('Block', '格挡')}",
-    "power": lambda e: f"{e.get('target')} {e.get('power')} {'+' if (e.get('amount') or 0) >= 0 else ''}{e.get('amount')}"
+    "damage": lambda e: damage_text(e),
+    "block": lambda e: t(f"{e.get('target')} gained {e.get('amount')} Block", f"{e.get('target')} 获得 {e.get('amount')} 点格挡"),
+    "power": lambda e: f"{e.get('target')}{t(': ', '：')}{e.get('power')} {'+' if (e.get('amount') or 0) >= 0 else ''}{e.get('amount')}"
              + (f" ({t('from', '来自')} {e['source']})" if e.get("source") else ""),
     "enemy_move": lambda e: f"{e.get('enemy')} {t('acts', '行动')}" + (f" [{', '.join(zh_term('intent', i) for i in e['intents'])}]" if e.get("intents") else ""),
     "draw": lambda e: t("drew ", "抽到 ") + ", ".join(e.get("cards") or []),
@@ -222,12 +253,12 @@ EVENT_FMT = {
     "orb_channeled": lambda e: t("channeled ", "生成 ") + str(e.get("orb")),
     "potion_used": lambda e: t("used ", "使用 ") + str(e.get("potion")) + (f" -> {e['target']}" if e.get("target") else ""),
     "stars": lambda e: f"{t('Stars', '辉星')} {'+' if e.get('amount', 0) >= 0 else ''}{e.get('amount')}",
-    "summon": lambda e: t("summon ", "召唤 ") + f"{e.get('amount')}",
+    "summon": lambda e: t(f"summoned {e.get('amount')}", f"召唤 {e.get('amount')}"),
     "relic": lambda e: t("relic: ", "遗物：") + str(e.get("relic")),
     "enemy_died": lambda e: f"{e.get('enemy')} {t('died', '死亡')}",
-    "gold": lambda e: f"{t('Gold', '金币')} {e['change']:+d} (= {e.get('gold')})",
-    "max_hp": lambda e: f"{t('Max HP', '最大生命')} {e['change']:+d} (= {e.get('max_hp')})",
-    "hp": lambda e: f"{t('HP', '生命')} {e['change']:+d} (= {e.get('hp')})",
+    "gold": lambda e: f"{t('Gold', '金币')} {e['change']:+d} ({t('now', '现为')} {e.get('gold')})",
+    "max_hp": lambda e: f"{t('Max HP', '最大生命')} {e['change']:+d} ({t('now', '现为')} {e.get('max_hp')})",
+    "hp": lambda e: f"{t('HP', '生命')} {e['change']:+d} ({t('now', '现为')} {e.get('hp')})",
     "deck_added": lambda e: t("deck + ", "牌组 + ") + str(e.get("card")),
     "deck_removed": lambda e: t("deck - ", "牌组 - ") + str(e.get("card")),
     "deck_changed": lambda e: t("deck: ", "牌组：") + f"{e.get('from')} -> {e.get('to')}",
@@ -282,7 +313,7 @@ def action_label(a, st):
         return f"discard P{args.get('potion_index')} {pots.get(args.get('potion_index'), {}).get('name', '?')}"
     if act == "select_map_node":
         ch = next((c for c in st.get("choices") or [] if c.get("col") == args.get("col") and c.get("row") == args.get("row")), {})
-        return f"go ({args.get('col')},{args.get('row')}) {zh_term('room', ch.get('type', ''))}"
+        return f"go {args.get('col')} {args.get('row')} {zh_term('room', ch.get('type', ''))}".rstrip()
     if act == "choose_option":
         o = next((o for o in st.get("options") or [] if o.get("index") == args.get("option_index")), {})
         title = o.get("title") or rest_title(o)
@@ -382,7 +413,8 @@ def render_combat_core(st, gl, hand_title=None):
         for x in powers_text(e.get("powers"), gl):
             out.append(f"     {x}")
     hand = st.get("hand") or []
-    out.append(hand_title or t("Hand:", "手牌："))
+    out.append(hand_title or t("Hand: (H#/E# renumber as cards/enemies leave; within one `do` chain they mean this view)",
+                               "手牌：（卡牌/敌人离场后 H#/E# 会重新编号；同一条 do 指令链里它们指本视图中的牌和敌人）"))
     for c in hand:
         flag = "" if c.get("can_play", True) else t(" [unplayable]", " [不可打出]")
         dmg = ""
@@ -458,7 +490,7 @@ _KNOWN_KEYS = {
                   "discoveries_header", "main_menu_button", "abandoned"},
 }
 # Per-card fields shown by card_line / the card_select renderer.
-_CARD_KEYS = {"index", "id", "name", "cost", "cost_x", "star_cost", "type", "rarity", "description", "tips",
+_CARD_KEYS = {"index", "uid", "id", "name", "cost", "cost_x", "star_cost", "type", "rarity", "description", "tips",
               "keywords", "upgraded", "upgrade_level", "enchantment", "enchantment_amount", "affliction",
               "affliction_amount", "after_upgrade", "after_enchant", "transforms_to", "transform_options", "stats",
               "can_play", "unplayable", "target_type", "damage_by_target", "vars", "count", "price", "on_sale",
@@ -550,6 +582,9 @@ def game_over_lines(st):
     out = [(t("VICTORY", "胜利") if st.get("victory") else t("DEFEAT", "失败")) +
            f"  {t('Act', '幕')} {st.get('act')}  {t('Floor', '楼层')} {st.get('floor')}"
            + (f"  ({t('total floors', '总楼层')} {st['total_floor']})" if st.get("total_floor") is not None else "")]
+    ids = run_id_parts(st.get("context") or {})
+    if ids:
+        out.append("  " + " | ".join(ids))
     kb = st.get("killed_by")
     if isinstance(kb, dict):
         out.append(f"  {t('Killed by', '死因')}: {kb.get('name')}" + (f" - {_one_line(kb['quote'])}" if kb.get("quote") else ""))
@@ -657,7 +692,9 @@ def render_body(st, gl):
             body.append(f" potion {p.get('index')}) {p.get('price', p.get('cost'))}g {p.get('name')}{_desc(p.get('description'))}")
     elif d == "rewards":
         body.append(t("REWARDS", "奖励") + (t(" (potion slots full: discard a potion to take one)",
-                                               "（药水栏已满：丢弃药水后才能领取药水）") if st.get("potion_slots_full") else ""))
+                                               "（药水栏已满：丢弃药水后才能领取药水）") if st.get("potion_slots_full") else "")
+                    + t("  (claim N: these numbers stay fixed; claiming one does not renumber the rest)",
+                        "（claim N：编号固定，领取后其余奖励不会重新编号）"))
         for w in st.get("rewards") or []:
             body.append(f" {w.get('index')}) {reward_text(w)}")
     elif d == "treasure_relic":
@@ -738,34 +775,57 @@ def clip(text):
     return cut + f"\n... ({t('truncated; use --json or the query commands for the rest', '已截断；用 --json 或查询命令查看其余部分')})"
 
 
+_MAP_SYM = {"Monster": "M", "Elite": "E", "RestSite": "R", "Shop": "$", "Treasure": "T", "Unknown": "?",
+            "Event": "?", "Boss": "B", "Ancient": "A"}
+
+
 def render_map(m, st):
-    rows = m.get("rows") or []
-    sym = {"Monster": "M", "Elite": "E", "RestSite": "R", "Shop": "$", "Treasure": "T", "Unknown": "?",
-           "Event": "?", "Boss": "B", "Ancient": "A"}
-    choices = {(c.get("col"), c.get("row")) for c in (st or {}).get("choices") or []} if st and st.get("decision") == "map_select" else set()
-    width = 7
-    for r in rows:
-        for n in r:
-            width = max(width, (n.get("col") or 0) + 1)
+    """The act map with column numbers on top and row numbers (the ROW of `go COL ROW`, plus
+    the floor it is) on the left; each row with legal moves lists them at its right."""
+    rows = [r for r in m.get("rows") or [] if r]
+    sym = _MAP_SYM
+    on_map = bool(st and st.get("decision") == "map_select")
+    choices = {(c.get("col"), c.get("row")): c for c in (st or {}).get("choices") or []} if on_map else {}
+    ctx = m.get("context") or (st or {}).get("context") or {}
+    cur = m.get("current_coord") or {}
+    # Floor of a row: the act's floor counter at the current node minus its row.
+    off = (ctx.get("floor") - cur.get("row")) if isinstance(ctx.get("floor"), int) and isinstance(cur.get("row"), int) else None
+    nodes = [n for n in [m.get("start")] if isinstance(n, dict)] + [n for r in rows for n in r]
+    if isinstance(m.get("boss"), dict) and m["boss"].get("row") is not None:
+        nodes.append(m["boss"])
+    width = max([7] + [(n.get("col") or 0) + 1 for n in nodes])
+    by_row = {}
+    for n in nodes:
+        by_row.setdefault(n.get("row"), []).append(n)
     lines = [t("Map (bottom = start; [x] visited, <x> you are here, *x* reachable now; "
                "M monster E elite R rest $ shop T treasure ? unknown B boss A ancient; "
                "a visited ? shows what it was in lowercase: m e $ t, ? = event)",
                "地图（底部为起点；[x] 已走过，<x> 当前位置，*x* 现在可去；M 敌人 E 精英 R 休息 $ 商店 T 宝箱 ? 未知 B Boss A 先古之民；"
-               "去过的 ? 用小写显示实际房间：m e $ t，? 为事件）")]
-    grid = []
-    for r in rows:
-        if not r:
-            continue
-        row_i = r[0].get("row")
+               "去过的 ? 用小写显示实际房间：m e $ t，? 为事件）"),
+           t("Columns (COL) are numbered on top, rows (ROW) on the left with their floor (f): go COL ROW.",
+             "列号（COL）在上方，行号（ROW）及其楼层（f）在左侧：go COL ROW。")]
+    if m.get("boss"):
+        b = m["boss"]
+        lines.append(f"Boss: {b.get('name') if isinstance(b, dict) else b}")
+    if cur.get("col") is not None:
+        here = next((n for n in nodes if n.get("col") == cur.get("col") and n.get("row") == cur.get("row")), {})
+        lines.append(t("You are at", "当前位置") + f" ({cur.get('col')},{cur.get('row')}) "
+                     + str(zh_term("room", here.get("revealed_type") or here.get("type")) or ""))
+    if choices:
+        lines.append(t("Legal now:", "现在可走：") + "  " + "   ".join(
+            f"go {c} {r} = {zh_term('room', ch.get('type', '?'))}" for (c, r), ch in sorted(choices.items(), key=lambda kv: kv[0])))
+    pad = "         "
+    lines.append(pad + " ".join(f"{c:^3}" for c in range(width)).rstrip())
+    for row_i in sorted((r for r in by_row if r is not None), reverse=True):
         cells = ["   "] * width
         links = [" "] * (width * 4)
-        for n in r:
+        for n in by_row[row_i]:
             c = n.get("col") or 0
             s = sym.get(n.get("type"), "o")
             if n.get("revealed_type"):
                 # A visited "?" shows what it turned out to be (lowercase), like the game's icon.
                 s = sym.get(n["revealed_type"], "?").lower()
-            if n.get("current"):
+            if n.get("current") or (cur.get("col") == c and cur.get("row") == row_i):
                 s = f"<{s}>"
             elif (c, row_i) in choices:
                 s = f"*{s}*"
@@ -780,14 +840,12 @@ def render_map(m, st):
                 p = c * 4 + 1 + (2 if dc > 0 else -2 if dc < 0 else 0)
                 if 0 <= p < len(links):
                     links[p] = "|" if dc == 0 else ("/" if dc > 0 else "\\")
-        grid.append((row_i, " ".join(cells), "".join(links).rstrip()))
-    for row_i, cells, links in reversed(grid):
-        if links.strip():
-            lines.append(f"     {links}")
-        lines.append(f"{row_i:>3}  {cells}")
-    if m.get("boss"):
-        b = m["boss"]
-        lines.insert(1, f"Boss: {b.get('name') if isinstance(b, dict) else b}")
+        fl = f"f{row_i + off}" if off is not None else ""
+        here_opts = [f"go {c} {row_i}" for (c, r) in sorted(choices) if r == row_i]
+        if "".join(links).strip():
+            lines.append(pad + "".join(links).rstrip())
+        lines.append(f"{row_i:>3} {fl:>4} " + " ".join(cells).rstrip()
+                     + (f"   <- {', '.join(here_opts)}" if here_opts else ""))
     return "\n".join(lines)
 
 
@@ -820,6 +878,161 @@ class VerbError(Exception):
     pass
 
 
+class StopStep(VerbError):
+    """A step of a `do` chain that can't be applied safely to the current state (its H#/E#/P#
+    or screen index no longer means what the agent saw): the chain stops before it."""
+
+
+def _ident(i, *_):
+    return i
+
+
+class Refs:
+    """Resolves the index references of `do` steps (H#, E#, P#, action numbers, choose / pick /
+    claim / buy / select / go N) against the state that was shown when the chain was
+    submitted, so a step never silently lands on a different card, enemy, potion or option:
+
+    - H# / P#: the card / potion that had that index in the shown view, found again by its
+      uid (a per-instance id the engine sends) at its current index; gone -> stop.
+    - E#: the enemy shown as E#, found again by combat_id; dead or untargetable -> stop.
+    - screen indices (choose N, pick N, claim N, buy card N, select i,j, go N, alt N, ...):
+      only on the same kind of screen as shown and only while the item at that index is
+      still the same; otherwise stop. A claimed reward / bought item is left to the engine,
+      whose error then says so.
+    - action number N: the action numbered N in the shown list, remapped the same way.
+
+    The first step of a chain is read against that very state, so nothing changes for it."""
+
+    _SCREEN = {"choose_option": ("options", "option_index", "choose"), "select_card_reward": ("cards", "card_index", "pick"),
+               "claim_reward": ("rewards", "reward_index", "claim"), "select_treasure_relic": ("relics", "relic_index", "relic"),
+               "select_bundle": ("bundles", "bundle_index", "bundle"),
+               "select_card_alternative": ("alternatives", "alternative_index", "alt"),
+               "buy_card": ("cards", "card_index", "buy card"), "buy_relic": ("relics", "relic_index", "buy relic"),
+               "buy_potion": ("potions", "potion_index", "buy potion")}
+
+    def __init__(self, snap, numbered):
+        self.snap = snap or {}
+        self.numbered = list(numbered or [])
+        self.first = True
+        self.moved = []     # "H2 -> H0" notes for the current step
+
+    @staticmethod
+    def combat_of(st):
+        st = st or {}
+        if st.get("decision") == "combat_play":
+            return st
+        return st.get("combat") if isinstance(st.get("combat"), dict) else None
+
+    def _instance(self, i, st, key, idkey, prefix, what):
+        if self.first:
+            return i
+        if key == "potions":
+            old_list = (self.snap.get("player") or {}).get("potions") or []
+            cur_list = ((st or {}).get("player") or {}).get("potions") or []
+        else:
+            sc, cc = self.combat_of(self.snap), self.combat_of(st)
+            if sc is None:
+                raise StopStep(t(f"{prefix}{i}: no {what}s were shown when this chain started (it started at "
+                                 f"{self.snap.get('decision')}); look at the new state first",
+                                 f"{prefix}{i}：这条指令链开始时（{self.snap.get('decision')}）没有显示这些内容；请先查看新状态"))
+            old_list, cur_list = sc.get(key) or [], (cc or {}).get(key) or []
+        old = next((x for x in old_list if isinstance(x, dict) and x.get("index") == i), None)
+        if old is None:
+            have = ", ".join(f"{prefix}{x.get('index')} {x.get('name')}" for x in old_list if isinstance(x, dict)) or t("none", "无")
+            raise StopStep(t(f"{prefix}{i} was not in the view this chain started from (it had: {have})",
+                             f"{prefix}{i} 不在这条指令链开始时的视图中（当时有：{have}）"))
+        oid = old.get(idkey)
+        if oid is None:  # an engine without instance ids: only an unchanged list is safe
+            same = [x.get("name") for x in old_list if isinstance(x, dict)] == [x.get("name") for x in cur_list if isinstance(x, dict)]
+            if same:
+                return i
+            raise StopStep(t(f"{prefix}{i} ({old.get('name')}): the list changed and this engine sends no instance ids",
+                             f"{prefix}{i}（{old.get('name')}）：列表已变化，且引擎没有提供实例编号"))
+        cur = next((x for x in cur_list if isinstance(x, dict) and x.get(idkey) == oid), None)
+        if cur is None:
+            gone = {"card": t("is no longer in your hand (played, discarded, exhausted or transformed by an earlier step)",
+                              "已不在手牌中（已被前面的步骤打出、丢弃、消耗或变化）"),
+                    "enemy": t("is no longer a target (dead or untargetable)", "已不能被选为目标（死亡或不可选中）"),
+                    "potion": t("is no longer in your potion belt", "已不在药水栏中")}[what]
+            raise StopStep(t(f"{prefix}{i} ({old.get('name')}, as shown when this chain started) {gone}; "
+                             f"not using a different {what} in its place",
+                             f"{prefix}{i}（{old.get('name')}，指令链开始时显示的那个）{gone}；"
+                             f"不会改用{ {'card': '另一张牌', 'enemy': '另一个敌人', 'potion': '另一瓶药水'}[what] }"))
+        if cur.get("index") != i:
+            self.moved.append(f"{prefix}{i} -> {prefix}{cur.get('index')}")
+        return cur.get("index")
+
+    def hand(self, i, st):
+        return self._instance(i, st, "hand", "uid", "H", "card")
+
+    def enemy(self, i, st):
+        return self._instance(i, st, "enemies", "combat_id", "E", "enemy")
+
+    def potion(self, i, st):
+        return self._instance(i, st, "potions", "uid", "P", "potion")
+
+    def screen(self, key, i, st, what):
+        if self.first:
+            return i
+        sd, cd = self.snap.get("decision"), (st or {}).get("decision")
+        if sd != cd:
+            raise StopStep(t(f"'{what} {i}' would pick from a {cd} screen this chain has not shown you "
+                             f"(it started at {sd}); look at it first",
+                             f"'{what} {i}' 会在指令链未显示过的 {cd} 界面上选择（链开始于 {sd}）；请先查看"))
+        old = next((x for x in self.snap.get(key) or [] if isinstance(x, dict) and x.get("index") == i), None)
+        new = next((x for x in (st or {}).get(key) or [] if isinstance(x, dict) and x.get("index") == i), None)
+        if old is None:
+            if new is None:
+                return i  # not there before either: the engine's error explains
+            raise StopStep(t(f"{what} {i} was not on the screen this chain started from; it is now {_item_label(new)}",
+                             f"{what} {i} 不在指令链开始时的界面上；现在是 {_item_label(new)}"))
+        if new is None or new.get("is_stocked") is False:
+            return i  # claimed / sold: the engine's error (with our explanation) says so
+        if _item_key(old) != _item_key(new):
+            raise StopStep(t(f"{what} {i} is now {_item_label(new)} (it was {_item_label(old)} when this chain started)",
+                             f"{what} {i} 现在是 {_item_label(new)}（指令链开始时是 {_item_label(old)}）"))
+        return i
+
+    def numbered_action(self, n, st, act):
+        """The action numbered n in the shown list, its references resolved against `st`."""
+        a = act.get("action")
+        args = dict(act.get("args") or {})
+        if self.first:
+            return {"action": a, **({"args": args} if args else {})}
+        if a == "play_card":
+            args["card_index"] = self.hand(args.get("card_index"), st)
+        if a in ("use_potion", "discard_potion"):
+            args["potion_index"] = self.potion(args.get("potion_index"), st)
+        if "target_index" in args and a in ("play_card", "use_potion"):
+            args["target_index"] = self.enemy(args["target_index"], st)
+        if a == "select_cards" and str(args.get("indices", "")) != "":
+            for x in str(args["indices"]).split(","):
+                if x.strip().isdigit():
+                    self.screen("cards", int(x), st, "select")
+        if a == "select_map_node" and (st or {}).get("decision") != self.snap.get("decision"):
+            raise StopStep(t(f"action {n} was a map move; the game is now at {(st or {}).get('decision')}",
+                             f"操作 {n} 是地图移动；游戏现在处于 {(st or {}).get('decision')}"))
+        if a in self._SCREEN:
+            key, arg, what = self._SCREEN[a]
+            self.screen(key, args.get(arg), st, what)
+        return {"action": a, **({"args": args} if args else {})}
+
+
+def _item_key(x):
+    return tuple(json.dumps(x.get(k), sort_keys=True) for k in
+                 ("id", "name", "title", "type", "description", "amount", "price", "cost", "upgraded", "enchantment",
+                  "affliction", "col", "row", "card_count", "is_locked", "option_id", "cards"))
+
+
+def _item_label(x):
+    if x.get("type") in ("gold", "card") and "name" not in x:
+        return reward_text(x)
+    name = x.get("title") or x.get("name") or x.get("option_id") or x.get("id") or x.get("type")
+    if x.get("col") is not None and x.get("row") is not None:
+        return f"({x['col']},{x['row']}) {zh_term('room', x.get('type'))}"
+    return f"'{name}'"
+
+
 def _int(s, what):
     s = str(s).strip()
     if s[:1].upper() in ("H", "E", "P") and s[1:].isdigit():
@@ -843,15 +1056,16 @@ def _same_card(a, b):
     return all(a.get(k) == b.get(k) for k in keys)
 
 
-def _find_by_name(items, ref, what, prefix):
+def _find_by_name(items, ref, what, prefix, remap=_ident):
     """Index of the item `ref` names: P3 / 3 / an exact name / a unique name prefix.
     Several matches are only accepted when they are indistinguishable (two identical
-    Strikes): then any of them is the same play. Otherwise the step is ambiguous."""
+    Strikes): then any of them is the same play. Otherwise the step is ambiguous.
+    remap(i) turns an index reference into the current index (see Refs)."""
     ref_s = _strip_quotes(ref)
     if ref_s[:1].upper() == prefix and ref_s[1:].isdigit():
-        return int(ref_s[1:])
+        return remap(int(ref_s[1:]))
     if ref_s.lstrip("-").isdigit():
-        return int(ref_s)
+        return remap(int(ref_s))
     low = ref_s.lower()
     exact = [x for x in items if str(x.get("name", "")).lower() == low]
     pref = exact or [x for x in items if str(x.get("name", "")).lower().startswith(low)]
@@ -893,8 +1107,12 @@ def _split_card_target(words, hand, enemies):
     return words[0], (" ".join(words[1:]) or None)
 
 
-def parse_verb(text, st, numbered):
-    """One step of `sts2 do` -> engine action dict {action, args}."""
+def parse_verb(text, st, numbered, refs=None):
+    """One step of `sts2 do` -> engine action dict {action, args}. `refs` (a Refs) resolves
+    index references against the state shown when the chain started; without it they are
+    read against `st`."""
+    if refs is None:
+        refs = Refs(st, numbered)
     words = text.split()
     if not words:
         raise VerbError("empty step")
@@ -910,12 +1128,13 @@ def parse_verb(text, st, numbered):
                             t(f"softlock: {st.get('softlock_reason')} (the game shows no button here)",
                               f"软锁：{st.get('softlock_reason')}（游戏在这里没有可点的按钮）")
                             if (st or {}).get("softlocked") else f"no legal actions at {dec}")
-        for num, act in numbered:
+        shown = refs.numbered if not refs.first else numbered
+        for num, act in shown:
             if num == n:
                 if "choose" in act or "choose_cell" in act:
-                    raise VerbError(f"action {n} needs arguments: {action_label(act, st)}")
-                return {"action": act["action"], **({"args": act["args"]} if act.get("args") else {})}
-        raise VerbError(f"no action number {n} (have 1-{len(numbered)}; run 'sts2 state')")
+                    raise VerbError(f"action {n} needs arguments: {action_label(act, refs.snap if not refs.first else st)}")
+                return refs.numbered_action(n, st, act)
+        raise VerbError(f"no action number {n} (have 1-{len(shown)}; run 'sts2 state')")
     if v == "raw":
         try:
             obj = json.loads(" ".join(a))
@@ -938,43 +1157,51 @@ def parse_verb(text, st, numbered):
         hand = (st or {}).get("hand") or []
         enemies = (st or {}).get("enemies") or []
         card_ref, target_ref = _split_card_target(a, hand, enemies)
-        args = {"card_index": _find_by_name(hand, card_ref, "card", "H")}
+        args = {"card_index": _find_by_name(hand, card_ref, "card", "H", lambda i: refs.hand(i, st))}
         if target_ref:
-            args["target_index"] = _find_by_name(enemies, target_ref, "enemy", "E")
+            args["target_index"] = _find_by_name(enemies, target_ref, "enemy", "E", lambda i: refs.enemy(i, st))
         return {"action": "play_card", "args": args}
     if v in ("end", "e", "endturn", "end_turn"):
         return {"action": "end_turn"}
     if v in ("potion", "use", "pot"):
         if not a:
             raise VerbError("potion <P0 | 0> [target]")
-        args = {"potion_index": _int(a[0], "potion")}
+        args = {"potion_index": refs.potion(_int(a[0], "potion"), st)}
         if len(a) > 1:
-            args["target_index"] = _find_by_name((st or {}).get("enemies") or [], " ".join(a[1:]), "enemy", "E")
+            args["target_index"] = _find_by_name((st or {}).get("enemies") or [], " ".join(a[1:]), "enemy", "E",
+                                                 lambda i: refs.enemy(i, st))
         return {"action": "use_potion", "args": args}
     if v in ("discard", "toss"):
-        return {"action": "discard_potion", "args": {"potion_index": _int(a[0] if a else "", "potion")}}
+        return {"action": "discard_potion", "args": {"potion_index": refs.potion(_int(a[0] if a else "", "potion"), st)}}
     if v in ("choose", "opt", "option", "o", "c"):
-        return {"action": "choose_option", "args": {"option_index": _int(a[0] if a else "", "option")}}
+        return {"action": "choose_option", "args": {"option_index": refs.screen("options", _int(a[0] if a else "", "option"), st, "choose")}}
     if v in ("go", "node", "n", "path"):
+        a = " ".join(a).replace("(", " ").replace(")", " ").replace(",", " ").split()  # go (3,5) / go 3,5
         if len(a) >= 2:
             return {"action": "select_map_node", "args": {"col": _int(a[0], "col"), "row": _int(a[1], "row")}}
         choices = (st or {}).get("choices") or []
         i = _int(a[0] if a else "", "choice")
+        if not refs.first:
+            # go N = the Nth listed move: only on the map screen the chain started from.
+            if dec != refs.snap.get("decision") or [(c.get("col"), c.get("row")) for c in choices] != \
+                    [(c.get("col"), c.get("row")) for c in refs.snap.get("choices") or []]:
+                raise StopStep(t(f"'go {i}' means the {i}th move on the map you saw; the game is now at {dec} - use go COL ROW",
+                                 f"'go {i}' 指你看到的地图上的第 {i} 个选项；游戏现在处于 {dec}——请用 go COL ROW"))
         if not 0 <= i < len(choices):
             raise VerbError(f"go <0-{len(choices) - 1}> picks a map choice (or go <col> <row>)")
         return {"action": "select_map_node", "args": {"col": choices[i]["col"], "row": choices[i]["row"]}}
     if v in ("pick", "take"):
         n = _int(a[0] if a else "", "index")
         if dec == "card_reward":
-            return {"action": "select_card_reward", "args": {"card_index": n}}
+            return {"action": "select_card_reward", "args": {"card_index": refs.screen("cards", n, st, "pick")}}
         if dec == "treasure_relic":
-            return {"action": "select_treasure_relic", "args": {"relic_index": n}}
+            return {"action": "select_treasure_relic", "args": {"relic_index": refs.screen("relics", n, st, "pick")}}
         if dec == "rewards":
-            return {"action": "claim_reward", "args": {"reward_index": n}}
+            return {"action": "claim_reward", "args": {"reward_index": refs.screen("rewards", n, st, "pick")}}
         if dec == "card_select":
-            return {"action": "select_cards", "args": {"indices": str(n)}}
+            return {"action": "select_cards", "args": {"indices": str(refs.screen("cards", n, st, "pick"))}}
         if dec == "bundle_select":
-            return {"action": "select_bundle", "args": {"bundle_index": n}}
+            return {"action": "select_bundle", "args": {"bundle_index": refs.screen("bundles", n, st, "pick")}}
         raise VerbError(f"'pick' does not apply to {dec}")
     if v in ("select", "sel", "s"):
         if [x.lower() for x in a] in (["none"], ["-"]):
@@ -982,6 +1209,9 @@ def parse_verb(text, st, numbered):
         idx = ",".join(x for part in a for x in part.split(",") if x.strip())
         if not idx:
             raise VerbError("select <i,j,...> (or select none: confirm with no card when min_select is 0)")
+        for x in idx.split(","):
+            if x.strip().isdigit():
+                refs.screen("cards", int(x), st, "select")
         return {"action": "select_cards", "args": {"indices": idx}}
     if v == "skip":
         m = {"card_reward": "skip_card_reward", "card_select": "skip_select", "treasure_relic": "skip_treasure_relic",
@@ -993,9 +1223,10 @@ def parse_verb(text, st, numbered):
             raise VerbError(f"'skip' does not apply to {dec}")
         return {"action": m[dec]}
     if v in ("alt", "alternative", "reroll"):
-        return {"action": "select_card_alternative", "args": {"alternative_index": _int(a[0] if a else "", "alternative")}}
+        return {"action": "select_card_alternative",
+                "args": {"alternative_index": refs.screen("alternatives", _int(a[0] if a else "", "alternative"), st, "alt")}}
     if v == "claim":
-        return {"action": "claim_reward", "args": {"reward_index": _int(a[0] if a else "", "reward")}}
+        return {"action": "claim_reward", "args": {"reward_index": refs.screen("rewards", _int(a[0] if a else "", "reward"), st, "claim")}}
     if v == "buy":
         if not a:
             raise VerbError("buy card|relic|potion <index>  (or buy c0 / r1 / p2)")
@@ -1006,7 +1237,8 @@ def parse_verb(text, st, numbered):
         verb = {"c": ("buy_card", "card_index"), "r": ("buy_relic", "relic_index"), "p": ("buy_potion", "potion_index")}.get(k)
         if not verb or idx is None:
             raise VerbError("buy card|relic|potion <index>")
-        return {"action": verb[0], "args": {verb[1]: _int(idx, "index")}}
+        key = {"c": "cards", "r": "relics", "p": "potions"}[k]
+        return {"action": verb[0], "args": {verb[1]: refs.screen(key, _int(idx, "index"), st, f"buy {key[:-1]}")}}
     if v in ("remove", "removal"):
         return {"action": "remove_card"}
     if v in ("proceed", "continue", "next"):
@@ -1014,9 +1246,9 @@ def parse_verb(text, st, numbered):
     if v in ("leave", "exit"):
         return {"action": "leave_room"}
     if v in ("bundle", "pack"):
-        return {"action": "select_bundle", "args": {"bundle_index": _int(a[0] if a else "", "bundle")}}
+        return {"action": "select_bundle", "args": {"bundle_index": refs.screen("bundles", _int(a[0] if a else "", "bundle"), st, "bundle")}}
     if v == "relic":
-        return {"action": "select_treasure_relic", "args": {"relic_index": _int(a[0] if a else "", "relic")}}
+        return {"action": "select_treasure_relic", "args": {"relic_index": refs.screen("relics", _int(a[0] if a else "", "relic"), st, "relic")}}
     if v == "click":
         if len(a) < 2:
             raise VerbError("click <x> <y> big|small")
@@ -1027,6 +1259,113 @@ def parse_verb(text, st, numbered):
     raise VerbError(f"unknown step '{text}' (sts2 help lists the verbs)")
 
 
+_TARGET_TEXT = {"Self": ("targets yourself", "目标：自己"), "AnyEnemy": ("targets one enemy", "目标：单个敌人"),
+                "AllEnemies": ("hits all enemies", "目标：所有敌人"), "RandomEnemy": ("hits a random enemy", "目标：随机敌人"),
+                "None": ("no target", "无目标"), "AnyAlly": ("targets an ally", "目标：友方"),
+                "AnyPlayer": ("targets a player", "目标：玩家"), "AllAllies": ("all allies", "目标：所有友方")}
+
+
+def card_ref_text(c):
+    """'Defend (Skill, 1 energy, targets yourself)': what a hand card is, for error messages."""
+    name = c.get("name", "?")
+    bits = []
+    if LANG["lang"] == "zh" and str(c.get("id", "")).startswith("CARD."):
+        en = _loc_lang("eng", "cards", c["id"][5:] + ".title")
+        if en and en != name:
+            bits.append(en)
+    bits.append(str(zh_term("card_type", c.get("type")) or "?"))
+    cost = "X" if c.get("cost_x") else c.get("cost")
+    if cost is not None:
+        bits.append(t(f"{cost} energy", f"{cost} 能量"))
+    tt = c.get("target_type")
+    if tt:
+        en_zh = _TARGET_TEXT.get(tt)
+        bits.append(t(*en_zh) if en_zh else tt)
+    s = f"{name} ({', '.join(bits)})" if LANG["lang"] != "zh" else f"{name}（{'，'.join(bits)}）"
+    if c.get("can_play") is False:
+        why = str(c.get("unplayable_message") or ", ".join(c.get("unplayable_reasons") or [])).rstrip("。.")
+        s += t(" - not playable" + (f": {why}" if why else ""), "，不能打出" + (f"：{why}" if why else ""))
+    return s
+
+
+def describe_refs(action, st, rewards_seen=None):
+    """What each index in an engine action refers to in `st` (for error messages)."""
+    a = action.get("action")
+    args = action.get("args") or {}
+    out = []
+    cb = Refs.combat_of(st) or {}
+
+    def listing(items, prefix):
+        return ", ".join(f"{prefix}{x.get('index')} {x.get('name') or x.get('title')}" for x in items if isinstance(x, dict)) \
+            or t("none", "无")
+
+    if "card_index" in args and a == "play_card":
+        i, hand = args["card_index"], cb.get("hand") or []
+        c = next((x for x in hand if x.get("index") == i), None)
+        out.append(t(f"H{i} is now {card_ref_text(c)}", f"H{i} 现在是 {card_ref_text(c)}") if c else
+                   t(f"there is no H{i} (hand: {listing(hand, 'H')})", f"没有 H{i}（手牌：{listing(hand, 'H')}）"))
+    if "potion_index" in args and a in ("use_potion", "discard_potion"):
+        i = args["potion_index"]
+        pots = [x for x in (st.get("player") or {}).get("potions") or [] if isinstance(x, dict)]
+        p = next((x for x in pots if x.get("index") == i), None)
+        if p:
+            tt = _TARGET_TEXT.get(p.get("target_type"))
+            out.append(t(f"P{i} is now {p.get('name')} ({tt[0] if tt else p.get('target_type')}, {p.get('usage')}"
+                         + ("" if p.get("can_use", True) else ", can't be used now") + ")",
+                         f"P{i} 现在是 {p.get('name')}（{tt[1] if tt else p.get('target_type')}，{p.get('usage')}"
+                         + ("" if p.get("can_use", True) else "，现在不能使用") + "）"))
+        else:
+            out.append(t(f"there is no P{i} (potions: {listing(pots, 'P')})", f"没有 P{i}（药水：{listing(pots, 'P')}）"))
+    if "target_index" in args:
+        j, ens = args["target_index"], cb.get("enemies") or []
+        e = next((x for x in ens if x.get("index") == j), None)
+        out.append(t(f"E{j} is {e.get('name')} (HP {e.get('hp')}/{e.get('max_hp')})", f"E{j} 是 {e.get('name')}（生命 {e.get('hp')}/{e.get('max_hp')}）")
+                   if e else t(f"there is no E{j} (targets: {listing(ens, 'E')})", f"没有 E{j}（可选目标：{listing(ens, 'E')}）"))
+    if a in Refs._SCREEN:
+        key, arg, what = Refs._SCREEN[a]
+        i = args.get(arg)
+        items = [x for x in st.get(key) or [] if isinstance(x, dict)]
+        x = next((y for y in items if y.get("index") == i), None)
+        if a == "claim_reward" and x is None and i in (rewards_seen or {}):
+            left = ", ".join(f"{y.get('index')} {reward_text(y) if y.get('type') in ('gold', 'card') else y.get('name') or y.get('type')}"
+                             for y in items) or t("none", "无")
+            out.append(t(f"reward {i} ({rewards_seen[i]}) was already claimed - reward numbers stay fixed after a claim "
+                         f"(unclaimed: {left})",
+                         f"奖励 {i}（{rewards_seen[i]}）已经领取过了——领取后奖励编号不变（未领取：{left}）"))
+        elif x is None:
+            have = ", ".join(str(y.get("index")) for y in items if y.get("is_stocked") is not False) or t("none", "无")
+            out.append(t(f"there is no {what} {i} here (have: {have})", f"这里没有 {what} {i}（现有：{have}）"))
+        else:
+            label = reward_text(x) if key == "rewards" else (x.get("title") or x.get("name") or rest_title(x) or "?")
+            s = t(f"{what} {i} is {label}", f"{what} {i} 是 {label}")
+            if x.get("is_stocked") is False:
+                s = t(f"{what} {i} is sold out", f"{what} {i} 已售出")
+            elif a.startswith("buy_") and x.get("price", x.get("cost")) is not None:
+                s += t(f" ({x.get('price', x.get('cost'))}g; you have {(st.get('player') or {}).get('gold')}g)",
+                       f"（{x.get('price', x.get('cost'))} 金币；你有 {(st.get('player') or {}).get('gold')} 金币）")
+            if x.get("is_locked"):
+                s += t(" [locked]", " [锁定]")
+            if x.get("is_enabled") is False:
+                s += t(" [disabled]", " [不可用]")
+            out.append(s)
+    if a == "select_cards" and str(args.get("indices", "")) != "":
+        cards = {c.get("index"): c for c in st.get("cards") or [] if isinstance(c, dict)}
+        for x in str(args["indices"]).split(","):
+            x = x.strip()
+            c = cards.get(int(x)) if x.isdigit() else None
+            out.append(t(f"card {x} is {c.get('name')}", f"卡牌 {x} 是 {c.get('name')}") if c else
+                       t(f"there is no card {x} (0-{len(cards) - 1})", f"没有卡牌 {x}（0-{len(cards) - 1}）"))
+        if st.get("min_select") is not None:
+            out.append(t(f"this screen takes {st.get('min_select')}-{st.get('max_select')} cards",
+                         f"此界面需选择 {st.get('min_select')}-{st.get('max_select')} 张牌"))
+    if a == "select_map_node":
+        ch = st.get("choices") or []
+        legal = ", ".join(f"go {c.get('col')} {c.get('row')} {zh_term('room', c.get('type'))}" for c in ch) or t("none", "无")
+        out.append(t(f"({args.get('col')},{args.get('row')}) is not a move you can make now (legal: {legal}; sts2 map shows COL/ROW)",
+                     f"({args.get('col')},{args.get('row')}) 现在不能前往（可走：{legal}；sts2 map 显示列/行号）"))
+    return out
+
+
 HELP = """sts2 - play Slay the Spire 2 (headless) from the shell. One command per step.
 
   sts2 start --character Ironclad|Silent|Defect|Regent|Necrobinder [--seed S] [--ascension 0-10]
@@ -1034,10 +1373,7 @@ HELP = """sts2 - play Slay the Spire 2 (headless) from the shell. One command pe
                              --character is required; no/blank seed = random; ascension 0 by default
   sts2 state                 the current decision, with numbered legal actions
   sts2 do N                  take legal action number N (from the last state shown)
-  sts2 do "STEP; STEP; ..."  several steps; stops at the first error, and before any step once
-                             the game is at a different decision or a new turn (e.g. a card
-                             selection popped up, the fight ended). A bare number N after the
-                             first step only runs while the action list is unchanged.
+  sts2 do "STEP; STEP; ..."  several steps (a chain; see "Chains" below)
   sts2 deck [--upgrades]     the deck with full card text     sts2 relics | potions
   sts2 piles [draw|discard|exhaust|hand]  combat piles (draw pile sorted, order hidden)
   sts2 card N | card hN | card ID [--upgraded]   one card in detail (deck index, hand index, id)
@@ -1045,15 +1381,34 @@ HELP = """sts2 - play Slay the Spire 2 (headless) from the shell. One command pe
   sts2 --json <command>      raw engine JSON                  sts2 stop [--forget]  stop the daemon
                              (the run is replayed on the next call; --forget ends it)
 
-Steps for `do` (indices are read from the state at the moment each step runs):
+Steps for `do`:
   N                 legal action number N         play H2 [E1] | play Body Slam [Jaw Worm]
   end               end turn                      | play Body Slam -> E1   potion P0 [E1]
   discard P0        throw a potion away           choose N   (event / rest site option)
-  go N (Nth map choice) | go COL ROW              pick N  (card reward / relic / reward / pack)
+  go COL ROW (sts2 map) | go N (Nth map choice)   pick N  (card reward / relic / reward / pack)
   select 0,2        card selection                skip  (card reward, cancelable selection, treasure)
   alt N             card reward alternative       claim N   proceed   leave   remove
   buy card|relic|potion N                         click X Y big|small  (Crystal Sphere)
   raw {"action":"...","args":{...}}               any engine verb as verb key=value
+
+Chains - PREFER CARD NAMES (play Strike): H#/E# renumber as soon as a card leaves the hand
+or an enemy dies (after `play H0` the old H1 is H0). In one chain every index means the view
+shown when you submitted it (the last state/do reply):
+  H# / P#   that card / potion wherever it is now (by uid); gone (played, discarded,
+            exhausted, transformed) -> the chain stops, never a different card.
+            "play H0; play H1" = the cards shown as H0 and H1; "play H0; play H0" stops.
+  E#        that enemy (by combat_id); dead -> stop.     N   that numbered action, remapped.
+  choose / pick / claim / buy / select / alt / go N   only on the same kind of screen and
+            while that item is unchanged; a screen you have not seen yet (the card reward
+            `claim 2` opens) stops the chain before such a step. raw / engine verbs: as written.
+The chain goes on while the next step is legal and unambiguous where the game is now, also
+after the decision type changed ("pick 1; proceed", "select 1; end" after a mid-turn card
+selection). It stops before the next step on a new room, a fight starting or ending, a new
+turn, the end of the run, a step that does not apply to the new decision, a potion step on
+another screen than the chain started at, an index that can't be resolved (above), and at
+the first error (which says what each index refers to now).
+Reward numbers are STABLE: claiming one does not renumber the rest ("claim 0; claim 1" is
+fine); claiming a gone index says it was already claimed.
 
 Card names: the longest leading words that name a card in hand are the card, the rest is
 the target. Two cards with the same name that differ (upgrade, enchantment, cost...) are
@@ -1064,7 +1419,9 @@ that can't be played is an error saying why.
 Rules: only legal actions are accepted (the error lists them); nothing is chosen for you.
 Rewards screens and treasure chests are decisions (claim / pick / proceed); --manual-rewards
 is accepted but changes nothing. Each reply starts with what happened since the previous
-decision (cards played, damage, enemy moves, relic triggers...). If the engine or the
+decision (cards played, damage, enemy moves, relic triggers...), once: `state` right after a
+`do` does not repeat them (sts2 log does). The header shows ascension and seed; sts2 map
+numbers columns (COL) and rows (ROW, floor f) for `go COL ROW`. If the engine or the
 daemon dies, the run is replayed from its seed and commands (kept in $TMPDIR).
 """
 
@@ -1083,6 +1440,9 @@ class Daemon:
         self.idle = float(os.environ.get("STS2_IDLE_TIMEOUT", "1800"))
         self.restarts = 0
         self._notes = []            # one-time notes for the next reply (restarts, restores)
+        self._events_shown = None   # the events of the decision whose events were last printed
+        self._rewards_seen = {}     # reward index -> text, for the rewards screen of this room
+        self._rewards_room = None
 
     # engine
     def _start_engine(self):
@@ -1203,6 +1563,16 @@ class Daemon:
         if st.get("type") == "decision":
             self.last = st
             self.numbered = list(enumerate(st.get("legal_actions") or [], 1))
+            if st.get("decision") == "rewards":
+                # Remember every reward this screen listed: claim indices never renumber, so
+                # an index that has disappeared was claimed.
+                ctx = st.get("context") or {}
+                room = (ctx.get("act"), ctx.get("floor"), ctx.get("total_floor"))
+                if room != self._rewards_room:
+                    self._rewards_room, self._rewards_seen = room, {}
+                for w in st.get("rewards") or []:
+                    if isinstance(w, dict) and w.get("index") is not None:
+                        self._rewards_seen[w["index"]] = reward_text(w)
 
     # requests
     def handle(self, argv, as_json):
@@ -1246,6 +1616,7 @@ class Daemon:
         if r.get("code") == "flow_failed" and isinstance(r.get("state"), dict):
             self._set_last(r["state"])
             self._remember_events(r["state"].get("events"))
+            self._events_shown = self._events_key(r["state"])
             return msg + "\n" + render_decision(r["state"], self.numbered)
         if r.get("legal_actions") is not None and self.last is not None:
             msg += f"\n({t('sts2 state shows the current decision', 'sts2 state 显示当前决策')})"
@@ -1318,17 +1689,61 @@ class Daemon:
             self.log = []
             self._set_last(r)
             self._remember_events(r.get("events"))
+            self._events_shown = self._events_key(r)
         return self._out_engine(r, as_json, lambda r: render_decision(r, self.numbered))
 
     def cmd_state(self, args, as_json):
         if (u := self._usage(args, "sts2 state")):
             return u
         r = self.send({"cmd": "get_state"})
-        if r.get("type") == "decision":
-            self._set_last(r)
-        return self._out_engine(r, as_json, lambda r: render_decision(r, self.numbered))
+        if r.get("type") != "decision":
+            return self._out_engine(r, as_json, lambda r: render_decision(r, self.numbered))
+        self._set_last(r)
+        key = self._events_key(r)
+        if as_json or key != self._events_shown:
+            # (--json always carries the engine's events.) First time these events are shown.
+            if not as_json:
+                self._events_shown = key
+            return self._out_engine(r, as_json, lambda r: render_decision(r, self.numbered))
+        # The previous reply already printed what happened since the last decision: once is enough.
+        note = [t("(events since the last decision: shown in the previous reply; sts2 log repeats them)",
+                  "（上次决策以来的事件已在上一条回复中显示；sts2 log 可再次查看）")] if r.get("events") else []
+        return render_decision(r, self.numbered, extra_events=[], prefix=note), 0
+
+    @staticmethod
+    def _where(st):
+        """(act, floor, in combat, combat round) of a decision: a `do` chain stops when any of
+        them changes (a new room, a fight starting or ending, a new turn)."""
+        st = st or {}
+        ctx = st.get("context") or {}
+        cb = Refs.combat_of(st)
+        return ctx.get("act"), ctx.get("floor"), cb is not None, (cb or {}).get("round")
+
+    def _boundary(self, start, st):
+        a0, f0, c0, r0 = self._where(start)
+        a1, f1, c1, r1 = self._where(st)
+        dec = (st or {}).get("decision")
+        if dec == "game_over":
+            return t("the run is over", "本局已结束")
+        if (a0, f0) != (a1, f1):
+            return t(f"the run moved on to a new room ({dec})", f"已进入新的房间（{dec}）")
+        if c0 and not c1:
+            return t(f"the fight is over (now at {dec})", f"战斗已结束（现在处于 {dec}）")
+        if c1 and not c0:
+            return t("a fight started", "战斗已开始")
+        if c0 and r0 != r1:
+            return t("a new turn", "新的回合")
+        return None
 
     def cmd_do(self, args, as_json):
+        """Run the steps in order. Index references are resolved against the state shown when
+        the chain was submitted (Refs). After a step, the chain goes on when the next step is
+        legal and unambiguous on the decision the game is at now - also when its type changed
+        (pick a card -> back to the rewards; a mid-turn card selection -> back to the fight) -
+        and stops before it when the game entered a new room, a fight started or ended, a new
+        turn began, or the run ended; when the step does not apply to the new decision; when a
+        potion step would run on a different screen than the chain started at; or when its
+        index reference can't be resolved safely. It also stops at the first error."""
         text = " ".join(args).replace("\n", ";")
         steps = [s.strip() for s in text.split(";") if s.strip()]
         if not steps:
@@ -1339,43 +1754,51 @@ class Daemon:
                 return self._error_text(r) if not as_json else json.dumps(r), 1
             self._set_last(r)
         results, events, final, code = [], [], None, 0
-        shown_actions = [a for _, a in self.numbered]   # the list the agent saw
-        prev_dec = (self.last.get("decision"), self.last.get("round")) if self.last else None
+        start = self.last
+        refs = Refs(start, self.numbered)   # what the agent saw
         for i, step in enumerate(steps):
             st = self.last
             dec = st.get("decision") if st else None
+            refs.first = i == 0
+            refs.moved = []
             if i > 0:
-                # A batch is planned against the decision the agent saw: stop as soon as the
-                # game moved to a different decision (a card selection popped up, the fight
-                # ended, ...), before reading the step against a screen the agent hasn't seen.
-                if (dec, st.get("round") if st else None) != prev_dec:
-                    now = dec if (dec, st.get("round") if st else None)[0] != prev_dec[0] else t("a new turn", "新的回合")
+                why = self._boundary(start, st)
+                if why:
                     results.append({"step": step, "ok": False, "stopped": True,
-                                    "error": t(f"not run: the game is now at {now}", f"未执行：游戏现在处于 {now}")})
-                    break
-                # Action numbers refer to the list the agent saw; after a step it has changed.
-                w = step.split()
-                if len(w) == 1 and w[0].isdigit() and [a for _, a in self.numbered] != shown_actions:
-                    results.append({"step": step, "ok": False, "stopped": True,
-                                    "error": t("not run: the action list changed, so action numbers no longer mean "
-                                               "what you saw (use names: play Strike, choose 1, ...)",
-                                               "未执行：可选操作列表已变化，编号含义已不同（请用名称：play Strike、choose 1 等）")})
+                                    "error": t(f"not run: {why}", f"未执行：{why}")})
                     break
             try:
-                action = parse_verb(step, st, self.numbered)
+                action = parse_verb(step, st, self.numbered, refs)
+            except StopStep as e:
+                results.append({"step": step, "ok": False, "stopped": True, "error": t(f"not run: {e}", f"未执行：{e}")})
+                break
             except VerbError as e:
-                results.append({"step": step, "ok": False, "error": str(e)})
-                code = 1
+                if i > 0 and dec != start.get("decision"):
+                    # The step was written for another screen than the one the game is at now.
+                    results.append({"step": step, "ok": False, "stopped": True,
+                                    "error": t(f"not run: the game is now at {dec}: {e}", f"未执行：游戏现在处于 {dec}：{e}")})
+                else:
+                    results.append({"step": step, "ok": False, "error": str(e)})
+                    code = 1
                 break
-            if dec in NATIVE and action.get("action") not in NATIVE[dec] \
-                    and action.get("action") not in ("use_potion", "discard_potion") and i > 0:
+            act = action.get("action")
+            if i > 0 and dec in NATIVE and act not in NATIVE[dec] and act not in ("use_potion", "discard_potion"):
                 results.append({"step": step, "ok": False, "stopped": True,
-                                "error": f"not run: the game is now at {dec}"})
+                                "error": t(f"not run: the game is now at {dec}, where '{step}' does not apply",
+                                           f"未执行：游戏现在处于 {dec}，'{step}' 不适用")})
                 break
-            label = action_label(action, st) if st else action.get("action")
+            if i > 0 and act in ("use_potion", "discard_potion") and dec != start.get("decision"):
+                results.append({"step": step, "ok": False, "stopped": True,
+                                "error": t(f"not run: the game is now at {dec} (the chain started at {start.get('decision')}); "
+                                           "a potion step only runs on the screen the chain started at",
+                                           f"未执行：游戏现在处于 {dec}（链开始于 {start.get('decision')}）；药水步骤只在链开始时的界面上执行")})
+                break
+            label = action_label(action, st) if st else act
+            if refs.moved:
+                label += "  (" + t("shown as ", "原为 ") + ", ".join(m.split(" -> ")[0] for m in refs.moved) + ")"
             r = self.send({"cmd": "action", **action}, record=True)
             if r.get("type") == "error":
-                results.append({"step": step, "ok": False, "error": r.get("message")})
+                results.append({"step": step, "ok": False, "error": self._explain(action, st, r)})
                 if r.get("code") == "flow_failed" and isinstance(r.get("state"), dict):
                     self._set_last(r["state"])
                     events.extend(r["state"].get("events") or [])
@@ -1389,6 +1812,8 @@ class Daemon:
             if r.get("decision") == "game_over":
                 break
         self._remember_events(events)
+        if final is not None:
+            self._events_shown = self._events_key(final)
         if as_json:
             return json.dumps({"results": results, "state": final}, ensure_ascii=False, separators=(",", ":")), code
         lines = []
@@ -1403,6 +1828,32 @@ class Daemon:
         if shown is not None:
             return render_decision(shown, self.numbered, extra_events=events, prefix=lines), code
         return clip("\n".join(lines)), code
+
+    @staticmethod
+    def _events_key(st):
+        return json.dumps((st or {}).get("events") or [], sort_keys=True, ensure_ascii=False)
+
+    def _explain(self, action, st, r):
+        """An engine error for one step, led by what each index in it refers to now."""
+        import re
+        msg = str(r.get("message") or r.get("code"))
+        if r.get("code") != "illegal_action":
+            return msg
+        m = re.match(r"'[a-z_]+' is not allowed now: (.*?)(?: Current decision: [a-z_]+\.)?(?: (Legal: .*))?$", msg, re.S)
+        reason, legal = (m.group(1), m.group(2)) if m else (msg, None)
+        inner = re.search(r"is not one of the legal actions \((.*)\)\.?$", reason)
+        if inner:
+            reason = inner.group(1)
+        refs = describe_refs(action, st or {}, self._rewards_seen)
+        if not refs:
+            return msg
+        if action.get("action") == "claim_reward" and (action.get("args") or {}).get("reward_index") in self._rewards_seen \
+                and "no reward at index" in reason:
+            return refs[0] + (f". {legal}" if legal else "")
+        head = "; ".join(refs)
+        if reason.rstrip(".").lower() in head.lower():
+            return head + (f". {legal}" if legal else "")
+        return head + " - " + reason.rstrip(".") + (f". {legal}" if legal else "")
 
     def _simple(self, cmd, as_json, render):
         r = self.send(cmd)
