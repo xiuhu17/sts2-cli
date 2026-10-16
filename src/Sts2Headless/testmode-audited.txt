@@ -1,0 +1,128 @@
+# TestMode checks in game-logic methods, audited against the decompiled game.
+# ParityPatches (STS2_TESTMODE_AUDIT=1) warns about any site not listed here.
+# Format: <Namespace.Type.Method> <classification>
+MegaCrit.Sts2.Core.Assets.PreloadManager.GetCombatAssetPaths logging_or_io_only
+MegaCrit.Sts2.Core.Assets.PreloadManager.LoadActAssets logging_or_io_only
+MegaCrit.Sts2.Core.Assets.PreloadManager.LoadMainMenuAssets logging_or_io_only
+MegaCrit.Sts2.Core.Assets.PreloadManager.LoadMainMenuEssentials logging_or_io_only
+MegaCrit.Sts2.Core.Assets.PreloadManager.LoadRoomAssets logging_or_io_only
+MegaCrit.Sts2.Core.Assets.PreloadManager.LoadRunAssets logging_or_io_only
+MegaCrit.Sts2.Core.Combat.CombatStateTracker.NotifyCombatStateChanged ui_vfx_audio_only
+MegaCrit.Sts2.Core.Commands.CardCmd.Preview ui_vfx_audio_only
+MegaCrit.Sts2.Core.Commands.CardCmd.PreviewCardPileAdd ui_vfx_audio_only
+MegaCrit.Sts2.Core.Commands.CardCmd.PreviewInternal ui_vfx_audio_only
+MegaCrit.Sts2.Core.Commands.CardCmd.Transform ui_vfx_audio_only
+MegaCrit.Sts2.Core.Commands.CardPileCmd.AddDuringManualCardPlay ui_vfx_audio_only
+MegaCrit.Sts2.Core.Commands.CardPileCmd.GetTweenForCardsChangingPiles ui_vfx_audio_only
+MegaCrit.Sts2.Core.Commands.CardPileCmd.RemoveFromDeck ui_vfx_audio_only
+MegaCrit.Sts2.Core.Commands.CardSelectCmd.FromChooseABundleScreen gameplay: replaced (LocPatches.BundleScreenPrefix -> bundle_select)
+MegaCrit.Sts2.Core.Commands.CardSelectCmd.Reset test_infra_only
+MegaCrit.Sts2.Core.Commands.CreatureCmd.Heal logging_or_io_only
+MegaCrit.Sts2.Core.Commands.CreatureCmd.Kill logging_or_io_only
+MegaCrit.Sts2.Core.Commands.CreatureCmd.TriggerAnim logging_or_io_only
+MegaCrit.Sts2.Core.Commands.ForgeCmd.PreviewSovereignBlade ui_vfx_audio_only
+MegaCrit.Sts2.Core.Commands.MapCmd.SetBossEncounter ui_vfx_audio_only
+MegaCrit.Sts2.Core.Commands.VfxCmd.GetSideCenter ui_vfx_audio_only
+MegaCrit.Sts2.Core.Commands.VfxCmd.GetSideCenterFloor ui_vfx_audio_only
+MegaCrit.Sts2.Core.Commands.VfxCmd.PlayFullScreenInCombat ui_vfx_audio_only
+MegaCrit.Sts2.Core.Commands.VfxCmd.PlayNonCombatVfx ui_vfx_audio_only
+MegaCrit.Sts2.Core.Commands.VfxCmd.PlayOnCreature ui_vfx_audio_only
+MegaCrit.Sts2.Core.Commands.VfxCmd.PlayOnCreatureCenter ui_vfx_audio_only
+MegaCrit.Sts2.Core.Commands.VfxCmd.PlayOnSide ui_vfx_audio_only
+MegaCrit.Sts2.Core.Commands.VfxCmd.PlayVfx ui_vfx_audio_only
+MegaCrit.Sts2.Core.Entities.Creatures.Creature.CreateVisuals ui_vfx_audio_only
+MegaCrit.Sts2.Core.Entities.Creatures.Creature.GetBackVfxContainer ui_vfx_audio_only
+MegaCrit.Sts2.Core.Entities.Creatures.Creature.GetCreatureNode ui_vfx_audio_only
+MegaCrit.Sts2.Core.Entities.Creatures.Creature.GetVfxContainer ui_vfx_audio_only
+MegaCrit.Sts2.Core.Entities.Merchant.MerchantPotionEntry.CalcCost gameplay: forced off (ParityPatches)
+MegaCrit.Sts2.Core.Entities.RestSite.RestSiteOption.Generate test_infra_only
+MegaCrit.Sts2.Core.GameActions.ActionExecutor.WaitForUnpause timing_only
+MegaCrit.Sts2.Core.GameActions.DiscardPotionGameAction.CancelAction ui_vfx_audio_only
+MegaCrit.Sts2.Core.GameActions.MoveToMapCoordAction.ExecuteAction ui_vfx_audio_only
+MegaCrit.Sts2.Core.GameActions.Multiplayer.NetCombatCardDb.StartCombat test_infra_only
+MegaCrit.Sts2.Core.GameActions.PlayCardAction.CancelAction test_infra_only
+MegaCrit.Sts2.Core.GameActions.UsePotionAction.CancelAction ui_vfx_audio_only
+MegaCrit.Sts2.Core.Helpers.NonInteractiveMode.get_IsActive timing_only
+MegaCrit.Sts2.Core.Helpers.OneTimeInitialization.ExecuteVeryEarly logging_or_io_only
+MegaCrit.Sts2.Core.Localization.LocManager.SetLanguageInternal logging_or_io_only
+MegaCrit.Sts2.Core.Localization.LocManager.SmartFormat logging_or_io_only
+MegaCrit.Sts2.Core.Logging.Logger.GetIsRunningFromGodotEditor logging_or_io_only
+MegaCrit.Sts2.Core.Modding.ModManager.Initialize test_infra_only
+MegaCrit.Sts2.Core.Modding.ModManager.ResetForTests test_infra_only
+MegaCrit.Sts2.Core.Models.AbstractModel.NeverEverCallThisOutsideOfTests_SetIsMutable test_infra_only
+MegaCrit.Sts2.Core.Models.ActModel.GetRandomList gameplay: forced off (ParityPatches)
+MegaCrit.Sts2.Core.Models.CardModel.NeverEverCallThisOutsideOfTests_ClearOwner test_infra_only
+MegaCrit.Sts2.Core.Models.Cards.BouncingFlask.OnPlay timing_only
+MegaCrit.Sts2.Core.Models.Cards.HandOfGreed.OnPlay ui_vfx_audio_only
+MegaCrit.Sts2.Core.Models.Cards.Nightmare.OnPlay timing_only
+MegaCrit.Sts2.Core.Models.Enchantments.Slither.set_TestEnergyCostOverride test_infra_only
+MegaCrit.Sts2.Core.Models.EventModel.GetAssetPaths ui_vfx_audio_only
+MegaCrit.Sts2.Core.Models.Events.DollRoom.BeforeEventStarted ui_vfx_audio_only
+MegaCrit.Sts2.Core.Models.MonsterModel.PerformMove logging_or_io_only
+MegaCrit.Sts2.Core.Models.Monsters.BowlbugSilk.SpitMove ui_vfx_audio_only
+MegaCrit.Sts2.Core.Models.Monsters.BygoneEffigy.SlashMove ui_vfx_audio_only
+MegaCrit.Sts2.Core.Models.Monsters.BygoneEffigy.WakeMove ui_vfx_audio_only
+MegaCrit.Sts2.Core.Models.Monsters.DecimillipedeSegment.AfterDeath ui_vfx_audio_only
+MegaCrit.Sts2.Core.Models.Monsters.DecimillipedeSegment.AnimSegmentsAttack ui_vfx_audio_only
+MegaCrit.Sts2.Core.Models.Monsters.Flyconid.FrailSporesMove ui_vfx_audio_only
+MegaCrit.Sts2.Core.Models.Monsters.Flyconid.VulnerableSporesMove ui_vfx_audio_only
+MegaCrit.Sts2.Core.Models.Monsters.FuzzyWurmCrawler.AcidGoop ui_vfx_audio_only
+MegaCrit.Sts2.Core.Models.Monsters.Guardbot.AfterAddedToRoom ui_vfx_audio_only
+MegaCrit.Sts2.Core.Models.Monsters.KinFollower.BoomerangMove ui_vfx_audio_only
+MegaCrit.Sts2.Core.Models.Monsters.LeafSlimeM.StickyShotMove ui_vfx_audio_only
+MegaCrit.Sts2.Core.Models.Monsters.MagiKnight.MagicBombMove ui_vfx_audio_only
+MegaCrit.Sts2.Core.Models.Monsters.Myte.ToxicMove ui_vfx_audio_only
+MegaCrit.Sts2.Core.Models.Monsters.Noisebot.AfterAddedToRoom ui_vfx_audio_only
+MegaCrit.Sts2.Core.Models.Monsters.SlumberingBeetle.RolloutMove ui_vfx_audio_only
+MegaCrit.Sts2.Core.Models.Monsters.SnappingJaxfruit.EnergyOrb ui_vfx_audio_only
+MegaCrit.Sts2.Core.Models.Monsters.Stabbot.AfterAddedToRoom ui_vfx_audio_only
+MegaCrit.Sts2.Core.Models.Monsters.TorchHeadAmalgam.OnDieToDoom ui_vfx_audio_only
+MegaCrit.Sts2.Core.Models.Monsters.ToughEgg.AfterAddedToRoom ui_vfx_audio_only
+MegaCrit.Sts2.Core.Models.Monsters.Tunneler.BelowMove ui_vfx_audio_only
+MegaCrit.Sts2.Core.Models.Monsters.TwigSlimeM.StickyShotMove ui_vfx_audio_only
+MegaCrit.Sts2.Core.Models.Monsters.Vantom.DismemberMove ui_vfx_audio_only
+MegaCrit.Sts2.Core.Models.Monsters.Vantom.InkBlotMove ui_vfx_audio_only
+MegaCrit.Sts2.Core.Models.Monsters.Vantom.InkyLanceMove ui_vfx_audio_only
+MegaCrit.Sts2.Core.Models.Monsters.Vantom.PrepareMove ui_vfx_audio_only
+MegaCrit.Sts2.Core.Models.Monsters.WaterfallGiant.IncrementBuildUpAnimationTrack ui_vfx_audio_only
+MegaCrit.Sts2.Core.Models.Monsters.Zapbot.AfterAddedToRoom ui_vfx_audio_only
+MegaCrit.Sts2.Core.Models.PotionModel.OnUseWrapper ui_vfx_audio_only
+MegaCrit.Sts2.Core.Models.Potions.FoulPotion.ShowPotionVfx ui_vfx_audio_only
+MegaCrit.Sts2.Core.Models.Potions.SneckoOil.set_TestEnergyCostOverride test_infra_only
+MegaCrit.Sts2.Core.Models.Powers.ConfusedPower.set_TestEnergyCostOverride test_infra_only
+MegaCrit.Sts2.Core.Models.Powers.InfestedPower.RevealWrigglersAfterDeathAnim ui_vfx_audio_only
+MegaCrit.Sts2.Core.Models.Powers.RollingBoulderPower.AfterPlayerTurnStart gameplay: replaced (ParityPatches.RollingBoulderPrefix)
+MegaCrit.Sts2.Core.Models.Powers.SandpitPower.AfterApplied ui_vfx_audio_only
+MegaCrit.Sts2.Core.Models.Powers.SandpitPower.AfterPowerAmountChanged ui_vfx_audio_only
+MegaCrit.Sts2.Core.Models.Powers.SandpitPower.AfterRemoved ui_vfx_audio_only
+MegaCrit.Sts2.Core.Models.Powers.SandpitPower.UpdateCreaturePositions ui_vfx_audio_only
+MegaCrit.Sts2.Core.Models.Relics.CallingBell.GenerateRewards gameplay: forced off (ParityPatches)
+MegaCrit.Sts2.Core.Models.Relics.Cauldron.GenerateRewards gameplay: forced off (ParityPatches)
+MegaCrit.Sts2.Core.Models.Relics.FakeSneckoEye.SetTestEnergyCostOverride test_infra_only
+MegaCrit.Sts2.Core.Models.Relics.LargeCapsule.GetDefendForCharacter test_infra_only
+MegaCrit.Sts2.Core.Models.Relics.LargeCapsule.GetStrikeForCharacter test_infra_only
+MegaCrit.Sts2.Core.Models.Relics.LordsParasol.PurchaseEverything ui_vfx_audio_only
+MegaCrit.Sts2.Core.Models.Relics.ScrollBoxes.GetCardPool test_infra_only
+MegaCrit.Sts2.Core.Models.Relics.SneckoEye.SetTestEnergyCostOverride test_infra_only
+MegaCrit.Sts2.Core.Multiplayer.Game.ChecksumTracker.CompareChecksums logging_or_io_only
+MegaCrit.Sts2.Core.Multiplayer.Game.ChecksumTracker.LogStateDivergence logging_or_io_only
+MegaCrit.Sts2.Core.Multiplayer.Game.PeerInput.NetCursorHelper.GetControlSpacePosition ui_vfx_audio_only
+MegaCrit.Sts2.Core.Platform.Null.NullLeaderboardStrategy.Read logging_or_io_only
+MegaCrit.Sts2.Core.Platform.Null.NullLeaderboardStrategy.Write logging_or_io_only
+MegaCrit.Sts2.Core.Rewards.PotionReward.CreateIcon ui_vfx_audio_only
+MegaCrit.Sts2.Core.Rewards.RewardsSet.Offer gameplay: RewardsSet.testSelector offers every set as a rewards decision
+MegaCrit.Sts2.Core.Rooms.MapRoom.EnterInternal ui_vfx_audio_only
+MegaCrit.Sts2.Core.Rooms.MerchantRoom.Exit gameplay: forced off (ParityPatches; run history of unbought shop items)
+MegaCrit.Sts2.Core.Runs.RunManager.ClearScreens logging_or_io_only
+MegaCrit.Sts2.Core.Runs.RunManager.FadeIn logging_or_io_only
+MegaCrit.Sts2.Core.Runs.RunManager.FadeOut logging_or_io_only
+MegaCrit.Sts2.Core.Runs.RunManager.InitializeShared logging_or_io_only
+MegaCrit.Sts2.Core.Runs.RunManager.ReturnToMainMenuWithError logging_or_io_only
+MegaCrit.Sts2.Core.Runs.RunManager.ShouldApplyTutorialModifications gameplay: forced off (ParityPatches)
+MegaCrit.Sts2.Core.Runs.RunManager.TryGetRoomTypeForTutorial gameplay: forced off (ParityPatches)
+MegaCrit.Sts2.Core.Runs.RunManager.UpdatePlayerStatsInMapPointHistory gameplay: forced off (ParityPatches; gold/HP in the run history)
+MegaCrit.Sts2.Core.Runs.RunManager.UpdateRichPresence logging_or_io_only
+MegaCrit.Sts2.Core.Runs.RunRngSet.GetMockInstance test_infra_only
+MegaCrit.Sts2.Core.Saves.Managers.ProgressSaveManager.SeenPopup ui_vfx_audio_only
+MegaCrit.Sts2.Core.Saves.SaveManager.ConstructDefault logging_or_io_only
+MegaCrit.Sts2.Core.Saves.SaveManager.IncrementNumReloads logging_or_io_only

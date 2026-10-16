@@ -1,0 +1,18 @@
+{
+  "schema_version": 24,
+  "ancient_stats": [],
+  "card_stats": [],
+  "character_stats": [],
+  "discovered_acts": [],
+  "discovered_cards": [],
+  "discovered_events": [],
+  "discovered_potions": [],
+  "discovered_relics": [],
+  "encounter_stats": [],
+  "enemy_stats": [],
+  "epochs": [],
+  "ftue_completed": [],
+  "unlocked_achievements": [],
+  "enable_ftues": true,
+  "unique_id": "TESTPROFILE"
+}

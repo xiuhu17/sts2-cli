@@ -23,6 +23,11 @@
     <ProjectReference Include="..\GodotStubs\GodotStubs.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Audited TestMode sites for the STS2_TESTMODE_AUDIT drift guard (ParityPatches). -->
+    <None Include="testmode-audited.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
   <!-- Reference game DLL and its non-Godot dependencies -->
   <ItemGroup>
     <Reference Include="sts2">

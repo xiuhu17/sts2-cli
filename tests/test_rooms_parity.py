@@ -208,6 +208,13 @@ class TestEventCombatResume:
             if state["decision"] != "card_reward":
                 break
             state = game.act("skip_card_reward")
+        # The event's potion is offered on a rewards screen (RewardsSet.Offer), never auto-taken.
+        assert state["decision"] == "rewards" and state["source"] == "event", state
+        assert state["player"]["potions"] == []
+        potion = next(w for w in state["rewards"] if w["type"] == "potion")
+        state = game.act("claim_reward", reward_index=potion["index"])
+        if state["decision"] == "rewards":
+            state = game.act("proceed")
         assert state["decision"] == "event_choice" and state["event_id"] == "BATTLEWORN_DUMMY"
         assert state["finished"] is True and state["description"]
         assert len(state["player"]["potions"]) == 1
