@@ -453,7 +453,8 @@ class Program
                     return new Dictionary<string, object?> { ["type"] = "error", ["message"] = "Provide 'path' or 'json' for load_save" };
                 var loadLang = cmd.TryGetProperty("lang", out var le) ? (le.GetString() ?? "en") : "en";
                 sim.OmitDeck = ReadBool(cmd, "omit_deck");
-                return sim.LoadSave(saveJson, loadLang, ReadBool(cmd, "manual_rewards"));
+                return sim.LoadSave(saveJson, loadLang, ReadBool(cmd, "manual_rewards"),
+                    cmd.TryGetProperty("profile", out var lprof) ? lprof.GetString() : null);
             }
             case "get_map":
                 return sim.GetFullMap();

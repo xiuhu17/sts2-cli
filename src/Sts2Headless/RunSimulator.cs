@@ -386,8 +386,12 @@ public partial class RunSimulator
                 catch (Exception ex) { return Error($"Cannot read profile '{profilePath}': {ex.Message}"); }
             }
             var unlocks = progress != null ? new UnlockState(progress) : UnlockState.all;
+            if (ParityPatches.Failure != null) return Error(ParityPatches.Failure);
             if (!ResetForNewRun())
                 return RestartRequired();
+            // The game reads the profile's progress during the run (act discovery, first-run
+            // rooms, ancient visits, ...); without a profile, one consistent with UnlockState.all.
+            ParityPatches.SetProgress(progress);
             _loc.Lang = lang;
             ManualRewards = manualRewards;
 
@@ -402,7 +406,10 @@ public partial class RunSimulator
 
             _runState = RunState.CreateForNewRun(
                 new[] { player },
-                SelectActs(seedStr, unlocks, progress).Select(a => a.ToMutable()).ToList(),
+                // StartRunLobby.BeginRunLocally: the acts come from the seed's "act_selection"
+                // stream; an unlocked, never-discovered act is forced (TestMode-off branch).
+                ActModel.GetRandomList(new Rng(StringHelper.GetDeterministicHashCode(seedStr), "act_selection"), unlocks, isMultiplayer: false)
+                    .Select(a => a.ToMutable()).ToList(),
                 modifierModels,
                 mode.Value,
                 ascension,
@@ -414,8 +421,8 @@ public partial class RunSimulator
             RunManager.Instance.SetUpTest(_runState, netService);
             LocalContext.NetId = netService.NetId;
 
-            // Force Neow event (blessing selection at start)
-            _runState.ExtraFields.StartedWithNeow = true;
+            // StartedWithNeow comes from SetUpTest's SetStartedWithNeowFlag, as in the game: true
+            // when the profile has revealed the Neow epoch (always with UnlockState.all).
 
             // Generate rooms for all acts
             RunManager.Instance.GenerateRooms();
@@ -547,6 +554,16 @@ public partial class RunSimulator
             }
 
             Log($"SetPlayer: hp={player.Creature?.CurrentHp} gold={player.Gold} relics={player.Relics.Count} deck={player.Deck?.Cards?.Count}");
+            if (args.TryGetValue("obtain_relic", out var obtainEl))
+            {
+                // Obtain like a real pickup (RelicCmd.Obtain: AfterObtained runs, so Cauldron,
+                // Calling Bell, ... offer their rewards). Returns the resulting decision.
+                var id = obtainEl.GetString() ?? "";
+                var model = ModelDb.GetById<RelicModel>(new ModelId("RELIC", id.ToUpperInvariant()));
+                if (model == null) return Error($"Unknown relic: {id}");
+                RunInBackground(() => RelicCmd.Obtain(model.ToMutable(), player));
+                return DetectDecisionPoint();
+            }
             return new Dictionary<string, object?>
             {
                 ["type"] = "ok",
@@ -650,11 +667,19 @@ public partial class RunSimulator
     }
 
     // ─── Game actions ───
-    public Dictionary<string, object?> LoadSave(string saveJson, string lang = "en", bool manualRewards = false)
+    public Dictionary<string, object?> LoadSave(string saveJson, string lang = "en", bool manualRewards = false,
+        string? profilePath = null)
     {
         try
         {
             EnsureModelDbInitialized();
+            if (ParityPatches.Failure != null) return Error(ParityPatches.Failure);
+            ProgressState? progress = null;
+            if (profilePath != null)
+            {
+                try { progress = LoadProgress(profilePath); }
+                catch (Exception ex) { return Error($"Cannot read profile '{profilePath}': {ex.Message}"); }
+            }
 
             Log("Loading save file...");
 
@@ -673,6 +698,7 @@ public partial class RunSimulator
                 return RestartRequired();
             _loc.Lang = lang;
             ManualRewards = manualRewards;
+            ParityPatches.SetProgress(progress);
 
             _runState = RunState.FromSerializable(save);
             if (_runState == null)
@@ -4638,6 +4664,8 @@ public partial class RunSimulator
         PatchTalkCmd();
         PatchHeadlessPresentation();
         HeadlessUiGuard.Install(typeof(CombatManager).Assembly);
+        // Real-game (TestMode off) behaviour for the TestMode branches that are game logic.
+        ParityPatches.Install(new Harmony("sts2headless.parity"));
         MapPruningPatch.Install(new Harmony("sts2headless.mappruning"));
 
         // Capture the game's own run saves instead of writing them (write_continue_save).
@@ -4669,24 +4697,19 @@ public partial class RunSimulator
         // Progress now resolves character models, so register ModelDb first.
         SaveManager.Instance.InitProgressData();
 
-        // The built-in test reward selector assumes every reward is taken.
-        // Mirror leaving the reward screen after our explicit take/skip prompts
-        // so skipped cards finish the set and its event continuation can resume.
         RewardsSet.testSelector = async set =>
         {
-            // manual_rewards: offer the set as a "rewards" decision and wait for the player.
-            // Not on the main thread: it would wait for an answer only it can deliver.
-            var sim = LocPatches._bundleSimRef;
-            if (sim != null && sim.ManualRewards && Environment.CurrentManagedThreadId != MainThreadId)
-            {
-                await sim.OfferEventRewards(set);
-                return;
-            }
-            var synchronizer = RunManager.Instance.RewardsSetSynchronizer;
-            foreach (var reward in set.Rewards)
-                await synchronizer.SelectLocalReward(reward);
-            if (!synchronizer.IsRewardsSetCompleted(set))
-                synchronizer.SkipLocalRewardsSet();
+            // RewardsSet.Offer with TestMode off shows NRewardsScreen: the player claims or
+            // leaves each reward. Always offer the set as a "rewards" decision (whatever
+            // manual_rewards says); nothing is ever claimed on the player's behalf. The set is
+            // finished when the player proceeds (DoFinishEventRewards skips what is left).
+            var sim = LocPatches._bundleSimRef
+                ?? throw new InvalidOperationException("RewardsSet offered with no run to offer it to");
+            if (Environment.CurrentManagedThreadId == MainThreadId)
+                // The decision loop shows the set; a caller blocking on this task here would
+                // wait for an answer only this thread can deliver (callers run on Task.Run).
+                Console.Error.WriteLine("[WARN] Rewards set offered on the main thread");
+            await sim.OfferEventRewards(set);
         };
 
         // Initialize net ID serialization cache (needed for combat actions)
@@ -4729,33 +4752,6 @@ public partial class RunSimulator
 
     private static readonly HashSet<string> KnownCharacters =
         new() { "ironclad", "silent", "defect", "regent", "necrobinder" };
-
-    /// <summary>
-    /// StartRunLobby.BeginRunLocally / ActModel.GetRandomList: one act per slot from the seed's
-    /// "act_selection" stream; an unlocked but never-discovered act is forced, as in the game.
-    /// </summary>
-    private static List<ActModel> SelectActs(string seed, UnlockState unlocks, ProgressState? progress)
-    {
-        var rng = new Rng(StringHelper.GetDeterministicHashCode(seed), "act_selection");
-        var acts = new List<ActModel>();
-        foreach (var candidates in ModelDb.ActsByIndex)
-        {
-            ActModel? forced = null;
-            var unlocked = new List<ActModel>();
-            foreach (var act in candidates)
-            {
-                if (!act.IsUnlocked(unlocks)) continue;
-                if (progress != null && !act.IsDefault && !progress.DiscoveredActs.Contains(act.Id))
-                {
-                    forced = act;
-                    break;
-                }
-                unlocked.Add(act);
-            }
-            acts.Add(forced ?? rng.NextItem(unlocked) ?? throw new InvalidOperationException("No unlocked act"));
-        }
-        return acts;
-    }
 
     /// <summary>Reads a game profile's progress.save (unlocked epochs, seen encounters, discovered acts).</summary>
     private static ProgressState LoadProgress(string path)
@@ -5549,11 +5545,14 @@ public partial class RunSimulator
             IReadOnlyList<IReadOnlyList<CardModel>> bundles,
             ref Task<IEnumerable<CardModel>> __result)
         {
-            if (bundles.Count == 0)
+            // Same early outs as the game's FromChooseABundleScreen.
+            if (CombatManager.Instance.IsEnding || bundles.Count == 0)
             {
                 __result = Task.FromResult<IEnumerable<CardModel>>(Array.Empty<CardModel>());
                 return false;
             }
+            // The game reserves a choice id before asking (keeps later choice ids aligned).
+            RunManager.Instance.PlayerChoiceSynchronizer.ReserveChoiceId(player);
 
             // Store pending bundles for the main loop to present
             var sim = _bundleSimRef;
@@ -5567,8 +5566,8 @@ public partial class RunSimulator
                 return false;
             }
 
-            __result = Task.FromResult<IEnumerable<CardModel>>(bundles[0]);
-            return false;
+            // No simulator to ask: never pick a pack for the player.
+            throw new InvalidOperationException("Choose-a-bundle screen opened with no run to offer it to");
         }
 
         // Static reference so Harmony patch can access the simulator instance

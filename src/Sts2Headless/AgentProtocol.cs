@@ -1270,7 +1270,7 @@ public partial class RunSimulator
             ["get_piles"] = "{cmd:get_piles, pile?:draw|discard|exhaust|hand|all} combat piles (draw pile sorted, order hidden)",
             ["get_card"] = "{cmd:get_card, deck_index:N | hand_index:N | id:CARD_ID, upgraded?:bool}",
             ["get_map"] = "the whole act map",
-            ["load_save"] = "{cmd:load_save, path|json, lang?, manual_rewards?, omit_deck?}",
+            ["load_save"] = "{cmd:load_save, path|json, lang?, manual_rewards?, omit_deck?, profile?}",
             ["write_continue_save"] = "{cmd:write_continue_save, path?}",
             ["quit"] = "{cmd:quit, path?}",
             ["help"] = "this text",

@@ -151,8 +151,11 @@ class TestEventRewards:
         assert state["decision"] == "map_select"
         assert state["player"]["potions"] == []
 
-    def test_default_mode_still_auto_collects(self, game):
+    def test_event_rewards_are_a_decision_without_manual_rewards(self, game):
+        # RewardsSet.Offer: an event's reward set is always a rewards screen; nothing is
+        # claimed for the player, whatever manual_rewards says.
         state = game.start(seed="NP8VU5N662YB")
         state = game.act("choose_option", option_index=0)
-        assert state["decision"] == "card_reward"
-        assert len(state["player"]["potions"]) == 1
+        assert state["decision"] == "rewards" and state["source"] == "event"
+        assert state["player"]["potions"] == []
+        assert {w["type"] for w in state["rewards"]} == {"potion", "card"}
