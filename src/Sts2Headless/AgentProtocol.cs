@@ -271,16 +271,23 @@ public partial class RunSimulator
     /// <summary>
     /// Which selection sizes the game's screen can confirm, per screen class (decompiled
     /// Nodes.Screens.CardSelection + NPlayerHand). n = cards offered, min/max = the prefs.
-    /// Sizes are clamped to n so a prompt asking for more cards than it offers can't
-    /// softlock the adapter.
+    /// No adapter-side clamping: a screen whose rule can't be met with the n cards it shows
+    /// (an upgrade screen asking for 2 with 1 upgradable card, a manual-confirm deck screen
+    /// with fewer cards than MinSelect, ...) gets no size at all, like the real screen, which
+    /// can then only be closed (Cancelable) or is a softlock. Game-side clamps are kept: the
+    /// CardSelectCmd auto-pick when n &lt;= MinSelect (no screen, never reaches the selector)
+    /// and NCombatPileCardSelectScreen's Min(Min/MaxSelect, cards shown).
     /// </summary>
     internal static class CardSelectRules
     {
         public static List<int> AllowedCounts(SelectContext? ctx, int n, int min, int max)
         {
-            int hi = Math.Max(0, Math.Min(max, n));
-            int lo = Math.Max(0, Math.Min(min, hi));
+            min = Math.Max(0, min);
+            max = Math.Max(0, max);
+            // A selection can't hold more cards than the screen shows.
+            int top = Math.Min(max, n);
             IEnumerable<int> Range(int a, int b) => a > b ? Enumerable.Empty<int>() : Enumerable.Range(a, b - a + 1);
+            IEnumerable<int> If(bool ok, int c) => ok ? new[] { c } : Enumerable.Empty<int>();
             IEnumerable<int> counts = (ctx?.ScreenClass ?? "") switch
             {
                 // OnCardClicked previews at Count == MaxSelect; the bottom Confirm (enabled when
@@ -288,31 +295,45 @@ public partial class RunSimulator
                 // preview's ConfirmSelection is `if (_selectedCards.Count != 0)
                 // CheckIfSelectionComplete()` (Count in [MinSelect, MaxSelect]); single-select
                 // preview dereferences _selectedCards.First(). Close only when Cancelable.
-                "NDeckEnchantSelectScreen" => min == max ? new[] { hi } : Range(Math.Max(1, lo), hi),
+                // (FromDeckForEnchantment auto-picks when n <= MinSelect, so n > MinSelect here.)
+                "NDeckEnchantSelectScreen" => min == max
+                    ? If(max >= 1 && n >= max, max)
+                    : Range(Math.Max(1, min), top),
                 // No bottom Confirm: the preview opens on the first click (MaxSelect 1) or at
                 // Count == MaxSelect; ConfirmSelection needs Count != 0 and
-                // CheckIfSelectionComplete Count >= MaxSelect (every caller asks for exactly N;
-                // fewer upgradable cards than N is auto-selected by FromDeckForUpgrade).
-                "NDeckUpgradeSelectScreen" => new[] { hi },
+                // CheckIfSelectionComplete Count >= MaxSelect. Fewer upgradable cards than
+                // MaxSelect: FromDeckForUpgrade auto-picks only when n <= MinSelect and not
+                // RequireManualConfirmation (Smith asks for manual confirmation), otherwise the
+                // screen can't be confirmed.
+                "NDeckUpgradeSelectScreen" => If(max >= 1 && n >= max, max),
                 // Bottom Confirm enabled when MinSelect != MaxSelect && Count >= MinSelect (Claws:
-                // 0 cards is fine); otherwise the preview opens at Count == MaxSelect.
+                // 0 cards is fine); the preview opens at Count == MaxSelect; its confirm needs
+                // Count >= MinSelect.
                 "NDeckTransformSelectScreen" or "NDeckCardSelectScreen" =>
-                    min == max ? new[] { hi } : Range(lo, hi),
+                    (min != max ? Range(min, top) : Enumerable.Empty<int>()).Concat(If(max >= 1 && n >= max, max)),
                 // Confirm enabled at open iff MinSelect == 0; after a click only with
-                // RequireManualConfirmation && Count >= MinSelect. Without manual confirmation
-                // the screen completes itself at Count >= MaxSelect (clamped to the pile for
-                // the combat-pile screen).
-                "NSimpleCardSelectScreen" or "NCombatPileCardSelectScreen" =>
-                    ctx!.RequireConfirm ? Range(lo, hi)
-                        : (min == 0 ? new[] { 0, hi } : new[] { hi }),
+                // RequireManualConfirmation && Count >= MinSelect (a click beyond MaxSelect is
+                // ignored). Without manual confirmation the screen completes itself at
+                // Count >= MaxSelect: with fewer cards than that, only the open-time Confirm
+                // (MinSelect 0) is left.
+                "NSimpleCardSelectScreen" =>
+                    ctx!.RequireConfirm ? Range(min, top)
+                        : If(min == 0, 0).Concat(If(max >= 1 && n >= max, max)),
+                // Like NSimpleCardSelectScreen, but the game clamps: UpdateConfirmButton uses
+                // Min(MinSelect, cards shown), CheckIfSelectionComplete Min(MaxSelect, cards shown).
+                "NCombatPileCardSelectScreen" =>
+                    ctx!.RequireConfirm ? Range(Math.Min(min, n), top)
+                        : If(min == 0, 0).Concat(If(top >= 1, top)),
                 // RefreshSelectModeConfirmButton: Count in [MinSelect, MaxSelect]; a pick beyond
                 // MaxSelect swaps out the last one, so Count never exceeds it.
-                "NPlayerHand" => Range(lo, hi),
-                // FromHandForUpgrade: prefs (header, 1); the upgrade preview's confirm needs one card.
-                "NPlayerHand.UpgradeSelect" => new[] { Math.Min(1, n) },
-                // A card is taken by clicking it; leaving without one is the Skip button.
-                "NChooseACardSelectionScreen" => new[] { Math.Min(1, n) },
-                _ => Range(lo, hi),
+                "NPlayerHand" => Range(min, top),
+                // FromHandForUpgrade: prefs (header, 1); the upgrade preview's confirm needs one
+                // card (n <= 1 is auto-picked by the game).
+                "NPlayerHand.UpgradeSelect" => If(n >= 1, 1),
+                // A card is taken by clicking it; leaving without one is the Skip button
+                // (FromChooseACardScreen returns null itself for 0 cards).
+                "NChooseACardSelectionScreen" => If(n >= 1, 1),
+                _ => Range(min, top),
             };
             return counts.Distinct().OrderBy(c => c).ToList();
         }
@@ -1546,7 +1567,7 @@ public partial class RunSimulator
             ["select_card_reward"] = "{card_index}",
             ["skip_card_reward"] = "{} (only when can_skip)",
             ["select_card_alternative"] = "{alternative_index} card_reward alternatives other than Skip (Driftwood reroll, Pael's Wing sacrifice)",
-            ["select_cards"] = "{indices:\"0,2\" or [0,2]} card_select; legal_actions gives choose:{from,min,max} for multi-picks; indices \"\" / [] confirms nothing when min_select is 0",
+            ["select_cards"] = "{indices:\"0,2\" or [0,2]} card_select; legal_actions gives choose:{from,min,max} for multi-picks; indices \"\" / [] confirms nothing when min_select is 0; select_counts [] = the screen can't be confirmed with the cards it shows (no clamping, as in the game): only skip_select if cancelable, else softlocked",
             ["skip_select"] = "{} only when card_select is cancelable (the screen's cancel/skip button); with min_select 0 and no such button confirm nothing with select_cards indices \"\"",
             ["select_bundle"] = "{bundle_index}",
             ["buy_card"] = "{card_index}", ["buy_relic"] = "{relic_index}", ["buy_potion"] = "{potion_index}",

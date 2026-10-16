@@ -196,15 +196,35 @@ public partial class RunSimulator
     /// shown (all locked, or none on an unfinished event); NRestSiteRoom shows Proceed only when
     /// it has no options or after one was used, and disabled options can't be clicked.
     /// </summary>
-    private static void MarkSoftlock(Dictionary<string, object?> state, string why)
+    private static void MarkSoftlock(Dictionary<string, object?> state, string why, string escape = "leaves the room")
     {
         state["softlocked"] = true;
         state["softlock_reason"] = why;
         state["message"] = "Softlock: " + why + ". The real game has no button here that moves on, so the run can't go on " +
                            "(the potion belt still works: legal_actions lists the potions you can use or discard). " +
                            (SoftlockEscapeEnabled
-                               ? "STS2_SOFTLOCK_ESCAPE=1 is set: {\"cmd\":\"force_leave_room\"} leaves the room (not game behaviour)."
+                               ? $"STS2_SOFTLOCK_ESCAPE=1 is set: {{\"cmd\":\"force_leave_room\"}} {escape} (not game behaviour)."
                                : "Start the engine with STS2_SOFTLOCK_ESCAPE=1 to allow {\"cmd\":\"force_leave_room\"} (not game behaviour).");
+    }
+
+    /// <summary>
+    /// A card selection whose screen can't be confirmed with the cards it shows
+    /// (CardSelectRules gives no size: e.g. an upgrade screen asking for 2 cards with 1
+    /// upgradable, a manual-confirm deck screen with fewer cards than MinSelect). The game
+    /// doesn't clamp there, so neither does the adapter: a cancelable screen can only be
+    /// closed (skip_select); otherwise it is a softlock.
+    /// </summary>
+    private static void MarkUnconfirmableSelect(Dictionary<string, object?> state, int offered)
+    {
+        state["select_counts"] = new List<int>();
+        var min = state.GetValueOrDefault("min_select");
+        var max = state.GetValueOrDefault("max_select");
+        var asks = Equals(min, max) ? $"{max}" : $"{min}-{max}";
+        var why = $"this card selection asks for {asks} card(s) but shows only {offered}, so its confirm button can never be used";
+        if (state.GetValueOrDefault("cancelable") is true)
+            state["message"] = "Can't be confirmed: " + why + ". As in the game, the only way out is the screen's close button (skip_select).";
+        else
+            MarkSoftlock(state, why, "closes the selection with nothing chosen");
     }
 
     internal static bool SoftlockEscapeEnabled => Environment.GetEnvironmentVariable("STS2_SOFTLOCK_ESCAPE") == "1";
@@ -225,6 +245,11 @@ public partial class RunSimulator
         var cur = SafeCurrentDecision();
         if (cur?.GetValueOrDefault("softlocked") is not true)
             return Error("force_leave_room only applies to a softlocked decision (\"softlocked\": true)");
+        if (cur.GetValueOrDefault("decision") as string == "card_select" && _cardSelector.HasPending)
+        {
+            Log("[WARN] force_leave_room: closing an unconfirmable card selection with nothing chosen (not game behaviour)");
+            return CloseSelection(_runState.Players[0]);
+        }
         Log("[WARN] force_leave_room: leaving a softlocked room (not game behaviour)");
         if (_runState.CurrentRoom is EventRoom)
             _finishedEventAcked = RunManager.Instance.EventSynchronizer?.GetLocalEvent();

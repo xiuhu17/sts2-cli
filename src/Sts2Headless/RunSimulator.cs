@@ -581,6 +581,19 @@ public partial class RunSimulator
                 && cuEl.ValueKind is System.Text.Json.JsonValueKind.True or System.Text.Json.JsonValueKind.False)
                 player.CanUseOrRemovePotions = cuEl.GetBoolean();
             Log($"SetPlayer: hp={player.Creature?.CurrentHp} gold={player.Gold} relics={player.Relics.Count} deck={player.Deck?.Cards?.Count}");
+            // Debug: the current rest site's Smith upgrades N cards (SmithRestSiteOption.SmithCount).
+            if (args.TryGetValue("smith_count", out var scEl))
+            {
+                var smith = (_runState.CurrentRoom as RestSiteRoom)?.Options?
+                    .OfType<MegaCrit.Sts2.Core.Entities.RestSite.SmithRestSiteOption>().FirstOrDefault();
+                if (smith == null) return Error("smith_count: not at a rest site with a Smith option");
+                smith.SmithCount = scEl.GetInt32();
+            }
+            // Debug: open a deck card selection through the game's CardSelectCmd with the given
+            // prefs, as an event/relic would: {"method": "upgrade"|"transform"|"deck"|"grid",
+            // "min": 1, "max": 2, "cancelable": false, "manual": false}.
+            if (args.TryGetValue("card_select", out var csEl))
+                return DebugCardSelect(player, csEl);
             if (args.TryGetValue("obtain_relic", out var obtainEl))
             {
                 // Obtain like a real pickup (RelicCmd.Obtain: AfterObtained runs, so Cauldron,
@@ -598,6 +611,30 @@ public partial class RunSimulator
             };
         }
         catch (Exception ex) { return ErrorWithTrace("SetPlayer failed", ex); }
+    }
+
+    private Dictionary<string, object?> DebugCardSelect(Player player, System.Text.Json.JsonElement spec)
+    {
+        if (spec.ValueKind != System.Text.Json.JsonValueKind.Object) return Error("card_select must be an object", "bad_request");
+        string method = spec.TryGetProperty("method", out var m) ? m.GetString() ?? "" : "";
+        int min = spec.TryGetProperty("min", out var mn) ? mn.GetInt32() : 1;
+        int max = spec.TryGetProperty("max", out var mx) ? mx.GetInt32() : min;
+        var prefs = new CardSelectorPrefs(CardSelectorPrefs.UpgradeSelectionPrompt, min, max)
+        {
+            Cancelable = spec.TryGetProperty("cancelable", out var c) && c.ValueKind == System.Text.Json.JsonValueKind.True,
+            RequireManualConfirmation = spec.TryGetProperty("manual", out var r) && r.ValueKind == System.Text.Json.JsonValueKind.True,
+        };
+        Func<Task>? work = method switch
+        {
+            "upgrade" => async () => { foreach (var x in await CardSelectCmd.FromDeckForUpgrade(player, prefs)) CardCmd.Upgrade(x); },
+            "transform" => async () => await CardSelectCmd.FromDeckForTransformation(player, prefs),
+            "deck" => async () => await CardSelectCmd.FromDeckGeneric(player, prefs),
+            "grid" => async () => await CardSelectCmd.FromSimpleGrid(null!, player.Deck.Cards.ToList(), player, prefs),
+            _ => null,
+        };
+        if (work == null) return Error($"card_select method must be upgrade, transform, deck or grid (got '{method}')", "bad_request");
+        RunInBackground(work);
+        return DetectDecisionPoint();
     }
 
     public Dictionary<string, object?> EnterRoom(string roomType, string? encounter, string? eventId, int? act = null)
@@ -1825,6 +1862,11 @@ public partial class RunSimulator
         // Only the sizes the game's screen can confirm (CardSelectRules): e.g. the deck
         // enchant/upgrade screens' Confirm does nothing with no card selected.
         var counts = _cardSelector.PendingCounts;
+        if (counts.Count == 0)
+            return Error($"This screen can't be confirmed: it asks for {_cardSelector.PendingMinSelect}"
+                         + (_cardSelector.PendingMinSelect != _cardSelector.PendingMaxSelect ? $"-{_cardSelector.PendingMaxSelect}" : "")
+                         + $" card(s) but shows only {optionCount}"
+                         + (_cardSelector.PendingContext?.Cancelable == true ? "; leave with skip_select" : " (softlock)"));
         if (!counts.Contains(indices.Count))
             return Error(indices.Count == 0
                 ? $"This screen can't be confirmed with nothing selected: choose {CardSelectRules.Describe(counts)} card(s)"
@@ -1858,9 +1900,16 @@ public partial class RunSimulator
             return Error(_cardSelector.PendingMinSelect == 0
                 ? "This screen has no cancel button: confirm with nothing selected (select_cards with indices \"\")"
                 : $"This selection can't be skipped: choose at least {_cardSelector.PendingMinSelect} card(s) with select_cards");
+        Log("Skipping card selection");
+        return CloseSelection(player);
+    }
+
+    /// <summary>Resolve the pending card selection with nothing chosen (the screen's close /
+    /// skip button) and continue the flow that asked for it.</summary>
+    private Dictionary<string, object?> CloseSelection(Player player)
+    {
         if (_cardSelector.HasPending)
         {
-            Log("Skipping card selection");
             if (_backgroundTask == null && InTurnTransition(player))
             {
                 if (!ResolveMidTurnPrompt(player, () => _cardSelector.CancelPending()))
@@ -2339,6 +2388,8 @@ public partial class RunSimulator
             if (counts.Count > 1 && counts[^1] - counts[0] != counts.Count - 1)
                 selectState["select_counts"] = counts.ToList();
             AugmentCardSelect(selectState, player);
+            if (counts.Count == 0)
+                MarkUnconfirmableSelect(selectState, opts.Count);
             return selectState;
         }
 
@@ -5002,6 +5053,8 @@ public partial class RunSimulator
             // The sizes the game's screen can confirm: a choose-a-card screen needs a click
             // even though the game asks for 0-1 cards, a deck enchant/upgrade screen can't
             // confirm nothing, ... (CardSelectRules).
+            // No size at all: the screen asks for more cards than it shows and can't be
+            // confirmed (only Close if Cancelable, else a softlock); min/max stay the prefs'.
             var counts = CardSelectRules.AllowedCounts(ctx, optList.Count, minSelect, maxSelect);
             if (counts.Count > 0) { minSelect = counts[0]; maxSelect = counts[^1]; }
             // A hand selection happens on the hand row: list the cards in the row's order.

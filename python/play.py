@@ -2117,6 +2117,10 @@ def play(character, seed=None, auto=False, ascension=0, log=True,
                     print_card_detail_extension(cd, indent="      ")
                     print_card_previews(cd, indent="      ")
 
+                # The screen can't be confirmed with these cards (the game doesn't clamp): only Close.
+                if state.get("select_counts") == [] and state.get("message"):
+                    print(f"  {c(t(state['message'], '这个界面用现有的牌无法确认，只能关闭（s）。'), 'yellow')}")
+
                 singles = {str(i) for i in _arg_values(state, "select_cards", "indices")}
                 multi = next((a["choose"] for a in _legal_of(state, "select_cards") if "choose" in a), None)
                 can_skip = bool(_legal_of(state, "skip_select"))

@@ -70,6 +70,10 @@ public partial class RunSimulator
         {
             return name switch
             {
+                "card_select" when action is "select_cards" or "skip_select"
+                                   && decision.GetValueOrDefault("select_counts") is System.Collections.ICollection { Count: 0 }
+                    => "this screen can't be confirmed with the cards it shows"
+                       + (decision.GetValueOrDefault("cancelable") is true ? "; leave it with skip_select" : " and has no close button (softlock)"),
                 "card_select" when action == "skip_select" => decision.GetValueOrDefault("min_select") is 0
                     ? "the screen has no cancel button; confirm with nothing selected: select_cards with indices \"\""
                     : "this selection requires a choice (it is not cancelable)",
