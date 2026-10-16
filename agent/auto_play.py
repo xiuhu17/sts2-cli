@@ -176,6 +176,7 @@ def handle_card_reward(d):
 
     best_idx = -1
     best_score = 0
+    scores = {}
     for c in cards:
         name = c["name"]
         score = priority.get(name, 0)
@@ -193,16 +194,61 @@ def handle_card_reward(d):
         # Reduce score if deck is getting big
         if deck_size > 15 and score < 50:
             score = 0
+        scores[c["index"]] = score
         if score > best_score:
             best_score = score
             best_idx = c["index"]
 
-    if best_score >= 15 and deck_size < 18:
+    if not d.get("can_skip", True) and best_idx < 0 and cards:
+        # Must take one (Draft) and nothing scored: take the highest-scoring card, ties broken
+        # by the lowest energy cost, then by name (never "the first card shown").
+        pick = max(cards, key=lambda c: (scores.get(c["index"], 0), -(c.get("cost") or 0), str(c.get("name"))))
+        best_idx, best_score = pick["index"], scores.get(pick["index"], 0)
+    if best_idx >= 0 and (best_score >= 15 and deck_size < 18 or not d.get("can_skip", True)):
         print(f"  PICK: {cards[best_idx]['name']['zh']} (score={best_score})")
         return action("select_card_reward", card_index=best_idx)
     else:
         print(f"  SKIP card reward (deck={deck_size})")
         return action("skip_card_reward")
+
+# Rewards screens are always a decision (the engine never collects anything for the player).
+# Policy: claim gold, relics and potions (a potion only if the belt has room), open each card
+# reward once (handle_card_reward picks or skips; a skipped card reward stays on the screen),
+# then proceed. If the screen can't be skipped (Neow's Bones), keep claiming.
+_declined_card_rewards = set()
+
+
+def handle_rewards(d):
+    rewards = d.get("rewards", [])
+    full = d.get("potion_slots_full")
+    ctx = d.get("context") or {}
+    screen = (ctx.get("act"), ctx.get("floor"), d.get("source"))
+    for r in rewards:
+        if r.get("type") == "potion" and full:
+            continue
+        key = screen + (r["index"],)
+        if r.get("type") == "card" and key in _declined_card_rewards and d.get("can_skip", True):
+            continue
+        if r.get("type") == "card":
+            _declined_card_rewards.add(key)
+        print(f"  CLAIM reward {r['index']}: {r.get('type')} {r.get('name') or ''}")
+        return action("claim_reward", reward_index=r["index"])
+    print("  LEAVE rewards")
+    return action("proceed")
+
+
+_RARITY_RANK = {"Rare": 0, "Shop": 1, "Uncommon": 2, "Common": 3}
+
+
+def handle_treasure(d):
+    """Treasure chest policy: take a relic (the rarest offered; a single-player chest offers
+    one) rather than skipping it."""
+    relics = sorted(d.get("relics", []), key=lambda r: (_RARITY_RANK.get(r.get("rarity"), 9), r["index"]))
+    if relics:
+        print(f"  TREASURE: {relics[0].get('id')}")
+        return action("select_treasure_relic", relic_index=relics[0]["index"])
+    return action("skip_treasure_relic")
+
 
 def handle_shop(d):
     """Buy high-priority cards, remove strikes."""
@@ -370,6 +416,12 @@ def play_game():
 
         elif dec == "card_reward":
             d = handle_card_reward(d)
+
+        elif dec == "rewards":
+            d = handle_rewards(d)
+
+        elif dec == "treasure_relic":
+            d = handle_treasure(d)
 
         elif dec == "rest_site":
             d = handle_rest(d)

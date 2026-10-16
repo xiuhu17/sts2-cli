@@ -393,7 +393,7 @@ public partial class RunSimulator
             // rooms, ancient visits, ...); without a profile, one consistent with UnlockState.all.
             ParityPatches.SetProgress(progress);
             _loc.Lang = lang;
-            ManualRewards = manualRewards;
+            _ = manualRewards;  // accepted but ignored: rewards are always a decision (NRewardsScreen)
 
             var player = CreatePlayer(character, unlocks);
             if (player == null)
@@ -697,7 +697,7 @@ public partial class RunSimulator
             if (!ResetForNewRun())
                 return RestartRequired();
             _loc.Lang = lang;
-            ManualRewards = manualRewards;
+            _ = manualRewards;  // accepted but ignored: rewards are always a decision (NRewardsScreen)
             ParityPatches.SetProgress(progress);
 
             _runState = RunState.FromSerializable(save);
@@ -1499,7 +1499,10 @@ public partial class RunSimulator
             if (args == null || !args.ContainsKey("card_index"))
                 return Error("select_card_reward requires 'card_index'");
             var idx = Convert.ToInt32(args["card_index"]);
-            Log($"Resolving event card reward: index {idx}");
+            var offered = _cardSelector.PendingRewardCards?.Count ?? 0;
+            if (idx < 0 || idx >= offered)
+                return Error($"Invalid card index {idx}, {offered} cards available");
+            Log($"Resolving card reward: index {idx}");
             _cardSelector.ResolveReward(idx);
             AwaitBackground();
             WaitForActionExecutor();
@@ -2315,7 +2318,7 @@ public partial class RunSimulator
             return selectState;
         }
 
-        // Rewards offered by an event (manual_rewards)
+        // Rewards offered by an event or a relic pickup (RewardsSet.Offer)
         if (EventRewardsOpen)
             return EventRewardsState(player);
 
@@ -2878,7 +2881,6 @@ public partial class RunSimulator
         {
             _goldBeforeCombat = player.Gold;
             _rewardDone.Clear();
-            _autoRewardsScreen = false;
             try
             {
                 var rewardsSet = new RewardsSet(player).WithRewardsFromRoom(combatRoom);
@@ -2887,64 +2889,22 @@ public partial class RunSimulator
                 rewardsSet.GenerateWithoutOffering().GetAwaiter().GetResult();
                 _pendingRewards = rewardsSet.Rewards.ToList();
                 _syncCtx.Pump();
-
-                if (!ManualRewards)
-                {
-                    // Auto-collect gold, relics and potions; card choices go to the agent.
-                    for (int i = 0; i < _pendingRewards.Count; i++)
-                    {
-                        var reward = _pendingRewards[i];
-                        // A potion with a full belt stays on the reward screen (PotionReward.OnSelect
-                        // fails), so the player can discard one first; it is offered below.
-                        if (reward is MegaCrit.Sts2.Core.Rewards.PotionReward && !player.HasOpenPotionSlots)
-                            continue;
-                        if (reward is GoldReward || reward is MegaCrit.Sts2.Core.Rewards.RelicReward
-                            || reward is MegaCrit.Sts2.Core.Rewards.PotionReward || reward is SpecialCardReward)
-                        {
-                            _rewardDone.Add(i);
-                            try { reward.SelectUnsynchronized().GetAwaiter().GetResult(); _syncCtx.Pump(); }
-                            catch (Exception ex) { Log($"Auto-collect reward: {ex.Message}"); }
-                        }
-                        // Card rewards and card removal (it opens a card choice) are offered below.
-                    }
-                }
             }
             catch (Exception ex)
             {
-                Log($"Generate rewards: {ex.Message}");
+                // Never leave the room as if there had been no rewards: the player would lose
+                // them without being asked.
+                Log($"Generate rewards: {ex}");
                 _pendingRewards = null;
+                return MarkStuck($"combat rewards could not be generated: {ex.Message}");
             }
         }
 
-        if (_pendingRewards != null && _pendingCardReward == null)
-        {
-            if (ManualRewards || _autoRewardsScreen)
-            {
-                if (Enumerable.Range(0, _pendingRewards.Count).Any(i => !_rewardDone.Contains(i)))
-                    return RewardsState(player);
-            }
-            else
-            {
-                // Offer every card reward in turn (fights can drop more than one), then any
-                // other reward that needs a choice (card removal), through the game's own
-                // selection (CardReward.OnSelect: alternatives, history, hooks).
-                for (int pass = 0; pass < 2; pass++)
-                    for (int i = 0; i < _pendingRewards.Count; i++)
-                    {
-                        var rw = _pendingRewards[i];
-                        if (_rewardDone.Contains(i) || rw is MegaCrit.Sts2.Core.Rewards.PotionReward) continue;
-                        if (pass == 0 && rw is not CardReward) continue;
-                        _rewardDone.Add(i);
-                        return SelectRewardInBackground(rw, i);
-                    }
-                // Potions left because the belt was full: show the reward screen for them.
-                if (Enumerable.Range(0, _pendingRewards.Count).Any(i => !_rewardDone.Contains(i)))
-                {
-                    _autoRewardsScreen = true;
-                    return RewardsState(player);
-                }
-            }
-        }
+        // The reward screen (NRewardsScreen) stays up while anything on it is unclaimed: every
+        // reward is the player's to take or leave, and Proceed leaves the rest.
+        if (_pendingRewards != null && _pendingCardReward == null
+            && Enumerable.Range(0, _pendingRewards.Count).Any(i => !_rewardDone.Contains(i)))
+            return RewardsState(player);
 
         // No more pending rewards — proceed
         _pendingCardReward = null;
@@ -3038,9 +2998,9 @@ public partial class RunSimulator
         };
     }
 
-    // ─── Event rewards (manual_rewards) ───
-    // Events hand out rewards through RewardsSet.testSelector on their background flow. In
-    // manual mode the selector parks the set here and waits; claims run the game's own
+    // ─── Event / relic reward sets ───
+    // Events hand out rewards through RewardsSet.testSelector on their background flow. The
+    // selector parks the set here and waits; claims run the game's own
     // RewardsSetSynchronizer.SelectLocalReward on a pool thread (a card reward opens the
     // usual card_reward prompt); proceed skips the rest and resumes the event.
 
@@ -3127,6 +3087,9 @@ public partial class RunSimulator
             ["source"] = "event",
             ["context"] = RunContext(),
             ["rewards"] = rewards,
+            // RewardsSet.WithSkippingDisallowed (Neow's Bones): Proceed stays disabled until
+            // every reward is taken.
+            ["can_skip"] = !frame.Set.DisallowSkipping,
             ["potion_slots_full"] = !player.HasOpenPotionSlots,
             ["player"] = PlayerSummary(player),
         };
@@ -3306,20 +3269,17 @@ public partial class RunSimulator
         return DetectDecisionPoint();
     }
 
-    // ─── Manual rewards (start_run/load_save with "manual_rewards": true) ───
-
-    /// <summary>When true, post-combat rewards and treasure relics are offered as decisions
-    /// instead of being collected automatically.</summary>
-    public bool ManualRewards { get; private set; }
+    // ─── Reward screens ───
+    // Post-combat rewards, treasure relics and event/relic reward sets are always offered as
+    // decisions, as NRewardsScreen / NTreasureRoom do. (start_run/load_save still accept the
+    // old "manual_rewards" flag, which no longer changes anything.)
 
     // Indices into _pendingRewards already claimed, skipped, or handed to the card reward screen.
     private readonly HashSet<int> _rewardDone = new();
-    // Automatic rewards left a potion the full belt couldn't take: the reward screen is shown.
-    private bool _autoRewardsScreen;
 
-    /// <summary>The post-combat reward screen is open (manual mode, combat over, unclaimed rewards left).</summary>
+    /// <summary>The post-combat reward screen is open (combat over, unclaimed rewards left).</summary>
     private bool RewardsScreenOpen =>
-        (ManualRewards || _autoRewardsScreen) && _pendingRewards != null && _pendingCardReward == null
+        _pendingRewards != null && _pendingCardReward == null
         && _runState?.CurrentRoom is CombatRoom && !CombatManager.Instance.IsInProgress
         && !HasPendingPrompt
         && Enumerable.Range(0, _pendingRewards.Count).Any(i => !_rewardDone.Contains(i));
@@ -3428,18 +3388,15 @@ public partial class RunSimulator
     /// Take a reward through the game's own selection logic (Reward.SelectUnsynchronized), on a
     /// background flow so a card reward or a pickup prompt can pause it. On the reward screen a
     /// reward the player backs out of (Skip on a card reward, cancelled removal) stays claimable,
-    /// as NRewardButton keeps it unless the selection succeeded; with automatic rewards it is
-    /// skipped instead.
+    /// as NRewardButton keeps it unless the selection succeeded.
     /// </summary>
     private Dictionary<string, object?> SelectRewardInBackground(Reward reward, int idx)
     {
-        var onScreen = ManualRewards || _autoRewardsScreen;
         if (RunInBackground(async () =>
             {
-                var ok = await reward.SelectUnsynchronized();
-                if (ok) return;
-                if (onScreen) lock (_rewardDone) _rewardDone.Remove(idx);
-                else reward.OnSkipped();
+                bool ok = false;
+                try { ok = await reward.SelectUnsynchronized(); }
+                finally { if (!ok) lock (_rewardDone) _rewardDone.Remove(idx); }
             }))
             return DetectDecisionPoint();
         WaitForActionExecutor();
@@ -3485,7 +3442,10 @@ public partial class RunSimulator
                 case "claim_reward": return DoClaimEventReward(player, args);
                 case "proceed":
                 case "leave_room":
-                case "skip_rewards": return DoFinishEventRewards();
+                case "skip_rewards":
+                    if (TopEventFrame?.Set.DisallowSkipping == true)
+                        return Error("These rewards can't be skipped: claim every reward to continue");
+                    return DoFinishEventRewards();
                 case "use_potion":
                 case "discard_potion": return null;
                 default: return Error($"'{action}' is not available on the rewards screen: use claim_reward or proceed");
@@ -3527,7 +3487,7 @@ public partial class RunSimulator
         }
         // A card reward (or a prompt) opened from the rewards screen is showing: leaving now
         // would drop the remaining rewards, so resolve it first.
-        if (ManualRewards && _pendingRewards != null && _runState?.CurrentRoom is CombatRoom
+        if (_pendingRewards != null && _runState?.CurrentRoom is CombatRoom
             && !CombatManager.Instance.IsInProgress
             && (_pendingCardReward != null || HasPendingPrompt)
             && action is "proceed" or "leave_room" or "select_map_node")
@@ -3871,6 +3831,20 @@ public partial class RunSimulator
             WaitForActionExecutor();
             return CompleteTreasureRoom(treasureRoom);
         }
+        if (!ReferenceEquals(_treasureChestOpened, treasureRoom))
+        {
+            // NTreasureRoom.OpenChest: the chest's gold, then any extra rewards screen (relics
+            // that add treasure rewards), then the relic choice. Opening is the room's only
+            // action (travel stays disabled until the relic is resolved), so it is not a choice.
+            _treasureChestOpened = treasureRoom;
+            if (RunInBackground(async () =>
+                {
+                    await treasureRoom.DoNormalRewards();
+                    await treasureRoom.DoExtraRewardsIfNeeded();
+                }))
+                return DetectDecisionPoint();
+            WaitForActionExecutor();
+        }
         if (TreasureChoicePending(out var offered))
         {
             return new Dictionary<string, object?>
@@ -3883,14 +3857,24 @@ public partial class RunSimulator
                 ["player"] = PlayerSummary(_runState!.Players[0]),
             };
         }
-        return FinishTreasure(treasureRoom, relicIndex: 0);
+        // Nothing to choose from: close the picking session (CompleteWithNoRelics) and leave.
+        // Relics still on offer here (a prompt in front of them) must never be skipped for the
+        // player.
+        IReadOnlyList<RelicModel>? left = null;
+        try { left = RunManager.Instance.TreasureRoomRelicSynchronizer?.CurrentRelics; } catch { }
+        if (left is { Count: > 0 })
+            return MarkStuck("treasure relics are on offer but no treasure_relic decision could be shown");
+        return FinishTreasure(treasureRoom, relicIndex: null);
     }
 
-    /// <summary>True when manual_rewards is on and a treasure chest's relics await a choice.</summary>
+    // The treasure room whose chest has been opened (gold and extra rewards handed out).
+    private TreasureRoom? _treasureChestOpened;
+
+    /// <summary>True when a treasure chest's relics await the player's choice.</summary>
     private bool TreasureChoicePending(out IReadOnlyList<RelicModel>? offered)
     {
         offered = null;
-        if (!ManualRewards || _runState?.CurrentRoom is not TreasureRoom) return false;
+        if (_runState?.CurrentRoom is not TreasureRoom) return false;
         if (_treasureFinishPending != null || HasPendingPrompt) return false;  // already chosen
         try { offered = RunManager.Instance.TreasureRoomRelicSynchronizer?.CurrentRelics; }
         catch { return false; }
@@ -3909,9 +3893,10 @@ public partial class RunSimulator
         // TreasureRoom.EnterInternal opens a relic-picking session (BeginRelicPicking) that the
         // headless must drive, otherwise (a) no relic is ever awarded and (b) the session stays
         // open so the NEXT treasure room's BeginRelicPicking throws "relic picking session while
-        // one was already occurring!" (issue #56). Auto-pick the first offered relic: PickRelicLocally
-        // enqueues a PickRelicAction whose execution awards the relic and ends the session
-        // (OnPicked -> EndRelicVoting). An empty offer is closed with CompleteWithNoRelics.
+        // one was already occurring!" (issue #56). PickRelicLocally (the player's choice) enqueues a
+        // PickRelicAction whose execution awards the relic and ends the session (OnPicked ->
+        // EndRelicVoting); SkipRelicLocally is the Skip button. An empty offer is closed with
+        // CompleteWithNoRelics.
         try
         {
             var relicSync = RunManager.Instance.TreasureRoomRelicSynchronizer;
@@ -3965,7 +3950,12 @@ public partial class RunSimulator
                 }
             }
         }
-        catch (Exception ex) { Log($"Treasure relic pick: {ex.Message}"); }
+        catch (Exception ex)
+        {
+            // Don't move on as if the pick had worked: the relic would be lost silently.
+            Log($"Treasure relic pick: {ex}");
+            return MarkStuck($"treasure relic could not be resolved: {ex.Message}");
+        }
 
         return CompleteTreasureRoom(treasureRoom);
     }
@@ -3975,31 +3965,9 @@ public partial class RunSimulator
 
     private Dictionary<string, object?> CompleteTreasureRoom(TreasureRoom treasureRoom)
     {
+        // The chest's gold and extra rewards came when it was opened (TreasureState); with the
+        // relic resolved, Proceed is the room's only button.
         _treasureFinishPending = null;
-        try
-        {
-            treasureRoom.DoNormalRewards().GetAwaiter().GetResult();
-            _syncCtx.Pump();
-            treasureRoom.DoExtraRewardsIfNeeded().GetAwaiter().GetResult();
-            _syncCtx.Pump();
-        }
-        catch (InvalidOperationException ex) when (ex.Message.Contains("relic picking session"))
-        {
-            // BUG-013: Relic session conflict — wait for pending session then retry
-            Log($"Relic session conflict, waiting and retrying: {ex.Message}");
-            WaitForActionExecutor();
-            _syncCtx.Pump();
-            try
-            {
-                treasureRoom.DoNormalRewards().GetAwaiter().GetResult();
-                _syncCtx.Pump();
-                treasureRoom.DoExtraRewardsIfNeeded().GetAwaiter().GetResult();
-                _syncCtx.Pump();
-            }
-            catch (Exception retryEx) { Log($"Treasure rewards retry failed: {retryEx.Message}"); }
-        }
-        catch (Exception ex) { Log($"Treasure rewards: {ex.Message}"); }
-
         ForceToMap();
         return MapSelectState();
     }
@@ -4697,18 +4665,15 @@ public partial class RunSimulator
         // Progress now resolves character models, so register ModelDb first.
         SaveManager.Instance.InitProgressData();
 
+        // RewardsSet.Offer runs this instead of NRewardsScreen.ShowScreen (TestMode). Every set
+        // (event, relic pickup, treasure extras) is parked as a "rewards" decision until the
+        // player claims or leaves its rewards; nothing is ever taken on the player's behalf.
         RewardsSet.testSelector = async set =>
         {
-            // RewardsSet.Offer with TestMode off shows NRewardsScreen: the player claims or
-            // leaves each reward. Always offer the set as a "rewards" decision (whatever
-            // manual_rewards says); nothing is ever claimed on the player's behalf. The set is
-            // finished when the player proceeds (DoFinishEventRewards skips what is left).
             var sim = LocPatches._bundleSimRef
-                ?? throw new InvalidOperationException("RewardsSet offered with no run to offer it to");
+                ?? throw new InvalidOperationException("A reward set was offered with no run in progress");
             if (Environment.CurrentManagedThreadId == MainThreadId)
-                // The decision loop shows the set; a caller blocking on this task here would
-                // wait for an answer only this thread can deliver (callers run on Task.Run).
-                Console.Error.WriteLine("[WARN] Rewards set offered on the main thread");
+                Console.Error.WriteLine($"[WARN] Reward set offered on the main thread:\n{Environment.StackTrace}");
             await sim.OfferEventRewards(set);
         };
 
@@ -5085,14 +5050,14 @@ public partial class RunSimulator
             IReadOnlyList<MegaCrit.Sts2.Core.Entities.Cards.CardCreationResult> options,
             IReadOnlyList<CardRewardAlternative> alternatives)
         {
-            if (options.Count == 0) return default;  // Skip
+            // Nothing on the screen at all (no cards, no Skip/Reroll/Sacrifice): nothing to decide.
+            if (options.Count == 0 && (alternatives == null || alternatives.Count == 0)) return default;
 
-            // Blocking the main thread would wait for an answer only it can deliver.
+            // Blocking the main thread would wait for an answer only it can deliver. Every reward
+            // flow runs on a background flow, so this is an adapter bug: fail loudly instead of
+            // skipping the reward for the player.
             if (Environment.CurrentManagedThreadId == MainThreadId)
-            {
-                Console.Error.WriteLine("[WARN] Card reward requested on the main thread; skipping it to avoid a deadlock");
-                return default;
-            }
+                throw new InvalidOperationException("Card reward requested on the main thread (adapter bug): it can't wait for the player here");
 
             // Store pending and block until main loop resolves
             var wait = new ManualResetEventSlim(false);
@@ -5106,14 +5071,16 @@ public partial class RunSimulator
             }
 
             Console.Error.WriteLine($"[SIM] Card reward pending: {options.Count} cards (blocking)");
-            wait.Wait(TimeSpan.FromSeconds(300)); // Wait up to 5 min
+            // NCardRewardSelectionScreen waits for the player indefinitely. Reset() (new run,
+            // quit) wakes this thread with no choice.
+            wait.Wait();
 
             int choice, altChoice;
             lock (_rewardLock)
             {
                 choice = _rewardChoice;
                 altChoice = _rewardAltChoice;
-                // Normally already cleared by ResolveReward/SkipReward; also covers the timeout.
+                // Normally already cleared by ResolveReward/SkipReward.
                 if (ReferenceEquals(_rewardWait, wait))
                 {
                     PendingRewardCards = null;
@@ -5902,6 +5869,7 @@ public partial class RunSimulator
         ContinueSave.Last = null;
         ResetRoomParityState();
         _treasureFinishPending = null;
+        _treasureChestOpened = null;
         _goldBeforeCombat = 0;
         _lastKnownHp = 0;
         _turnStarted.Reset();

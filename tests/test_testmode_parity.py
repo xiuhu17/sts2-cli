@@ -59,13 +59,15 @@ class TestShop:
         # Real game, seed R3B0F9WFJUMG, Ironclad, the recorded profile: Neow Lost Coffer, potion
         # and Shrug It Off, then (1,1) (1,2) (1,3) (0,4) to the floor-6 shop.
         # Replay policy (the recorded run's choices, not "take the first option"): in combat play
-        # the hand left to right, then end the turn; claim every reward on a rewards screen; take
-        # Shrug It Off when offered; the Self-Help Book page is the recorded "read the back" and
+        # the hand left to right, then end the turn; claim every reward on a rewards screen (a
+        # card reward is opened once: skipping it returns to the screen with it still listed);
+        # take Shrug It Off when offered; the Self-Help Book page is the recorded "read the back" and
         # Sharp goes on a Strike. Any other decision fails the test.
         state = game.send({"cmd": "start_run", "character": "Ironclad", "seed": "R3B0F9WFJUMG",
                            "profile": os.environ["STS2_PARITY_PROFILE"]})
         state = game.act("choose_option", option_index=1)  # Lost Coffer
         route = [(1, 1), (1, 2), (1, 3), (0, 4), (0, 5)]
+        opened = set()  # (floor, reward index) of card rewards already opened
         for _ in range(600):
             d = state.get("decision")
             assert state.get("type") != "error", state
@@ -85,8 +87,12 @@ class TestShop:
                 a = plays[0] if plays else {"action": "end_turn"}
                 state = game.act(a["action"], **a.get("args", {}))
             elif d == "rewards":
+                floor = state["context"]["floor"]
                 claimable = [w for w in state["rewards"]
-                             if not (w["type"] == "potion" and state.get("potion_slots_full"))]
+                             if not (w["type"] == "potion" and state.get("potion_slots_full"))
+                             and (floor, w["index"]) not in opened]
+                if claimable and claimable[0]["type"] == "card":
+                    opened.add((floor, claimable[0]["index"]))
                 state = (game.act("claim_reward", reward_index=claimable[0]["index"]) if claimable
                          else game.act("proceed"))
             elif d == "event_choice":

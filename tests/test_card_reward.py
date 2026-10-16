@@ -8,14 +8,17 @@ class TestCardReward:
         game.skip_neow(state)
         state = game.enter_room("combat", encounter="SHRINKER_BEETLE_WEAK")
         state = game.auto_play_combat(state)
-        # After combat we expect card_reward (or bundle_select, card_select)
-        assert state["decision"] in ("card_reward", "bundle_select", "card_select", "map_select")
+        # After combat the rewards screen lists the card reward; claiming it opens the cards.
+        assert state["decision"] == "rewards"
+        assert any(r["type"] == "card" for r in state["rewards"])
+        state = game.open_card_reward(state)
+        assert state["decision"] == "card_reward"
 
     def test_card_reward_structure(self, game):
         state = game.start(seed="cr2")
         game.skip_neow(state)
         state = game.enter_room("combat", encounter="SHRINKER_BEETLE_WEAK")
-        state = game.auto_play_combat(state)
+        state = game.open_card_reward(game.auto_play_combat(state))
         if state["decision"] != "card_reward":
             pytest.skip("No card_reward after this fight")
         assert len(state["cards"]) > 0
@@ -28,7 +31,7 @@ class TestCardReward:
         state = game.start(seed="cr3")
         game.skip_neow(state)
         state = game.enter_room("combat", encounter="SHRINKER_BEETLE_WEAK")
-        state = game.auto_play_combat(state)
+        state = game.open_card_reward(game.auto_play_combat(state))
         if state["decision"] != "card_reward":
             pytest.skip("No card_reward")
         deck_before = state["player"]["deck_size"]
@@ -40,10 +43,13 @@ class TestCardReward:
         state = game.start(seed="cr4")
         game.skip_neow(state)
         state = game.enter_room("combat", encounter="SHRINKER_BEETLE_WEAK")
-        state = game.auto_play_combat(state)
+        state = game.open_card_reward(game.auto_play_combat(state))
         if state["decision"] != "card_reward":
             pytest.skip("No card_reward")
         deck_before = state["player"]["deck_size"]
         state = game.act("skip_card_reward")
         deck_after = state.get("player", {}).get("deck_size", deck_before)
         assert deck_after == deck_before
+        # Skip goes back to the rewards screen with the card reward still claimable.
+        assert state["decision"] == "rewards"
+        assert any(r["type"] == "card" for r in state["rewards"])

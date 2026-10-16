@@ -113,6 +113,18 @@ class Game:
             state = self.auto_combat(state)
         raise RuntimeError("Combat did not end")
 
+    def open_card_reward(self, state):
+        """From a post-combat 'rewards' screen, claim its card reward (opens 'card_reward').
+
+        Rewards are always a decision: nothing is collected for the player. Returns the state
+        unchanged when it isn't a rewards screen or has no card reward."""
+        if state.get("decision") != "rewards":
+            return state
+        card = next((r for r in state["rewards"] if r["type"] == "card"), None)
+        if card is None:
+            return state
+        return self.act("claim_reward", reward_index=card["index"])
+
     def skip_neow(self, state):
         """Skip the Neow event and all follow-up rewards until map_select."""
         for _ in range(20):

@@ -153,7 +153,8 @@ internal static class LegalActions
                 foreach (var w in Items(r, "rewards"))
                     if (!(slotsFull && w.GetValueOrDefault("type") as string == "potion"))
                         acts.Add(Act("claim_reward", ("reward_index", w["index"])));
-                acts.Add(Act("proceed"));
+                if (r.GetValueOrDefault("can_skip") is not false)
+                    acts.Add(Act("proceed"));
                 break;
             }
 

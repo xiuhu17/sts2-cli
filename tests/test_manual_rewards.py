@@ -1,4 +1,7 @@
-"""manual_rewards: post-combat rewards and treasure relics offered as decisions."""
+"""Post-combat rewards, treasure relics and event rewards are always offered as decisions.
+
+The old "manual_rewards" flag is still accepted but changes nothing (the auto-collect mode was
+removed): these tests run both with and without it."""
 import pytest
 
 
@@ -83,11 +86,52 @@ class TestCombatRewards:
                 return
         pytest.skip("no potion drop / slot setup in the sampled seeds")
 
-    def test_default_mode_unchanged(self, game):
+    def test_without_flag_rewards_are_still_a_decision(self, game):
         state = game.skip_neow(game.start(seed="mr6"))
         game.set_player(hp=999, max_hp=999)
+        gold_before = state["player"]["gold"]
         state = game.auto_play_combat(game.enter_room("combat"))
+        assert state["decision"] == "rewards"
+        assert state["player"]["gold"] == gold_before  # nothing taken for the player
+        assert {"gold", "card"} <= {r["type"] for r in state["rewards"]}
+
+    def test_manual_rewards_false_is_ignored(self, game):
+        state = game.send({"cmd": "start_run", "character": "Ironclad", "seed": "mr7",
+                           "manual_rewards": False})
+        game.skip_neow(state)
+        game.set_player(hp=999, max_hp=999)
+        state = game.auto_play_combat(game.enter_room("combat"))
+        assert state["decision"] == "rewards"
+
+    def test_skipped_card_reward_stays_claimable(self, game):
+        """Skip on the card screen returns to the rewards screen (NRewardButton keeps a reward
+        whose selection didn't complete); it can be reopened and taken later."""
+        state = win_combat(game, "mr8")
+        card = next(r for r in state["rewards"] if r["type"] == "card")
+        state = game.act("claim_reward", reward_index=card["index"])
         assert state["decision"] == "card_reward"
+        first = [c["id"] for c in state["cards"]]
+        state = game.act("skip_card_reward")
+        assert state["decision"] == "rewards"
+        again = next(r for r in state["rewards"] if r["type"] == "card")
+        assert again["index"] == card["index"]
+        state = game.act("claim_reward", reward_index=card["index"])
+        assert state["decision"] == "card_reward"
+        assert [c["id"] for c in state["cards"]] == first  # the same cards, not a new roll
+        deck = state["player"]["deck_size"]
+        state = game.act("select_card_reward", card_index=0)
+        assert state["player"]["deck_size"] == deck + 1
+
+    def test_invalid_card_index_is_an_error_not_a_skip(self, game):
+        state = win_combat(game, "mr2")
+        state = game.open_card_reward(state)
+        assert state["decision"] == "card_reward"
+        deck = state["player"]["deck_size"]
+        err = game.act("select_card_reward", card_index=99)
+        assert err["type"] == "error" and err.get("decision") == "card_reward"
+        # The prompt is still open: a valid pick still works.
+        state = game.act("select_card_reward", card_index=0)
+        assert state["player"]["deck_size"] == deck + 1
 
 
 class TestTreasure:
@@ -151,11 +195,47 @@ class TestEventRewards:
         assert state["decision"] == "map_select"
         assert state["player"]["potions"] == []
 
-    def test_event_rewards_are_a_decision_without_manual_rewards(self, game):
-        # RewardsSet.Offer: an event's reward set is always a rewards screen; nothing is
-        # claimed for the player, whatever manual_rewards says.
+    def test_without_flag_event_rewards_are_a_decision(self, game):
+        """Neow's Lost Coffer: the potion is not procured for the player (RewardsSet.Offer
+        always shows the rewards screen)."""
         state = game.start(seed="NP8VU5N662YB")
         state = game.act("choose_option", option_index=0)
         assert state["decision"] == "rewards" and state["source"] == "event"
         assert state["player"]["potions"] == []
-        assert {w["type"] for w in state["rewards"]} == {"potion", "card"}
+        assert sorted(r["type"] for r in state["rewards"]) == ["card", "potion"]
+
+    def test_neows_bones_rewards_cannot_be_skipped(self, game):
+        """RewardsSet.WithSkippingDisallowed (Neow's Bones): Proceed stays disabled until every
+        reward is taken."""
+        state = game.send({"cmd": "start_run", "character": "Ironclad", "seed": "nb72"})
+        bones = next(o for o in state["options"] if o["relic"]["id"] == "NEOWS_BONES")
+        state = game.act("choose_option", option_index=bones["index"])
+        assert state["decision"] == "rewards" and state["can_skip"] is False
+        assert "proceed" not in [a["action"] for a in state["legal_actions"]]
+        err = game.act("proceed")
+        assert err["type"] == "error" and err["decision"] == "rewards"
+
+    def test_neow_finished_page_before_map(self, game):
+        """After Neow's rewards the event's last page (Proceed) is shown, as NEventRoom does."""
+        state = game.start(seed="NP8VU5N662YB")
+        state = game.act("choose_option", option_index=0)
+        while state["decision"] == "rewards":
+            state = game.act("proceed")
+        assert state["decision"] == "event_choice" and state["finished"] is True
+        assert [o["is_proceed"] for o in state["options"]] == [True]
+        state = game.act("choose_option", option_index=0)
+        assert state["decision"] == "map_select"
+
+
+class TestTreasureOrder:
+    def test_chest_gold_comes_before_the_relic_choice(self, game):
+        """NTreasureRoom.OpenChest: gold (DoNormalRewards) is given when the chest opens, before
+        the relic is picked or skipped."""
+        state = game.skip_neow(game.start(seed="mt5"))
+        gold = state["player"]["gold"]
+        state = game.enter_room("treasure")
+        assert state["decision"] == "treasure_relic"
+        assert state["player"]["gold"] > gold
+        opened = state["player"]["gold"]
+        state = game.act("skip_treasure_relic")
+        assert state["decision"] == "map_select" and state["player"]["gold"] == opened

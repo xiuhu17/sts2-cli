@@ -27,7 +27,6 @@ public partial class RunSimulator
     /// <summary>Drop per-run room state (and references to the previous run's models).</summary>
     private void ResetRoomParityState()
     {
-        _autoRewardsScreen = false;
         _finishedEventAcked = null;
         _restChoiceRoom = null;
         _dialogueEvent = null;
