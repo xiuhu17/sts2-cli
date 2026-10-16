@@ -148,8 +148,8 @@ class TestTrialAbandonPopup:
         game.set_player(hp=1)
         state = game.fight(game.enter_room("combat", encounter="SHRINKER_BEETLE_WEAK"),
                            policy=game.policy("t2"))
-        if state["decision"] == "game_over":
-            assert state["abandoned"] is False
+        assert state["decision"] == "game_over", state["decision"]  # 1 HP: the beetle kills you
+        assert state["victory"] is False and state["abandoned"] is False
 
 
 class TestArchitectEpilogue:
