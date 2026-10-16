@@ -19,7 +19,7 @@ def legal_names(state):
 
 
 def combat_with(game, deck, seed="ap1"):
-    game.skip_neow(game.start(seed=seed))
+    game.neow(game.start(seed=seed), 0, rewards="proceed")
     game.set_player(hp=80, max_hp=80, deck=deck)
     state = game.enter_room("combat", encounter="SHRINKER_BEETLE_WEAK")
     assert state["decision"] == "combat_play"
@@ -55,7 +55,7 @@ class TestCardSelectPurpose:
         assert state["source"]["name"] == "Armaments"
 
     def test_smith_is_cancelable(self, game):
-        game.skip_neow(game.start(seed="ap2"))
+        game.neow(game.start(seed="ap2"), 0)
         state = game.enter_room("rest_site")
         smith = next(o for o in state["options"] if o["option_id"] == "SMITH")
         state = game.act("choose_option", option_index=smith["index"])
@@ -66,7 +66,7 @@ class TestCardSelectPurpose:
         assert state["decision"] == "rest_site"
 
     def test_single_card_cancelable_prompt_is_not_auto_picked(self, game):
-        game.skip_neow(game.start(seed="ap3"))
+        game.neow(game.start(seed="ap3"), 0)
         game.set_player(deck=["BASH"], gold=500)
         state = game.enter_room("rest_site")
         smith = next(o for o in state["options"] if o["option_id"] == "SMITH")
@@ -75,7 +75,7 @@ class TestCardSelectPurpose:
         assert state["decision"] == "card_select" and len(state["cards"]) == 1
 
     def test_shop_removal(self, game):
-        game.skip_neow(game.start(seed="ap4"))
+        game.neow(game.start(seed="ap4"), 0)
         game.set_player(gold=500)
         state = game.enter_room("shop")
         card = state["cards"][0]
@@ -86,7 +86,7 @@ class TestCardSelectPurpose:
         assert state["decision"] == "shop"
 
     def test_enchant_preview(self, game):
-        game.skip_neow(game.start(seed="ap5"))
+        game.neow(game.start(seed="ap5"), 0)
         game.set_player(deck=["STRIKE_IRONCLAD"] * 3 + ["DEFEND_IRONCLAD"] * 3)
         state = game.enter_room("event", event="SELF_HELP_BOOK")
         opt = next(o for o in state["options"] if not o.get("is_locked"))
@@ -102,7 +102,7 @@ class TestCardSelectPurpose:
         assert any(e["type"] == "deck_changed" for e in state.get("events", []))
 
     def test_transform_purpose(self, game):
-        game.skip_neow(game.start(seed="ap6"))
+        game.neow(game.start(seed="ap6"), 0)
         state = game.enter_room("event", event="AROMA_OF_CHAOS")
         state = game.act("choose_option", option_index=0)
         assert state["decision"] == "card_select"
@@ -143,7 +143,7 @@ class TestPotionRules:
     """use_potion follows the game's Use button (NPotionPopup.RefreshButtons)."""
 
     def test_combat_only_potion_rejected_outside_combat(self, game):
-        game.skip_neow(game.start(seed="ap9"))
+        game.neow(game.start(seed="ap9"), 0)
         game.set_player(hp=50, max_hp=80, potions=["FIRE_POTION", "BLOOD_POTION"])
         state = game.send({"cmd": "get_state"})
         assert state["decision"] == "map_select"
@@ -249,7 +249,7 @@ class TestModifiers:
 
 class TestLocalizedPrompt:
     def test_zh_prompt(self, game):
-        game.skip_neow(game.start(seed="ap13", lang="zh"))
+        game.neow(game.start(seed="ap13", lang="zh"), 0)
         state = game.enter_room("rest_site")
         smith = next(o for o in state["options"] if o["option_id"] == "SMITH")
         state = game.act("choose_option", option_index=smith["index"])

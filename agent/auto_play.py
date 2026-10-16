@@ -173,6 +173,10 @@ def play_game(seed=None):
             print(f"\n{'VICTORY!' if d.get('victory') else 'DEFEAT'} Act{ctx.get('act')} F{ctx.get('floor')} "
                   f"HP={p.get('hp')}/{p.get('max_hp')} score={d.get('score')}")
             return bool(d.get("victory"))
+        if d.get("softlocked"):
+            # The game shows no button here: the run can't go on (not a bot or engine error).
+            print(f"  SOFTLOCK: {d.get('softlock_reason')}")
+            return False
         act = policy.choose(d)
         if d.get("decision") != "combat_play":
             print(f"  {d.get('decision')}: {act['action']} {act.get('args', '')}")

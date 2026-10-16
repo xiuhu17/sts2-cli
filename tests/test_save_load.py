@@ -9,7 +9,7 @@ def test_load_map_save_does_not_retrigger_neow(tmp_path):
     game = Game()
     try:
         state = game.start(seed="sl1")
-        state = game.skip_neow(state)
+        state = game.neow(state, 0, cards=[0])
         assert state["decision"] == "map_select"
 
         save_result = game.send({"cmd": "write_continue_save", "path": str(save_path)})

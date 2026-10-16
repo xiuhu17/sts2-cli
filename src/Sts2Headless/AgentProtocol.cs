@@ -1330,6 +1330,7 @@ public partial class RunSimulator
             ["get_map"] = "the whole act map",
             ["load_save"] = "{cmd:load_save, path|json, lang?, manual_rewards? (ignored), omit_deck?, profile?}",
             ["write_continue_save"] = "{cmd:write_continue_save, path?}",
+            ["force_leave_room"] = "NOT game behaviour: leave a softlocked room (softlocked:true, no legal actions); only with STS2_SOFTLOCK_ESCAPE=1",
             ["quit"] = "{cmd:quit, path?}",
             ["help"] = "this text",
         },
@@ -1355,6 +1356,6 @@ public partial class RunSimulator
             ["select_treasure_relic"] = "{relic_index}", ["skip_treasure_relic"] = "{}",
             ["crystal_sphere_click"] = "{x, y, tool?:big|small} from choose_cell (no tool = current_tool)",
         },
-        ["notes"] = "Every decision lists legal_actions; an action (verb and args) not listed is rejected with code illegal_action - nothing is chosen for you; only a missing target_index is filled in when a single entry matches. An argument the verb doesn't take is illegal_action; a null argument counts as absent. Every error has a code (bad_request, unknown_command, unknown_action, illegal_action, unknown_character, no_run, io_error, ...) and, while a run waits on a decision, decision and legal_actions. Aliases of the same button: finished event page leave_room|proceed = choose_option Proceed; rewards leave_room|skip_rewards = proceed; treasure proceed|leave_room = skip_treasure_relic; rest site/shop proceed = leave_room. 'events' lists what happened since the previous decision.",
+        ["notes"] = "Every decision lists legal_actions; an action (verb and args) not listed is rejected with code illegal_action - nothing is chosen for you; only a missing target_index is filled in when a single entry matches. An argument the verb doesn't take is illegal_action; a null argument counts as absent. Every error has a code (bad_request, unknown_command, unknown_action, illegal_action, unknown_character, no_run, io_error, ...) and, while a run waits on a decision, decision and legal_actions. Aliases of the same button: finished event page leave_room|proceed = choose_option Proceed; rewards leave_room|skip_rewards = proceed; treasure proceed|leave_room = skip_treasure_relic; rest site/shop proceed = leave_room. 'events' lists what happened since the previous decision. A decision with softlocked:true has no legal action: the game shows no button there (the run can't go on).",
     };
 }

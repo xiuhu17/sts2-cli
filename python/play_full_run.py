@@ -116,6 +116,14 @@ def play_run(seed: str, character: str, verbose: bool = True, log: bool = True,
                 stuck_count = 0
                 last_state_key = state_key
 
+            if state.get("softlocked"):
+                # The game shows no button here (no legal action): the run ends where it is.
+                print(f"\nSOFTLOCK at act {state.get('act') or (state.get('context') or {}).get('act')}: "
+                      f"{state.get('softlock_reason')}")
+                return {"victory": False, "completed": True, "softlocked": True, "seed": seed, "steps": step,
+                        "act": (state.get("context") or {}).get("act"),
+                        "floor": (state.get("context") or {}).get("floor")}
+
             if decision == "game_over":
                 victory = state.get("victory", False)
                 player = state.get("player", {})
@@ -209,7 +217,8 @@ def main():
     completed = sum(1 for r in results if r and r.get("completed"))
     for i, r in enumerate(results):
         if r:
-            status = "WIN" if r.get("victory") else ("LOSS" if r.get("completed") else "ERROR")
+            status = "WIN" if r.get("victory") else ("SOFTLOCK" if r.get("softlocked") else
+                                                     ("LOSS" if r.get("completed") else "ERROR"))
             print(f"  Run {i+1}: {status} | seed={r.get('seed')} steps={r.get('steps')} "
                   f"act={r.get('act')} floor={r.get('floor')}")
     print(f"\nWins: {wins}/{num_runs}, Completed: {completed}/{num_runs}")

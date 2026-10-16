@@ -31,7 +31,9 @@ public partial class RunSimulator
         _restChoiceRoom = null;
         _dialogueEvent = null;
         _dialogue = null;
+        _dialoguePool = null;
         _dialogueDone = false;
+        s_abandonPopupEvent = null;
     }
 
     // ─── Shared item serialization ───
@@ -127,7 +129,7 @@ public partial class RunSimulator
         var text = TryFormat(() => desc.GetFormattedText());
         if (text != null) return text;
         var raw = _loc.Bilingual(desc.LocTable, desc.LocEntryKey);
-        if (raw == desc.LocEntryKey) return null;
+        if (raw == desc.LocEntryKey || string.IsNullOrWhiteSpace(raw)) return null;
         Dictionary<string, object?>? evVars = null;
         try { evVars = ev.DynamicVars?.Values.ToDictionary(v => v.Name, VarValue); } catch { }
         return FillTemplate(raw, evVars);
@@ -137,6 +139,8 @@ public partial class RunSimulator
     // until the first option is chosen (RefreshEventState clears it).
     private EventModel? _dialogueEvent;
     private List<Dictionary<string, object?>>? _dialogue;
+    // Every dialogue the game could have drawn (GetValidDialogues), for "dialogue_pool".
+    private List<Dictionary<string, object?>>? _dialoguePool;
     private bool _dialogueDone;
 
     private List<Dictionary<string, object?>>? AncientDialogue(EventModel ev)
@@ -146,6 +150,7 @@ public partial class RunSimulator
         {
             _dialogueEvent = ev;
             _dialogueDone = false;
+            _dialoguePool = null;
             _dialogue = BuildAncientDialogue(ancient);
         }
         return _dialogueDone ? null : _dialogue;
@@ -171,23 +176,16 @@ public partial class RunSimulator
             var valid = ancient.DialogueSet.GetValidDialogues(charId, charVisits, totalVisits,
                 !ancient.AnyCharacterDialogueBlacklist.Contains(owner.Character)).ToList();
             if (valid.Count == 0) return null;
-            // The game draws from Rng.Chaotic (cosmetic); a seeded pick keeps runs reproducible.
+            // The game draws from Rng.Chaotic (cosmetic, unseeded: no exact line can be predicted);
+            // a seeded pick keeps runs reproducible, and dialogue_pool lists every candidate.
             var rng = new Rng(_runState?.Rng.Seed ?? 0, "ancient_dialogue_" + ancient.Id.Entry);
             var chosen = rng.NextItem(valid) ?? valid[0];
-            var lines = new List<Dictionary<string, object?>>();
-            foreach (var line in chosen.Lines)
+            _dialoguePool = valid.Select(d => new Dictionary<string, object?>
             {
-                if (line.LineText == null) continue;
-                try { line.LineText.Add("Act1Name", _runState!.Acts[0].Title); } catch { }
-                var text = TryFormat(() => line.LineText.GetFormattedText())
-                           ?? LocLookup.Clean(_loc.Bilingual("ancients", line.LineText.LocEntryKey));
-                lines.Add(new Dictionary<string, object?>
-                {
-                    ["speaker"] = line.Speaker == AncientDialogueSpeaker.Ancient ? "ancient" : "character",
-                    ["text"] = text.Trim(),
-                    ["next"] = line.NextButtonText == null ? null : TryFormat(() => line.NextButtonText.GetFormattedText()),
-                });
-            }
+                ["id"] = DialogueId(d),
+                ["lines"] = DialogueLines(d),
+            }).ToList();
+            var lines = DialogueLines(chosen);
             return lines.Count > 0 ? lines : null;
         }
         catch (Exception ex)

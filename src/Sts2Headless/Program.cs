@@ -584,7 +584,14 @@ class Program
                 var roomType = Str(cmd, "type", out var e1) ?? ""; if (e1 != null) return e1;
                 var encounter = Str(cmd, "encounter", out var e2); if (e2 != null) return e2;
                 var eventId = Str(cmd, "event", out var e3); if (e3 != null) return e3;
-                return sim.EnterRoom(roomType, encounter, eventId);
+                int? act = null;
+                if (cmd.TryGetProperty("act", out var actEl) && actEl.ValueKind != JsonValueKind.Null)
+                {
+                    if (actEl.ValueKind != JsonValueKind.Number || !actEl.TryGetInt32(out var actN))
+                        return BadRequest($"'act' must be an integer, got {Kind(actEl)}");
+                    act = actN;
+                }
+                return sim.EnterRoom(roomType, encounter, eventId, act);
             }
 
             case "set_draw_order":
@@ -592,6 +599,10 @@ class Program
                 var cards = StrList(cmd, "cards", out var ce); if (ce != null) return ce;
                 return sim.SetDrawOrder(cards ?? new List<string>());
             }
+
+            // Not game behaviour: leaves a softlocked room (STS2_SOFTLOCK_ESCAPE=1 only).
+            case "force_leave_room":
+                return sim.ForceLeaveRoom();
 
             case "write_continue_save":
             {

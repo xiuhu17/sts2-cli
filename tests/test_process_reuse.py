@@ -2,31 +2,15 @@
 
 
 def _play(game, state, steps):
-    """Deterministic simple policy; returns the list of states seen."""
+    """Play with HeuristicPolicy('reuse') (python/policy.py), seeded per call so two calls
+    on the same run make the same choices; returns the list of states seen."""
+    policy = game.policy("reuse")
     seen = [state]
     for _ in range(steps):
         d = state.get("decision")
         if d in (None, "game_over"):
             break
-        if d == "combat_play":
-            state = game.auto_combat(state)
-        elif d == "map_select":
-            c = state["choices"][0]
-            state = game.act("select_map_node", col=c["col"], row=c["row"])
-        elif d == "event_choice":
-            opt = next(o for o in state["options"] if not o.get("is_locked"))
-            state = game.act("choose_option", option_index=opt["index"])
-        elif d == "card_reward":
-            state = game.act("select_card_reward", card_index=0)
-        elif d == "card_select":
-            state = game.select_first(state)
-        elif d == "bundle_select":
-            state = game.act("select_bundle", bundle_index=0)
-        elif d == "rest_site":
-            opt = next(o for o in state["options"] if o.get("is_enabled", True))
-            state = game.act("choose_option", option_index=opt["index"])
-        else:
-            state = game.act("leave_room")
+        state = game.step(state, policy)
         seen.append(state)
     return seen
 

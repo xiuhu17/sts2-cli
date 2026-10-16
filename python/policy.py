@@ -93,6 +93,8 @@ class RandomPolicy:
     def legal(self, state):
         acts = state.get("legal_actions") or []
         if not acts:
+            if state.get("softlocked"):
+                raise NoLegalAction(f"softlocked at {state.get('decision')!r}: {state.get('softlock_reason')}")
             raise NoLegalAction(f"no legal actions at decision {state.get('decision')!r}")
         return acts
 

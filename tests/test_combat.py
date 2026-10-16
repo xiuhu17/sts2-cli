@@ -5,7 +5,7 @@ import pytest
 class TestCombatStructure:
     def test_combat_play_fields(self, game):
         state = game.start(seed="cs1")
-        game.skip_neow(state)
+        game.neow(state, 0)
         state = game.enter_room("combat", encounter="SHRINKER_BEETLE_WEAK")
         assert state["decision"] == "combat_play"
         for key in ("round", "energy", "max_energy", "hand", "enemies",
@@ -14,7 +14,7 @@ class TestCombatStructure:
 
     def test_card_fields(self, game):
         state = game.start(seed="cs2")
-        game.skip_neow(state)
+        game.neow(state, 0, cards=[0])
         state = game.enter_room("combat", encounter="SHRINKER_BEETLE_WEAK")
         for card in state["hand"]:
             assert isinstance(card["name"], str)
@@ -24,7 +24,7 @@ class TestCombatStructure:
 
     def test_enemy_fields(self, game):
         state = game.start(seed="cs3")
-        game.skip_neow(state)
+        game.neow(state, 0)
         state = game.enter_room("combat", encounter="SHRINKER_BEETLE_WEAK")
         for e in state["enemies"]:
             assert isinstance(e["name"], str)
@@ -36,7 +36,7 @@ class TestCombatStructure:
 class TestPlayCards:
     def test_play_card_costs_energy(self, game):
         state = game.start(seed="cp1")
-        game.skip_neow(state)
+        game.neow(state, 0, bundle=0)
         state = game.enter_room("combat", encounter="SHRINKER_BEETLE_WEAK")
         energy_before = state["energy"]
         playable = [c for c in state["hand"] if c.get("can_play") and c["cost"] <= energy_before]
@@ -51,7 +51,7 @@ class TestPlayCards:
 
     def test_play_attack_reduces_enemy_hp(self, game):
         state = game.start(seed="cp2")
-        game.skip_neow(state)
+        game.neow(state, 0, rewards="proceed")
         state = game.enter_room("combat", encounter="SHRINKER_BEETLE_WEAK")
         target = state["enemies"][0]
         hp_before = target["hp"]
@@ -71,7 +71,7 @@ class TestPlayCards:
 
     def test_play_defend_adds_block(self, game):
         state = game.start(seed="cp3")
-        game.skip_neow(state)
+        game.neow(state, 0, bundle=0)
         state = game.enter_room("combat", encounter="SHRINKER_BEETLE_WEAK")
         block_before = state["player"].get("block", 0)
         defends = [c for c in state["hand"] if c.get("can_play") and c["type"] == "Skill"
@@ -86,7 +86,7 @@ class TestPlayCards:
 class TestTurnFlow:
     def test_end_turn_advances_round(self, game):
         state = game.start(seed="tf1")
-        game.skip_neow(state)
+        game.neow(state, 0, cards="skip")
         state = game.enter_room("combat", encounter="SHRINKER_BEETLE_WEAK")
         rnd = state["round"]
         state = game.act("end_turn")
@@ -95,7 +95,7 @@ class TestTurnFlow:
 
     def test_end_turn_resets_energy(self, game):
         state = game.start(seed="tf2")
-        game.skip_neow(state)
+        game.neow(state, 0, cards=[0])
         state = game.enter_room("combat", encounter="SHRINKER_BEETLE_WEAK")
         max_e = state["max_energy"]
         state = game.act("end_turn")
@@ -104,7 +104,7 @@ class TestTurnFlow:
 
     def test_end_turn_draws_new_hand(self, game):
         state = game.start(seed="tf3")
-        game.skip_neow(state)
+        game.neow(state, 0)
         state = game.enter_room("combat", encounter="SHRINKER_BEETLE_WEAK")
         state = game.act("end_turn")
         if state["decision"] == "combat_play":
@@ -114,15 +114,15 @@ class TestTurnFlow:
 class TestCombatEnd:
     def test_win_combat_leads_to_reward(self, game):
         state = game.start(seed="cw1")
-        game.skip_neow(state)
+        game.neow(state, 0, cards=[0])
         state = game.enter_room("combat", encounter="SHRINKER_BEETLE_WEAK")
-        state = game.auto_play_combat(state)
+        state = game.fight(state)
         assert state["decision"] == "rewards"
 
     def test_player_powers_after_enemy_debuff(self, game):
         """Shrinker Beetle applies Shrink debuff to player after its turn."""
         state = game.start(seed="ep1")
-        game.skip_neow(state)
+        game.neow(state, 0, bundle=0)
         state = game.enter_room("combat", encounter="SHRINKER_BEETLE_WEAK")
         # End turn so beetle acts (applies Shrink to player)
         state = game.act("end_turn")
@@ -138,7 +138,7 @@ class TestCombatEnd:
 class TestCombatEdgeCases:
     def test_exhaust_all_and_end_turn(self, game):
         state = game.start(seed="ce1")
-        game.skip_neow(state)
+        game.neow(state, 0)
         state = game.enter_room("combat", encounter="SHRINKER_BEETLE_WEAK")
         for _ in range(20):
             if state.get("decision") != "combat_play":
@@ -158,7 +158,7 @@ class TestCombatEdgeCases:
     def test_many_cards_per_turn(self, game):
         """Play all playable cards in a single turn without errors."""
         state = game.start(seed="inf1")
-        game.skip_neow(state)
+        game.neow(state, 0)
         state = game.enter_room("combat", encounter="SHRINKER_BEETLE_WEAK")
         plays = 0
         for _ in range(20):
@@ -185,7 +185,7 @@ class TestCombatEdgeCases:
         Each cycle: net +1 energy, draws next card. Truly infinite.
         """
         state = game.start(seed="inf2")
-        game.skip_neow(state)
+        game.neow(state, 0, rewards="proceed")
         game.set_player(hp=80, max_hp=80, deck=["POMMEL_STRIKE"] * 5 + ["BLOODLETTING"] * 5)
         state = game.enter_room("combat", encounter="SHRINKER_BEETLE_WEAK")
 
@@ -213,7 +213,7 @@ class TestCombatEdgeCases:
     def test_low_hp_death(self, game):
         """Player with 1 HP should die to any attack."""
         state = game.start(seed="ce2")
-        game.skip_neow(state)
+        game.neow(state, 0, bundle=0)
         game.set_player(hp=1)
         state = game.enter_room("combat", encounter="SHRINKER_BEETLE_WEAK")
         # Just end turn, beetle will kill us
@@ -267,7 +267,7 @@ class TestPileContents:
 class TestCardFixes:
     def test_particle_wall_returning_to_hand_is_not_an_error(self, game):
         """BUG-006: Particle Wall returns itself to the same hand slot after being played."""
-        game.skip_neow(game.start(character="Regent", seed="pw1"))
+        game.neow(game.start(character="Regent", seed="pw1"), 0)
         game.set_player(deck=["PARTICLE_WALL"])
         state = game.enter_room("combat")
         card = next(c for c in state["hand"] if "Particle" in c["name"])
@@ -276,7 +276,7 @@ class TestCardFixes:
         assert state["player"]["block"] > 0
 
     def test_neutralize_uses_real_card_logic(self, game):
-        game.skip_neow(game.start(character="Silent", seed="nz1"))
+        game.neow(game.start(character="Silent", seed="nz1"), 0, cards=[0])
         game.set_player(deck=["NEUTRALIZE"] * 5)
         state = game.enter_room("combat")
         enemy = state["enemies"][0]
@@ -289,7 +289,7 @@ class TestCardFixes:
 
 class TestPotionUsage:
     def test_automatic_potion_not_usable(self, game):
-        game.skip_neow(game.start(seed="fairy1"))
+        game.neow(game.start(seed="fairy1"), 0)
         game.set_player(potions=["FAIRY_IN_A_BOTTLE"])
         state = game.enter_room("combat")
         fairy = next(p for p in state["player"]["potions"] if "Fairy" in p["name"])
@@ -303,7 +303,7 @@ class TestPotionUsage:
 
 class TestDescriptionText:
     def test_card_descriptions_have_numbers_and_follow_strength(self, game):
-        game.skip_neow(game.start(seed="txt1"))
+        game.neow(game.start(seed="txt1"), 0, rewards="proceed")
         game.set_player(deck=["STRIKE_IRONCLAD", "BASH", "INFLAME", "TRUE_GRIT", "BLUDGEON"])
         state = game.enter_room("combat")
         for c in state["hand"]:
@@ -317,7 +317,7 @@ class TestDescriptionText:
         assert strike["stats"]["damage"] == 8
 
     def test_keyword_tooltips(self, game):
-        game.skip_neow(game.start(seed="txt2", lang="en"))
+        game.neow(game.start(seed="txt2", lang="en"), 0, rewards="proceed")
         game.set_player(deck=["BASH", "TRUE_GRIT"] * 3)
         state = game.enter_room("combat")
         bash = next(c for c in state["hand"] if c["id"] == "CARD.BASH")
@@ -326,7 +326,7 @@ class TestDescriptionText:
         assert any(t["title"] == "Exhaust" for t in grit["tips"])
 
     def test_power_descriptions_filled(self, game):
-        game.skip_neow(game.start(seed="txt3", lang="en"))
+        game.neow(game.start(seed="txt3", lang="en"), 0)
         game.set_player(deck=["INFLAME"] * 5)
         state = game.enter_room("combat")
         state = game.act("play_card", card_index=0)

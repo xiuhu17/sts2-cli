@@ -83,34 +83,48 @@ class Game:
         except Exception:
             self.proc.kill()
 
-    # --- Auto-play helpers ---
+    # --- Test helpers: every choice is the test's (or a named, seeded policy's) ---
 
-    def select_first(self, state):
-        """Resolve a card_select with the first min_select cards (at least one)."""
-        k = min(max(state.get("min_select", 1), 1), len(state.get("cards", [])))
-        return self.act("select_cards", indices=",".join(str(i) for i in range(k)))
+    @staticmethod
+    def _legal(state, action):
+        return [a for a in state.get("legal_actions") or [] if a.get("action") == action]
 
-    def auto_combat(self, state):
-        """Play one card or end turn."""
-        hand = state.get("hand", [])
-        energy = state.get("energy", 0)
-        playable = [c for c in hand if c.get("can_play") and c.get("cost", 99) <= energy]
-        if playable:
-            card = playable[0]
-            args = {"card_index": card["index"]}
-            if card.get("target_type") == "AnyEnemy":
-                enemies = state.get("enemies", [])
-                if enemies:
-                    args["target_index"] = enemies[0]["index"]
-            return self.act("play_card", **args)
-        return self.act("end_turn")
+    def select(self, state, indices):
+        """Resolve a card_select with the cards the test names (a list of indices or one index)."""
+        assert state.get("decision") == "card_select", f"not a card_select: {state.get('decision')}"
+        if isinstance(indices, int):
+            indices = [indices]
+        offered = {c["index"] for c in state.get("cards", [])}
+        missing = [i for i in indices if i not in offered]
+        assert not missing, f"cards {missing} not offered (have {sorted(offered)})"
+        return self.act("select_cards", indices=",".join(str(i) for i in indices))
 
-    def auto_play_combat(self, state, max_steps=300):
-        """Auto-play combat until it ends."""
+    def choose(self, state, option_index):
+        """Choose the event / rest-site option the test names; it must be a legal choice."""
+        legal = [a["args"]["option_index"] for a in self._legal(state, "choose_option")]
+        assert option_index in legal, f"option {option_index} is not legal here (legal: {legal})"
+        return self.act("choose_option", option_index=option_index)
+
+    def policy(self, seed="tests", name="heuristic"):
+        """A named seeded policy from python/policy.py (its rules are stated there)."""
+        from policy import make_policy
+        return make_policy(name, seed)
+
+    def step(self, state, policy):
+        """One action chosen by `policy` (see python/policy.py) among the legal actions."""
+        return self.send({"cmd": "action", **policy.choose(state)})
+
+    def fight(self, state, policy=None, max_steps=300):
+        """Play the combat out with a seeded policy (default: HeuristicPolicy('tests'): play a
+        random playable card, aim at the lowest-HP enemy, else end the turn; prompts opened
+        mid-combat are answered by the same policy). Returns the first decision after combat."""
+        policy = policy or self.policy()
         for _ in range(max_steps):
-            if state.get("decision") != "combat_play":
+            in_combat = state.get("decision") == "combat_play" or (
+                state.get("decision") == "card_select" and state.get("combat"))
+            if not in_combat:
                 return state
-            state = self.auto_combat(state)
+            state = self.step(state, policy)
         raise RuntimeError("Combat did not end")
 
     def open_card_reward(self, state):
@@ -125,30 +139,42 @@ class Game:
             return state
         return self.act("claim_reward", reward_index=card["index"])
 
-    def skip_neow(self, state):
-        """Skip the Neow event and all follow-up rewards until map_select."""
+    def neow(self, state, option, card_reward=None, bundle=None, cards=None, cards_if_required=None,
+             rewards=None):
+        """Resolve Neow with the option the test names, then its follow-ups, each answered by the
+        test: card_reward ("skip" or a card index), bundle (a bundle index), cards (card_select
+        indices, or "skip" for an optional selection; cards_if_required answers a selection that
+        can't be skipped), rewards ("proceed" to leave a rewards screen). A follow-up the test
+        didn't answer fails the test instead of being picked for it. The outcome page's Proceed
+        (its only button) is pressed. Returns the map_select decision."""
+        assert state.get("decision") == "event_choice" and state.get("event_id") == "NEOW", \
+            f"not Neow: {state.get('decision')} {state.get('event_id')}"
+        state = self.choose(state, option)
         for _ in range(20):
             dec = state.get("decision", "")
             if dec == "map_select":
                 return state
-            if dec == "event_choice":
-                opts = [o for o in state["options"] if not o.get("is_locked")]
-                state = self.act("choose_option", option_index=opts[0]["index"])
-            elif dec == "card_reward":
-                state = self.act("skip_card_reward")
-            elif dec == "crystal_sphere":
-                x, y = state["hidden_cells"][0]
-                state = self.act("crystal_sphere_click", x=x, y=y, tool="big")
-            elif dec == "bundle_select":
-                state = self.act("select_bundle", bundle_index=0)
-            elif dec == "card_select":
-                if state.get("min_select", 0) == 0:
-                    state = self.act("skip_select")
-                else:
-                    state = self.select_first(state)
-            else:
+            if dec == "event_choice" and state.get("finished"):
+                proceed = next(o for o in state["options"] if o.get("is_proceed"))
+                state = self.act("choose_option", option_index=proceed["index"])
+            elif dec == "card_reward" and card_reward is not None:
+                state = (self.act("skip_card_reward") if card_reward == "skip"
+                         else self.act("select_card_reward", card_index=card_reward))
+            elif dec == "bundle_select" and bundle is not None:
+                state = self.act("select_bundle", bundle_index=bundle)
+            elif dec == "card_select" and (cards is not None or cards_if_required is not None):
+                can_skip = bool(self._legal(state, "skip_select"))
+                pick = cards if (cards != "skip" or can_skip) else cards_if_required
+                if cards_if_required is not None and not can_skip:
+                    pick = cards_if_required
+                assert pick is not None, f"this card_select can't be skipped: {state.get('min_select')}"
+                state = self.act("skip_select") if pick == "skip" else self.select(state, pick)
+            elif dec == "rewards" and rewards == "proceed":
                 state = self.act("proceed")
-        return state
+            else:
+                raise AssertionError(f"Neow follow-up {dec!r} needs an explicit choice from the test: "
+                                     f"{json.dumps(state.get('legal_actions'))[:300]}")
+        raise AssertionError("Neow did not reach the map")
 
 
 _shared = None

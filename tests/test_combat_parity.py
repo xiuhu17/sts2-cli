@@ -89,10 +89,11 @@ class TestUpgradedCards:
 
     def test_card_reward_has_meta(self, game):
         state = _combat(game, "Ironclad", ["STRIKE_IRONCLAD"] * 5, hp=999)
+        policy = game.policy()
         for _ in range(60):
             if state["decision"] != "combat_play":
                 break
-            state = game.auto_combat(state)
+            state = game.step(state, policy)
         if state["decision"] == "card_reward":
             for c in state["cards"]:
                 assert "upgraded" in c and "rarity" in c
@@ -209,7 +210,7 @@ class TestPilesAndText:
             played.append(card["id"])
             state = game.act("play_card", **args)
             if state["decision"] == "card_select":
-                state = game.select_first(state)
+                state = game.select(state, 0)  # the test picks the card at index 0
         ids = [c["id"] for c in state["discard_pile"]]
         assert ids == [i for i in played if i in ids]
         assert all(c["count"] == 1 and c["description"] for c in state["discard_pile"])
