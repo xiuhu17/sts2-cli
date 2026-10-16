@@ -352,6 +352,13 @@ public partial class RunSimulator
     private IReadOnlyList<IReadOnlyList<CardModel>>? _pendingBundles;
     private TaskCompletionSource<IEnumerable<CardModel>>? _pendingBundleTcs;
 
+    public const int MaxSeedLength = 64;
+    private const int MaxEcho = 64;
+
+    /// <summary>A client-supplied name as echoed in an error: at most 64 characters.</summary>
+    internal static string Clip(string? s) =>
+        s == null ? "" : s.Length <= MaxEcho ? s : s[..MaxEcho] + $"... ({s.Length} chars)";
+
     public Dictionary<string, object?> StartRun(string character, int ascension = 0, string? seed = null, string lang = "en",
         bool manualRewards = false, IReadOnlyList<string>? modifiers = null, string? gameMode = null,
         string? profilePath = null)
@@ -360,7 +367,11 @@ public partial class RunSimulator
         {
             // Validate before tearing down the current run, so a bad request leaves it intact.
             if (!KnownCharacters.Contains(character.ToLowerInvariant()))
-                return Error($"Unknown character: {character} (Ironclad|Silent|Defect|Regent|Necrobinder)", "unknown_character");
+                return Error($"Unknown character: {Clip(character)} (Ironclad|Silent|Defect|Regent|Necrobinder)", "unknown_character");
+            // The game's seeds are 12 characters (SeedHelper.seedDefaultLength); a seed is
+            // echoed in every decision's context, so an absurd one is refused.
+            if (seed != null && seed.Trim().Length > MaxSeedLength)
+                return Error($"'seed' must be at most {MaxSeedLength} characters, got {seed.Trim().Length}", "bad_request");
             EnsureModelDbInitialized();
             var mode = (gameMode ?? (modifiers?.Count > 0 ? "custom" : "standard")).ToLowerInvariant() switch
             {
@@ -369,15 +380,15 @@ public partial class RunSimulator
                 "daily" => GameMode.Daily,
                 _ => null,
             };
-            if (mode == null) return Error($"Unknown game_mode '{gameMode}' (standard|custom|daily)", "bad_request");
+            if (mode == null) return Error($"Unknown game_mode '{Clip(gameMode)}' (standard|custom|daily)", "bad_request");
             var modifierModels = new List<ModifierModel>();
             foreach (var name in modifiers ?? Array.Empty<string>())
             {
                 var m = ResolveModifier(name);
                 if (m == null)
                     return Error(name.Trim().ToUpperInvariant().StartsWith("CHARACTER_CARDS")
-                        ? $"Modifier '{name}' needs a character: CHARACTER_CARDS:<character>. Known: {string.Join(", ", KnownModifiers())}"
-                        : $"Unknown modifier '{name}'. Known: {string.Join(", ", KnownModifiers())}", "bad_request");
+                        ? $"Modifier '{Clip(name)}' needs a character: CHARACTER_CARDS:<character>. Known: {string.Join(", ", KnownModifiers())}"
+                        : $"Unknown modifier '{Clip(name)}'. Known: {string.Join(", ", KnownModifiers())}", "bad_request");
                 modifierModels.Add(m);
             }
             ProgressState? progress = null;
@@ -715,7 +726,20 @@ public partial class RunSimulator
             var save = readResult.SaveData;
             Log($"Save loaded: seed={save.SerializableRng?.Seed}, act={save.CurrentActIndex}, ascension={save.Ascension}");
 
-            // Only tear down the current run once the save is known to be usable.
+            // Only tear down the current run once the save is known to be usable: build a
+            // throwaway RunState from a second parse first (FromSerializable shares the save's
+            // lists with the run it builds), so a save the game can't load (unknown character
+            // or card id, missing players, ...) is refused while the current run carries on.
+            try
+            {
+                var probe = SaveManager.FromJson<SerializableRun>(saveJson).SaveData;
+                if (probe == null || RunState.FromSerializable(probe) == null)
+                    return Error("Save is not loadable: the game could not build a run from it", "bad_request");
+            }
+            catch (Exception ex)
+            {
+                return Error($"Save is not loadable: {ex.GetType().Name}: {Clip(ex.Message)}", "bad_request");
+            }
             if (!ResetForNewRun())
                 return RestartRequired();
             _loc.Lang = lang;
@@ -1251,7 +1275,8 @@ public partial class RunSimulator
                 return Error($"Cannot play cards now: player phase is {pcs.Phase}, not Play");
         }
 
-        var hand = pcs.Hand.Cards;
+        // Index the hand in the order the game shows it (HandOrder), not the pile order.
+        var hand = HandOrder.Cards(pcs.Hand);
         if (cardIndex < 0 || cardIndex >= hand.Count)
             return Error($"Invalid card index {cardIndex}, hand has {hand.Count} cards");
 
@@ -1313,7 +1338,7 @@ public partial class RunSimulator
         catch (InvalidOperationException) { }  // history mutated mid-read; fall back to the hand check
 
         // Check if card play had no effect (hand unchanged, same card still at same index)
-        var handAfter = pcs.Hand.Cards;
+        var handAfter = HandOrder.Cards(pcs.Hand);
         if (!cardWasPlayed && handAfter.Count == handCountBefore && cardIndex < handAfter.Count && handAfter[cardIndex] == card)
         {
             return Error($"Card could not be played (still in hand after action): {card.GetType().Name} [{card.Id}]");
@@ -2545,7 +2570,7 @@ public partial class RunSimulator
         // damage_by_target[i].target_index aligns with the target_index clients pass.
         var aliveEnemiesForTargeting = TargetableEnemies(combatState);
 
-        var hand = pcs?.Hand?.Cards?.Select((c, i) =>
+        var hand = (pcs?.Hand is { } handPile ? HandOrder.Cards(handPile) : null)?.Select((c, i) =>
         {
             // Export the *currently resolved* stat values, not the card base: refresh the
             // DynamicVar previews (mirrors NCard.UpdateVisuals) so damage reflects Strength/Weak,
@@ -4932,6 +4957,9 @@ public partial class RunSimulator
             // game asks the selector for 0-1 cards.
             if (ctx != null && ctx.ForceMinSelect > minSelect)
                 minSelect = Math.Min(ctx.ForceMinSelect, maxSelect);
+            // A hand selection happens on the hand row: list the cards in the row's order.
+            if (ctx?.Screen == "hand")
+                optList = HandOrder.Sort(optList);
 
             // Store pending selection and wait
             PendingContext = ctx;
@@ -4952,9 +4980,11 @@ public partial class RunSimulator
             // Clear state before completing: the continuation may run synchronously and
             // request the next selection, which must not be wiped by this call.
             var tcs = _pendingTcs;
+            var ctx = PendingContext;
             PendingOptions = null;
             PendingContext = null;
             _pendingTcs = null;
+            if (tcs != null) Lift(ctx, selected);
             tcs?.TrySetResult(selected);
         }
 
@@ -4969,10 +4999,11 @@ public partial class RunSimulator
             var tcs = _pendingTcs;
             if (options == null || tcs == null) return null;
             var selected = indices.Where(i => i >= 0 && i < options.Count).Select(i => options[i]).ToList();
+            var ctx = PendingContext;
             PendingOptions = null;
             PendingContext = null;
             _pendingTcs = null;
-            return () => tcs.TrySetResult(selected);
+            return () => { Lift(ctx, selected); tcs.TrySetResult(selected); };
         }
 
         /// <summary>Like DetachByIndices, resolving with an empty selection (skip).</summary>
@@ -4983,6 +5014,13 @@ public partial class RunSimulator
             PendingContext = null;
             _pendingTcs = null;
             return tcs == null ? null : () => tcs.TrySetResult(Array.Empty<CardModel>());
+        }
+
+        // NPlayerHand lifts the cards picked in a hand selection out of the row (HandOrder).
+        private static void Lift(SelectContext? ctx, IEnumerable<CardModel> selected)
+        {
+            if (ctx?.Screen != "hand") return;
+            try { HandOrder.Selected(selected, ctx.HandSource); } catch { }
         }
 
         public void ResolvePendingByIndices(int[] indices)
@@ -5183,9 +5221,11 @@ public partial class RunSimulator
         /// the EndTurn nuclear fallback / false game_over. The bubble is purely cosmetic and
         /// its return value is ignored by callers, so returning null is safe.
         /// </summary>
-        public static bool TalkCmdPlayPrefix(ref MegaCrit.Sts2.Core.Nodes.Vfx.NSpeechBubbleVfx? __result)
+        public static bool TalkCmdPlayPrefix(LocString line, Creature speaker, ref MegaCrit.Sts2.Core.Nodes.Vfx.NSpeechBubbleVfx? __result)
         {
             __result = null;
+            // The player still sees the line: record it (TalkCmd.Play says nothing for the dead).
+            try { if (!speaker.IsDead) RecordBubble("speech", line, speaker); } catch { }
             return false; // Skip original method
         }
     }

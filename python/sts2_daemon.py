@@ -194,6 +194,9 @@ def header(st):
     return lines
 
 
+_PILE_NAMES = {"hand": ("hand", "手牌"), "draw": ("draw pile", "抽牌堆"), "discard": ("discard pile", "弃牌堆"),
+               "exhaust": ("exhaust pile", "消耗堆")}
+
 EVENT_FMT = {
     "turn": lambda e: (t("-- your turn ", "-- 你的回合 ") if e.get("side") == "player" else t("-- enemy turn ", "-- 敌人回合 ")) + f"{e.get('round')} --",
     "card_played": lambda e: t("played ", "打出 ") + e.get("card", "?") + (f" -> {e['target']}" if e.get("target") else "") + (t(" (auto)", "（自动）") if e.get("auto") else ""),
@@ -207,7 +210,11 @@ EVENT_FMT = {
     "draw": lambda e: t("drew ", "抽到 ") + ", ".join(e.get("cards") or []),
     "discard": lambda e: t("discarded ", "丢弃 ") + str(e.get("card")),
     "exhaust": lambda e: t("exhausted ", "消耗 ") + str(e.get("card")),
-    "card_added": lambda e: t("card added: ", "加入卡牌：") + str(e.get("card")) + (f" -> {e['pile']}" if e.get("pile") else ""),
+    "card_added": lambda e: t("card added: ", "加入卡牌：") + str(e.get("card"))
+                  + (" -> " + t(*_PILE_NAMES.get(e["pile"], (e["pile"], e["pile"]))) if e.get("pile") else "")
+                  + (t(" (hand full)", "（手牌已满）") if e.get("redirected") == "hand_full" else ""),
+    "speech": lambda e: f"{e.get('speaker')}: \"{e.get('text')}\"",
+    "thought": lambda e: f"{e.get('speaker')} ({t('thinks', '心想')}): \"{e.get('text')}\"",
     "afflicted": lambda e: f"{e.get('card')} <{e.get('affliction')}>",
     "orb_channeled": lambda e: t("channeled ", "生成 ") + str(e.get("orb")),
     "potion_used": lambda e: t("used ", "使用 ") + str(e.get("potion")) + (f" -> {e['target']}" if e.get("target") else ""),
@@ -837,13 +844,18 @@ def _find_by_name(items, ref, what, prefix):
     if not pref:
         names = ", ".join(f"{prefix}{x.get('index')} {x.get('name')}" for x in items)
         raise VerbError(f"no {what} matching '{ref_s}' (have: {names or t('none', '无')})")
-    if what == "card":
-        playable = [x for x in pref if x.get("can_play", True)]
-        pref = playable or pref
-    # Enemies with the same name are different targets; identical cards are the same play.
+    # Every match counts, playable or not: picking the playable one would play a card the
+    # player did not name. Enemies with the same name are different targets; identical cards
+    # (same text, cost and playability) are the same play.
     if len(pref) > 1 and (what != "card" or any(not _same_card(pref[0], x) for x in pref[1:])):
-        names = ", ".join(f"{prefix}{x.get('index')} {x.get('name')}" for x in pref)
+        names = ", ".join(f"{prefix}{x.get('index')} {x.get('name')}"
+                          + ("" if what != "card" or x.get("can_play", True) else t(" (not playable)", "（不能打出）"))
+                          for x in pref)
         raise VerbError(f"'{ref_s}' matches several {what}s ({names}); use the {prefix} number")
+    if what == "card" and not pref[0].get("can_play", True):
+        why = pref[0].get("unplayable_message") or ", ".join(pref[0].get("unplayable_reasons") or []) or "?"
+        raise VerbError(t(f"{prefix}{pref[0].get('index')} {pref[0].get('name')} is not playable: {why}",
+                          f"{prefix}{pref[0].get('index')} {pref[0].get('name')} 不能打出：{why}"))
     return min(x.get("index") for x in pref)
 
 
@@ -1011,7 +1023,8 @@ HELP = """sts2 - play Slay the Spire 2 (headless) from the shell. One command pe
   sts2 piles [draw|discard|exhaust|hand]  combat piles (draw pile sorted, order hidden)
   sts2 card N | card hN | card ID [--upgraded]   one card in detail (deck index, hand index, id)
   sts2 map                   the act map                      sts2 log [N]  recent events
-  sts2 --json <command>      raw engine JSON                  sts2 stop     stop the daemon
+  sts2 --json <command>      raw engine JSON                  sts2 stop [--forget]  stop the daemon
+                             (the run is replayed on the next call; --forget ends it)
 
 Steps for `do` (indices are read from the state at the moment each step runs):
   N                 legal action number N         play H2 [E1] | play Body Slam [Jaw Worm]
@@ -1025,7 +1038,9 @@ Steps for `do` (indices are read from the state at the moment each step runs):
 
 Card names: the longest leading words that name a card in hand are the card, the rest is
 the target. Two cards with the same name that differ (upgrade, enchantment, cost...) are
-ambiguous: use H<n>.
+ambiguous: use H<n>. A name matches every card that has it, playable or not: `play Def` with
+an unplayable Defend and a playable Deflect is ambiguous (never the other card), and a card
+that can't be played is an error saying why.
 
 Rules: only legal actions are accepted (the error lists them); nothing is chosen for you.
 Rewards screens and treasure chests are decisions (claim / pick / proceed); --manual-rewards
@@ -1175,7 +1190,7 @@ class Daemon:
         cmd, args = argv[0], argv[1:]
         fn = getattr(self, "cmd_" + cmd.replace("-", "_"), None)
         if fn is None:
-            return f"unknown command '{cmd}'. " + "Commands: start state do deck relics potions piles card map log help stop", 1
+            return f"unknown command '{cmd[:64] + ('...' if len(cmd) > 64 else '')}'. " + "Commands: start state do deck relics potions piles card map log help stop", 1
         out, code = fn(args, as_json)
         if self._notes:
             notes, self._notes = self._notes, []
@@ -1221,6 +1236,17 @@ class Daemon:
         for line in event_lines(events):
             self.log.append(line)
         del self.log[:-400]
+
+    @staticmethod
+    def _usage(args, usage, flags=(), max_positional=0):
+        """A usage error (text, exit code 1) when `args` has an unknown flag or too many
+        positional arguments; None when they fit."""
+        pos = [a for a in args if not a.startswith("--")]
+        bad = [a for a in args if a.startswith("--") and a not in flags]
+        if bad or len(pos) > max_positional:
+            extra = bad or pos[max_positional:]
+            return f"{t('unexpected argument', '多余的参数')} '{extra[0]}'. usage: {usage}", 1
+        return None
 
     def cmd_help(self, args, as_json):
         if as_json:
@@ -1276,6 +1302,8 @@ class Daemon:
         return self._out_engine(r, as_json, lambda r: render_decision(r, self.numbered))
 
     def cmd_state(self, args, as_json):
+        if (u := self._usage(args, "sts2 state")):
+            return u
         r = self.send({"cmd": "get_state"})
         if r.get("type") == "decision":
             self._set_last(r)
@@ -1362,6 +1390,8 @@ class Daemon:
         return self._out_engine(r, as_json, render)
 
     def cmd_deck(self, args, as_json):
+        if (u := self._usage(args, "sts2 deck [--upgrades]", flags=("--upgrades",))):
+            return u
         def render(r):
             gl = Glossary()
             show_up = "--upgrades" in args
@@ -1376,6 +1406,8 @@ class Daemon:
         return self._simple({"cmd": "get_deck", "upgrades": "--upgrades" in args}, as_json, render)
 
     def cmd_relics(self, args, as_json):
+        if (u := self._usage(args, "sts2 relics")):
+            return u
         def render(r):
             gl = Glossary()
             lines = [t("Relics:", "遗物：")]
@@ -1387,6 +1419,8 @@ class Daemon:
         return self._simple({"cmd": "get_relics"}, as_json, render)
 
     def cmd_potions(self, args, as_json):
+        if (u := self._usage(args, "sts2 potions")):
+            return u
         def render(r):
             gl = Glossary()
             lines = [f"{t('Potions', '药水')} ({len(r.get('potions') or [])}/{r.get('potion_slots')}):"]
@@ -1397,6 +1431,8 @@ class Daemon:
         return self._simple({"cmd": "get_potions"}, as_json, render)
 
     def cmd_piles(self, args, as_json):
+        if (u := self._usage(args, "sts2 piles [draw|discard|exhaust|hand|all]", max_positional=1)):
+            return u
         which = args[0] if args else "all"
 
         def render(r):
@@ -1418,6 +1454,8 @@ class Daemon:
     def cmd_card(self, args, as_json):
         if not args:
             return "usage: sts2 card N (deck index) | card hN (hand index) | card CARD_ID [--upgraded]", 1
+        if (u := self._usage(args, "sts2 card N | hN | CARD_ID [--upgraded]", flags=("--upgraded",), max_positional=1)):
+            return u
         ref = args[0]
         cmd = {"cmd": "get_card", "upgraded": "--upgraded" in args}
         if ref.isdigit():
@@ -1436,23 +1474,35 @@ class Daemon:
         return self._simple(cmd, as_json, render)
 
     def cmd_map(self, args, as_json):
+        if (u := self._usage(args, "sts2 map")):
+            return u
         r = self.send({"cmd": "get_map"})
         return self._out_engine(r, as_json, lambda m: clip(render_map(m, self.last)))
 
     def cmd_log(self, args, as_json):
-        n = int(args[0]) if args and args[0].isdigit() else 40
+        if len(args) > 1 or (args and not (args[0].isdigit() and int(args[0]) > 0)):
+            return f"{t('invalid argument', '无效的参数')} '{args[-1]}'. usage: sts2 log [N] (N = number of lines, a positive integer; default 40)", 1
+        n = int(args[0]) if args else 40
         lines = self.log[-n:]
         if as_json:
             return json.dumps(lines, ensure_ascii=False), 0
         return clip("\n".join(lines) if lines else t("(no events yet)", "（暂无事件）")), 0
 
     def cmd_status(self, args, as_json):
+        if (u := self._usage(args, "sts2 status")):
+            return u
         alive = self.engine is not None and self.engine.proc.poll() is None
         return (f"daemon pid {os.getpid()}, engine {'running' if alive else 'stopped'}, "
                 f"restarts {self.restarts}, run steps {len(self.history)}, log {self.log_path}"), 0
 
     def cmd_stop(self, args, as_json):
+        if (u := self._usage(args, "sts2 stop [--forget]", flags=("--forget",))):
+            return u
         self._stop = True
+        if "--forget" in args:
+            # End the run too: the next call starts with no run instead of replaying it.
+            self.history = []
+            self._forget = True
         return "stopped", 0
 
     def _socket_alive(self):
@@ -1472,16 +1522,31 @@ class Daemon:
         # Two clients that both found no daemon each spawn one. Only the first to get the
         # lock serves; without this the second unlinked the first one's socket, leaving
         # an orphaned daemon (and engine) running until its idle timeout.
-        self._lock_file = open(self.sock_path[:-len(".sock")] + ".lock", "w")
+        lock_path = self.sock_path[:-len(".sock")] + ".lock"
         # (A daemon that is shutting down still holds it for a moment: wait briefly.)
+        # A stopping daemon unlinks the lock file; a lock taken on that unlinked file is
+        # worthless (a third daemon would lock the new file), so retry on the current one.
+        self._lock_file = None
         for attempt in range(150):
+            f = open(lock_path, "a")
             try:
-                fcntl.flock(self._lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                try:
+                    same = os.fstat(f.fileno()).st_ino == os.stat(lock_path).st_ino
+                except OSError:
+                    same = False
+                if same:
+                    self._lock_file = f
+                    break
+                f.close()
+                continue
             except OSError:
+                f.close()
                 if attempt == 149 or self._socket_alive():
                     return 0  # another daemon serves this session
                 time.sleep(0.02)
+        if self._lock_file is None:
+            return 0
         try:
             os.unlink(self.sock_path)
         except OSError:
@@ -1540,7 +1605,27 @@ class Daemon:
             except OSError:
                 pass
             self._close_engine()
+            self._cleanup_files()
         return 0
+
+    def _cleanup_files(self):
+        """Leave nothing behind in $TMPDIR but the run file (kept so the next call replays
+        the run, unless `stop --forget`): the lock (unlinked while still held, see serve) and
+        the daemon log when it is empty."""
+        base = self.sock_path[:-len(".sock")]
+        paths = [base + ".lock"]
+        if getattr(self, "_forget", False) or not self.history:
+            paths.append(base + ".run.jsonl")
+        try:
+            if os.path.getsize(base + ".log") == 0:
+                paths.append(base + ".log")
+        except OSError:
+            pass
+        for p in paths:
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
 
 
 

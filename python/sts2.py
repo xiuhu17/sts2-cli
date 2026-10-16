@@ -14,7 +14,8 @@ a few milliseconds of overhead per step instead of an engine start-up.
     sts2 deck | relics | potions | piles [draw] | map | card N | log [N]
     sts2 help                  all commands and action verbs (printed locally: no daemon starts)
     sts2 --json <command>      raw engine JSON instead of text
-    sts2 stop                  stop the daemon (and its engine)
+    sts2 stop [--forget]       stop the daemon (and its engine); the run is replayed on the
+                               next call unless --forget
 
 Environment: STS2_SESSION (default "default") selects an independent daemon and game;
 STS2_IDLE_TIMEOUT (seconds, default 1800) stops an unused daemon.
@@ -132,6 +133,17 @@ def main(argv):
     payload = (b"j" if as_json else b"-") + "\0".join(rest).encode()
     r = _request(session, payload, autostart=rest[0] != "stop")
     if r is None:
+        bad = [a for a in rest[1:] if a != "--forget"]
+        if bad:
+            sys.stdout.write(f"unexpected argument '{bad[0]}'. usage: sts2 stop [--forget]\n")
+            return 1
+        if "--forget" in rest:
+            # No daemon: the run it would replay on the next call is in the run file.
+            sock, _ = _paths(session)
+            try:
+                posix.unlink(sock[:-len(".sock")] + ".run.jsonl")
+            except OSError:
+                pass
         sys.stdout.write("sts2 daemon is not running\n")
         return 0
     code, out = r
