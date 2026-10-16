@@ -3,8 +3,8 @@
 sts2-cli interactive player — play Slay the Spire 2 in your terminal.
 
 Usage:
-    python3 play.py                    # Interactive mode (you play)
-    python3 play.py --auto             # Bot plays (heuristic policy over legal_actions, python/policy.py)
+    python3 play.py                    # Interactive mode (you play; asks for the character)
+    python3 play.py --auto --character Ironclad   # Bot plays (heuristic policy over legal_actions, python/policy.py)
     python3 play.py --seed myseed      # Fixed seed for reproducibility
     python3 play.py --character Silent  # Choose character
 """
@@ -1277,6 +1277,35 @@ def _draw_conn(buf, from_col, to_col, W):
         if 0 <= mid < len(buf):
             buf[mid] = ch
 
+# Official character titles (localization_*/characters.json <ID>.title).
+CHARACTERS = {
+    "Ironclad": ("The Ironclad", "铁甲战士"),
+    "Silent": ("The Silent", "静默猎手"),
+    "Defect": ("The Defect", "故障机器人"),
+    "Regent": ("The Regent", "储君"),
+    "Necrobinder": ("The Necrobinder", "亡灵契约师"),
+}
+
+
+def choose_character():
+    """The character select screen: the player picks the character the run starts with."""
+    names = list(CHARACTERS)
+    print()
+    for i, key in enumerate(names):
+        en, zh = CHARACTERS[key]
+        print(f"  {c(f'[{i}]', 'yellow')} {t(en, zh)}")
+    while True:
+        try:
+            raw = input(f"\n{c('>', 'green')} [0-{len(names) - 1}]: ").strip()
+        except EOFError:
+            sys.exit(1)
+        if raw.isdigit() and int(raw) < len(names):
+            return names[int(raw)]
+        match = [k for k in names if k.lower() == raw.lower()]
+        if match:
+            return match[0]
+
+
 def get_input(prompt, valid_options=None, state=None, multi_select=False, multi_min=1, multi_max=1):
     """Get user input with validation. Supports meta-commands: help, map, deck, potions.
 
@@ -1715,7 +1744,7 @@ def _writeback_continue_save(send_fn, native_save_path):
         print(f"  {c(t('Save failed:','存档写入失败:'), 'red')} {result.get('message','?')}")
 
 
-def play(character="Ironclad", seed=None, auto=False, ascension=0, log=True,
+def play(character, seed=None, auto=False, ascension=0, log=True,
          load_path=None, native_save_path=None):
     actual_seed = seed or f"cli_{random.randint(1000,9999)}"
     replay_actions = None
@@ -2311,9 +2340,9 @@ if __name__ == "__main__":
     parser.add_argument("--auto", action="store_true",
                         help="Bot plays: seeded heuristic policy over the engine's legal_actions (python/policy.py)")
     parser.add_argument("--seed", type=str, default=None, help="Random seed")
-    parser.add_argument("--character", type=str, default="Ironclad",
-                       choices=["Ironclad", "Silent", "Defect", "Regent", "Necrobinder"],
-                       help="Character to play")
+    parser.add_argument("--character", type=str, default=None,
+                       choices=list(CHARACTERS),
+                       help="Character to play (asked at start when omitted; required with --auto)")
     parser.add_argument("--ascension", type=int, default=0,
                        choices=range(0, 11), metavar="0-10",
                        help="Ascension level (0-10)")
@@ -2398,6 +2427,13 @@ if __name__ == "__main__":
             sys.exit(1)
         show_native_save(native_save_path)
 
+    cli_character = args.character
+    if args.character is None and load_path is None and native_save_path is None:
+        # The character is the player's pick (Embark on the character select screen); none is assumed.
+        if args.auto or not sys.stdin.isatty():
+            parser.error("--character is required (" + "|".join(CHARACTERS) + ")")
+        args.character = choose_character()
+
     ensure_setup()
     next_seed = args.seed
     next_auto = args.auto
@@ -2410,6 +2446,9 @@ if __name__ == "__main__":
                        native_save_path=next_native_save_path)
         if not restart:
             break
+        # A new run goes through the character select again (a loaded save had no --character);
+        # --character on the command line still applies.
+        args.character = cli_character or choose_character()
         next_seed = None
         next_auto = False
         next_load_path = None

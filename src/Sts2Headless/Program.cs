@@ -235,14 +235,14 @@ class Program
                 try { cmd = JsonSerializer.Deserialize<JsonElement>(line); }
                 catch (JsonException ex)
                 {
-                    WriteLine(new Dictionary<string, object?> { ["type"] = "error", ["message"] = $"Invalid JSON: {ex.Message}" });
+                    WriteLine(sim.CompleteError("", BadRequest($"Invalid JSON: {ex.Message}")));
                     continue;
                 }
                 if (cmd.ValueKind != JsonValueKind.Object || !cmd.TryGetProperty("cmd", out var cmdProp)
                     || cmdProp.ValueKind != JsonValueKind.String)
                 {
-                    WriteLine(BadRequest("Each line must be a JSON object with a string 'cmd', e.g. {\"cmd\":\"get_state\"}. " +
-                                         $"Commands: {string.Join(", ", Commands)}"));
+                    WriteLine(sim.CompleteError("", BadRequest("Each line must be a JSON object with a string 'cmd', e.g. {\"cmd\":\"get_state\"}. " +
+                                                               $"Commands: {string.Join(", ", Commands)}")));
                     continue;
                 }
                 var cmdName = cmdProp.GetString() ?? "";
@@ -270,6 +270,12 @@ class Program
                     Console.Error.WriteLine($"[ERROR] {line}: {ex}");
                     result = new Dictionary<string, object?> { ["type"] = "error", ["code"] = "exception", ["message"] = $"{ex.GetType().Name}: {ex.Message}" };
                     if (DebugTraces()) result["stack_trace"] = ex.ToString();
+                }
+                // Every error has a code and, while a run is active, its decision and legal_actions.
+                if (result != null && result.GetValueOrDefault("type") as string == "error")
+                {
+                    try { result = sim.CompleteError(cmdName, result); }
+                    catch (Exception ex) { Console.Error.WriteLine($"[WARN] CompleteError: {ex.Message}"); }
                 }
                 RunSimulator.AfterEveryCommand();
                 if (!End()) Park();  // too late: the client already got engine_timeout
@@ -337,7 +343,7 @@ class Program
                 try { cmd = JsonSerializer.Deserialize<JsonElement>(line); }
                 catch (JsonException ex)
                 {
-                    WriteLine(new Dictionary<string, object?> { ["type"] = "error", ["message"] = $"Invalid JSON: {ex.Message}" });
+                    WriteLine(BadRequest($"Invalid JSON: {ex.Message}"));
                     continue;
                 }
                 if (IsQuit(cmd))
@@ -365,12 +371,54 @@ class Program
     static Dictionary<string, object?> BadRequest(string message) =>
         new() { ["type"] = "error", ["code"] = "bad_request", ["message"] = message };
 
+    static string Kind(JsonElement v) => v.ValueKind switch
+    {
+        JsonValueKind.Number => "a number", JsonValueKind.String => "a string", JsonValueKind.Array => "an array",
+        JsonValueKind.Object => "an object", JsonValueKind.True or JsonValueKind.False => "a boolean", _ => v.ValueKind.ToString(),
+    };
+
+    /// <summary>An optional string field: absent/null is null; any other type is a bad_request naming the field.</summary>
     static string? Str(JsonElement cmd, string name, out Dictionary<string, object?>? error)
     {
         error = null;
         if (!cmd.TryGetProperty(name, out var v) || v.ValueKind == JsonValueKind.Null) return null;
-        if (v.ValueKind != JsonValueKind.String) { error = BadRequest($"'{name}' must be a string"); return null; }
+        if (v.ValueKind != JsonValueKind.String) { error = BadRequest($"'{name}' must be a string, got {Kind(v)}"); return null; }
         return v.GetString();
+    }
+
+    /// <summary>An optional boolean field (absent/null = false).</summary>
+    static bool Bool(JsonElement cmd, string name, out Dictionary<string, object?>? error)
+    {
+        error = null;
+        if (!cmd.TryGetProperty(name, out var v) || v.ValueKind == JsonValueKind.Null) return false;
+        if (v.ValueKind is JsonValueKind.True or JsonValueKind.False) return v.ValueKind == JsonValueKind.True;
+        error = BadRequest($"'{name}' must be true or false, got {Kind(v)}");
+        return false;
+    }
+
+    /// <summary>An optional list of strings.</summary>
+    static List<string>? StrList(JsonElement cmd, string name, out Dictionary<string, object?>? error)
+    {
+        error = null;
+        if (!cmd.TryGetProperty(name, out var v) || v.ValueKind == JsonValueKind.Null) return null;
+        if (v.ValueKind != JsonValueKind.Array) { error = BadRequest($"'{name}' must be an array of strings, got {Kind(v)}"); return null; }
+        var list = new List<string>();
+        foreach (var e in v.EnumerateArray())
+        {
+            if (e.ValueKind != JsonValueKind.String) { error = BadRequest($"'{name}' must be an array of strings, got an element that is {Kind(e)}"); return null; }
+            list.Add(e.GetString() ?? "");
+        }
+        return list;
+    }
+
+    /// <summary>Text language: the game's two localizations here (default en).</summary>
+    static string Lang(JsonElement cmd, out Dictionary<string, object?>? error)
+    {
+        var lang = Str(cmd, "lang", out error);
+        if (error != null || lang == null) return "en";
+        if (lang is "en" or "zh") return lang;
+        error = BadRequest($"'lang' must be \"en\" or \"zh\", got \"{lang}\"");
+        return "en";
     }
 
     static Dictionary<string, object?>? HandleCommand(RunSimulator sim, JsonElement cmd)
@@ -393,21 +441,21 @@ class Program
                     if (asc.ValueKind != JsonValueKind.Number || !asc.TryGetInt32(out ascension) || ascension < 0 || ascension > 10)
                         return BadRequest($"'ascension' must be an integer 0-10, got {asc.GetRawText()}");
                 }
+                // The character is the player's pick: the character select highlights the first button, but a run
+                // starts only on Embark (NCharacterSelectScreen.OnEmbarkPressed), so none is assumed here.
                 var character = Str(cmd, "character", out var e1); if (e1 != null) return e1;
+                if (string.IsNullOrWhiteSpace(character))
+                    return BadRequest("start_run requires character: Ironclad|Silent|Defect|Regent|Necrobinder");
+                // A missing/null/blank seed is a random one (reported in context.seed).
                 var seed = Str(cmd, "seed", out var e2); if (e2 != null) return e2;
-                var langArg = Str(cmd, "lang", out var e3); if (e3 != null) return e3;
-                sim.OmitDeck = ReadBool(cmd, "omit_deck");
-                return sim.StartRun(
-                    character ?? "Ironclad",
-                    ascension,
-                    seed,
-                    langArg ?? "en",
-                    ReadBool(cmd, "manual_rewards"),
-                    cmd.TryGetProperty("modifiers", out var mods) && mods.ValueKind == JsonValueKind.Array
-                        ? mods.EnumerateArray().Select(m => m.GetString() ?? "").ToList() : null,
-                    cmd.TryGetProperty("game_mode", out var gm) ? gm.GetString() : null,
-                    cmd.TryGetProperty("profile", out var prof) ? prof.GetString() : null
-                );
+                var lang = Lang(cmd, out var e3); if (e3 != null) return e3;
+                var omitDeck = Bool(cmd, "omit_deck", out var e4); if (e4 != null) return e4;
+                var manualRewards = Bool(cmd, "manual_rewards", out var e5); if (e5 != null) return e5;
+                var modifiers = StrList(cmd, "modifiers", out var e6); if (e6 != null) return e6;
+                var gameMode = Str(cmd, "game_mode", out var e7); if (e7 != null) return e7;
+                var profile = Str(cmd, "profile", out var e8); if (e8 != null) return e8;
+                sim.OmitDeck = omitDeck;
+                return sim.StartRun(character, ascension, seed, lang, manualRewards, modifiers, gameMode, profile);
             }
 
             case "action":
@@ -424,6 +472,8 @@ class Program
                     actionArgs = new Dictionary<string, object?>();
                     foreach (var prop in argsElem.EnumerateObject())
                     {
+                        // null means "not given" (e.g. target_index: null on a card without a target).
+                        if (prop.Value.ValueKind == JsonValueKind.Null) continue;
                         actionArgs[prop.Name] = prop.Value.ValueKind switch
                         {
                             // Non-integers are kept as doubles so validation can name the bad arg.
@@ -433,7 +483,7 @@ class Program
                             JsonValueKind.False => false,
                             // [0, 2] -> "0,2", the form list-valued args (indices) use.
                             JsonValueKind.Array => string.Join(",", prop.Value.EnumerateArray().Select(v => v.ToString())),
-                            _ => prop.Value.ToString(),
+                            _ => prop.Value.GetRawText(),
                         };
                     }
                 }
@@ -442,20 +492,30 @@ class Program
 
             case "load_save":
             {
-                var savePath = cmd.TryGetProperty("path", out var sp) ? sp.GetString() : null;
-                var saveJson = cmd.TryGetProperty("json", out var sj) ? sj.GetString() : null;
+                var savePath = Str(cmd, "path", out var e1); if (e1 != null) return e1;
+                // 'json' is the save file's text (a string), as written by write_continue_save.
+                var saveJson = Str(cmd, "json", out var e2); if (e2 != null) return e2;
+                var loadLang = Lang(cmd, out var e3); if (e3 != null) return e3;
+                var omitDeck = Bool(cmd, "omit_deck", out var e4); if (e4 != null) return e4;
+                var manualRewards = Bool(cmd, "manual_rewards", out var e5); if (e5 != null) return e5;
+                var profile = Str(cmd, "profile", out var e6); if (e6 != null) return e6;
                 if (saveJson == null && savePath != null)
                 {
-                    if (!File.Exists(savePath))
-                        return new Dictionary<string, object?> { ["type"] = "error", ["message"] = $"Save file not found: {savePath}" };
-                    saveJson = File.ReadAllText(savePath);
+                    try { saveJson = File.ReadAllText(savePath); }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException)
+                    {
+                        return new Dictionary<string, object?>
+                        {
+                            ["type"] = "error", ["code"] = "io_error",
+                            ["message"] = ex is FileNotFoundException or DirectoryNotFoundException
+                                ? $"Save file not found: {savePath}" : $"Cannot read save file '{savePath}': {ex.GetType().Name}: {ex.Message}",
+                        };
+                    }
                 }
                 if (saveJson == null)
-                    return new Dictionary<string, object?> { ["type"] = "error", ["message"] = "Provide 'path' or 'json' for load_save" };
-                var loadLang = cmd.TryGetProperty("lang", out var le) ? (le.GetString() ?? "en") : "en";
-                sim.OmitDeck = ReadBool(cmd, "omit_deck");
-                return sim.LoadSave(saveJson, loadLang, ReadBool(cmd, "manual_rewards"),
-                    cmd.TryGetProperty("profile", out var lprof) ? lprof.GetString() : null);
+                    return BadRequest("Provide 'path' or 'json' for load_save");
+                sim.OmitDeck = omitDeck;
+                return sim.LoadSave(saveJson, loadLang, manualRewards, profile);
             }
             case "get_map":
                 return sim.GetFullMap();
@@ -465,7 +525,10 @@ class Program
                 return sim.GetState();
 
             case "get_deck":
-                return sim.GetDeck(ReadBool(cmd, "upgrades"));
+            {
+                var upgrades = Bool(cmd, "upgrades", out var ue); if (ue != null) return ue;
+                return sim.GetDeck(upgrades);
+            }
 
             case "get_relics":
                 return sim.GetRelics();
@@ -493,7 +556,8 @@ class Program
                 }
                 if (id == null && index == null)
                     return BadRequest("get_card needs deck_index, hand_index or id");
-                return sim.GetCard(where, index, id, ReadBool(cmd, "upgraded"));
+                var upgraded = Bool(cmd, "upgraded", out var ug); if (ug != null) return ug;
+                return sim.GetCard(where, index, id, upgraded);
             }
 
             case "help":
@@ -501,7 +565,7 @@ class Program
 
             case "__debug_sleep":
                 // Test hook for the command watchdog: blocks the engine thread.
-                Thread.Sleep(cmd.TryGetProperty("ms", out var ms) ? ms.GetInt32() : 60000);
+                Thread.Sleep(cmd.TryGetProperty("ms", out var ms) && ms.TryGetInt32(out var msv) ? msv : 60000);
                 return new Dictionary<string, object?> { ["type"] = "ok" };
 
             case "__debug_stats" when Environment.GetEnvironmentVariable("STS2_DEBUG_COMMANDS") == "1":
@@ -517,30 +581,27 @@ class Program
 
             case "enter_room":
             {
-                var roomType = cmd.TryGetProperty("type", out var rt) ? rt.GetString() ?? "" : "";
-                var encounter = cmd.TryGetProperty("encounter", out var enc) ? enc.GetString() : null;
-                var eventId = cmd.TryGetProperty("event", out var ev) ? ev.GetString() : null;
+                var roomType = Str(cmd, "type", out var e1) ?? ""; if (e1 != null) return e1;
+                var encounter = Str(cmd, "encounter", out var e2); if (e2 != null) return e2;
+                var eventId = Str(cmd, "event", out var e3); if (e3 != null) return e3;
                 return sim.EnterRoom(roomType, encounter, eventId);
             }
 
             case "set_draw_order":
             {
-                var cards = new List<string>();
-                if (cmd.TryGetProperty("cards", out var cardsArr))
-                    foreach (var c in cardsArr.EnumerateArray())
-                        cards.Add(c.GetString() ?? "");
-                return sim.SetDrawOrder(cards);
+                var cards = StrList(cmd, "cards", out var ce); if (ce != null) return ce;
+                return sim.SetDrawOrder(cards ?? new List<string>());
             }
 
             case "write_continue_save":
             {
-                var outputPath = cmd.TryGetProperty("path", out var op) ? op.GetString() : null;
+                var outputPath = Str(cmd, "path", out var pe); if (pe != null) return pe;
                 return sim.SaveCheckpoint(outputPath);
             }
 
             case "quit":
             {
-                var outputPath = cmd.TryGetProperty("path", out var op) ? op.GetString() : null;
+                var outputPath = Str(cmd, "path", out var pe); if (pe != null) return pe;
                 if (!string.IsNullOrEmpty(outputPath))
                 {
                     var saveResult = sim.SaveCheckpoint(outputPath);
@@ -579,9 +640,6 @@ class Program
                 };
         }
     }
-
-    static bool ReadBool(JsonElement cmd, string name) =>
-        cmd.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.True;
 
     static void WriteLine(Dictionary<string, object?> data)
     {

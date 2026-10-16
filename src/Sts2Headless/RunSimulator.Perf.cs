@@ -93,7 +93,38 @@ public partial class RunSimulator
         if (Environment.GetEnvironmentVariable("STS2_DEBUG_COMMANDS") == "1"
             && Environment.GetEnvironmentVariable("STS2_DEBUG_FAIL_WARMUP") == "1")
             throw new InvalidOperationException("simulated warm-up failure");
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        // The save serializer is independent of the engine set-up: warm it on another core meanwhile.
+        double serializerMs = 0;
+        var serializer = new Thread(() =>
+        {
+            var t = System.Diagnostics.Stopwatch.StartNew();
+            WarmSaveSerializer();
+            serializerMs = t.Elapsed.TotalMilliseconds;
+        }) { IsBackground = true, Name = "sts2-warmup-json" };
+        serializer.Start();
         EnsureModelDbInitialized();
+        var init = sw.Elapsed.TotalMilliseconds;
+        serializer.Join();
+        Console.Error.WriteLine($"[INFO] Warmup: engine init {init:F0} ms, save serializer {serializerMs:F0} ms (in parallel), total {sw.Elapsed.TotalMilliseconds:F0} ms");
+    }
+
+    /// <summary>
+    /// First use of the game's save serializer (System.Text.Json source-generated metadata for
+    /// SerializableRun) JIT-compiles over a thousand methods, ~30 ms. Every first run of a process
+    /// paid it on its first map point: EnterMapPointInternal -> SaveRun, which ContinueSave
+    /// captures as JSON. Serializing an empty save here, after 'ready', does it instead.
+    /// Only serializer metadata is touched (no game state, no SaveManager). Building the metadata
+    /// of every save type as well costs twice the CPU and gains nothing measurable.
+    /// </summary>
+    private static void WarmSaveSerializer()
+    {
+        try
+        {
+            // Writing only: reading a save (load_save, write_continue_save mid-room) is rarer.
+            JsonSerializationUtility.ToJson(new SerializableRun());
+        }
+        catch (Exception ex) { Console.Error.WriteLine($"[INFO] save serializer warm-up: {ex.GetType().Name}: {ex.Message}"); }
     }
 
     /// <summary>Cheap per-command housekeeping (bounds very long runs and load_save loops).</summary>

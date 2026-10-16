@@ -12,7 +12,7 @@ a few milliseconds of overhead per step instead of an engine start-up.
     sts2 do "play Bash E0; play Strike; end"   several steps; stops at the first error or
                                when a step no longer fits the current decision
     sts2 deck | relics | potions | piles [draw] | map | card N | log [N]
-    sts2 help                  all commands and action verbs
+    sts2 help                  all commands and action verbs (printed locally: no daemon starts)
     sts2 --json <command>      raw engine JSON instead of text
     sts2 stop                  stop the daemon (and its engine)
 
@@ -98,6 +98,18 @@ def _request(session, payload, autostart=True):
     return int(data[:1]), data[1:].decode("utf-8", "replace")
 
 
+def _help(as_json):
+    import os
+    here = os.path.dirname(os.path.abspath(__file__))
+    if as_json:
+        # The engine's {"cmd":"help"} reply, kept in sync by tests/test_sts2_client.py.
+        with open(os.path.join(here, "engine_help.json"), encoding="utf-8") as f:
+            return f.read()
+    sys.path.insert(0, here)
+    from sts2_daemon import HELP
+    return HELP
+
+
 def main(argv):
     session = _env("STS2_SESSION", "default")
     as_json = False
@@ -113,8 +125,10 @@ def main(argv):
         else:
             rest.append(a)
         i += 1
-    if not rest or rest[0] in ("-h", "--help"):
-        rest = ["help"]
+    if not rest or rest[0] in ("-h", "--help", "help"):
+        # Static text, printed here: asking for help must not start a daemon and an engine.
+        sys.stdout.write(_help(as_json))
+        return 0
     payload = (b"j" if as_json else b"-") + "\0".join(rest).encode()
     r = _request(session, payload, autostart=rest[0] != "stop")
     if r is None:

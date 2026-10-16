@@ -106,6 +106,10 @@ public partial class RunSimulator
         foreach (var k in given.Keys)
             if (IntArgs.Contains(k) && !keys.Contains(k) && given[k] != null)
                 return $"'{k}' does not apply to {action} here";
+        // A missing (or null) index the verb needs: name it instead of "no option at index ".
+        var missingArgs = keys.Where(k => !FillableArgs.Contains(k) && (!given.TryGetValue(k, out var gv) || gv == null)).ToList();
+        if (missingArgs.Count > 0)
+            return $"{action} needs {string.Join(" and ", missingArgs)}";
 
         var matches = entries.Where(e =>
         {

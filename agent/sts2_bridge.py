@@ -39,10 +39,12 @@ else:
         if a == "--log" and i + 1 < len(sys.argv): LOG_FILE = sys.argv[i + 1]
 
 # --- JSON helpers ---
-# --compact shrinks responses without hiding rules text: descriptions, enchantments and
-# afflictions stay (STS2 content is new to most models, so the text is the information).
-# Dropped: ids/text keys, nulls and empty lists, the full deck (get_deck has it), and
-# upgrade previews except where the choice is an upgrade.
+# --compact shrinks responses without hiding rules text: descriptions, enchantments,
+# afflictions and upgrade previews (after_upgrade) stay (STS2 content is new to most models,
+# so the text is the information). Dropped: "id"/"text_key"/"act_name" keys, null values and
+# empty lists/objects, the full deck (get_deck has it), and "vars" where a description already
+# has them filled in. Pile lists become ["Name x2", ...] strings, and a card's
+# enchantment/affliction name is folded into its name ("Strike [Sharp 2]").
 _STRIP_KEYS = {"id", "text_key", "act_name"}
 _PILE_KEYS = {"draw_pile", "discard_pile", "exhaust_pile"}
 
@@ -54,33 +56,34 @@ def compact_pile(pile):
         if not isinstance(c, dict):
             continue
         name = c.get("name") or "?"
-        if c.get("enchantment"):
+        if isinstance(c.get("enchantment"), str) and c["enchantment"]:
             name += f" [{c['enchantment']}]"
-        if c.get("affliction"):
+        if isinstance(c.get("affliction"), str) and c["affliction"]:
             name += f" [{c['affliction']}]"
         out.append(f"{name} x{c['count']}" if c.get("count", 1) > 1 else name)
     return out
 
 
 def _fold_card(d):
-    """Enchantment/affliction folded into the name: same information, fewer keys."""
+    """A card's enchantment/affliction name folded into its name: same information, fewer keys.
+    Only card-like dicts (a name plus a string enchantment/affliction) are folded; an enchant
+    card_select's top-level "enchantment" is an object {name, amount, description} and stays."""
+    if not isinstance(d.get("name"), str):
+        return
     for key in ("enchantment", "affliction"):
-        if d.get(key):
+        v = d.get(key)
+        if isinstance(v, str) and v:
             amt = d.get(key + "_amount")
-            d["name"] = f"{d.get('name')} [{d[key]}{' ' + str(amt) if amt else ''}]"
+            d["name"] = f"{d['name']} [{v}{' ' + str(amt) if amt else ''}]"
             d.pop(key, None)
             d.pop(key + "_amount", None)
 
 
-def compact_json(obj, depth=0, keep_upgrade=False):
+def compact_json(obj, depth=0):
     if isinstance(obj, dict):
-        if depth == 0:
-            keep_upgrade = obj.get("decision") == "card_select" and obj.get("purpose") == "upgrade"
         result = {}
         for k, v in obj.items():
             if k in _STRIP_KEYS or v is None or v == [] or v == {}:
-                continue
-            if k == "after_upgrade" and not keep_upgrade:
                 continue
             if k == "deck" and isinstance(v, list):
                 continue  # the deck is in every decision; get_deck returns it on demand
@@ -89,12 +92,12 @@ def compact_json(obj, depth=0, keep_upgrade=False):
                 continue
             if k == "vars" and obj.get("description"):
                 continue  # already filled into the description
-            result[k] = compact_json(v, depth + 1, keep_upgrade)
+            result[k] = compact_json(v, depth + 1)
         if "enchantment" in result or "affliction" in result:
             _fold_card(result)
         return result
     if isinstance(obj, list):
-        return [compact_json(v, depth + 1, keep_upgrade) for v in obj]
+        return [compact_json(v, depth + 1) for v in obj]
     return obj
 
 
@@ -360,12 +363,13 @@ class Handler(BaseHTTPRequestHandler):
         pass  # silent
 
 
-if REPLAY_MODE:
-    do_replay()
-    sys.exit(0)
+if __name__ == "__main__":  # importable (tests use compact_json)
+    if REPLAY_MODE:
+        do_replay()
+        sys.exit(0)
 
-game = Game()
-mode = "compact" if COMPACT else "full"
-log_info = f", logging to {LOG_FILE}" if LOG_FILE else ""
-print(f"STS2 bridge on port {PORT} (mode={mode}{log_info})", file=sys.stderr)
-HTTPServer(('127.0.0.1', PORT), Handler).serve_forever()
+    game = Game()
+    mode = "compact" if COMPACT else "full"
+    log_info = f", logging to {LOG_FILE}" if LOG_FILE else ""
+    print(f"STS2 bridge on port {PORT} (mode={mode}{log_info})", file=sys.stderr)
+    HTTPServer(('127.0.0.1', PORT), Handler).serve_forever()

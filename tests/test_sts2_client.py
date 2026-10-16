@@ -119,3 +119,39 @@ def test_concurrent_first_calls_start_one_daemon():
         assert len(pids) == 1, pids
     finally:
         subprocess.run([STS2, "stop"], env=env, capture_output=True, timeout=60)
+
+
+@pytest.mark.parametrize("args", [[], ["--help"], ["-h"], ["help"], ["--json", "help"]])
+def test_help_starts_no_daemon(args):
+    """Help is static text: it must not leave a daemon (and a ~130 MB engine) behind."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("STS2_DEBUG")}
+    session = f"pytesthelp{os.getpid()}"
+    env["STS2_SESSION"] = session
+    p = subprocess.run([STS2, *args], capture_output=True, text=True, env=env, timeout=30)
+    assert p.returncode == 0, p.stdout
+    if "--json" in args:
+        assert json.loads(p.stdout)["type"] == "help"
+    else:
+        assert "sts2 start --character" in p.stdout
+    time.sleep(0.3)
+    pids = subprocess.run(["pgrep", "-f", f"sts2_daemon.py {session}"], capture_output=True, text=True).stdout.split()
+    assert pids == [], pids
+
+
+def test_static_engine_help_matches_engine():
+    """python/engine_help.json (what `sts2 --json help` prints) mirrors the engine's help reply."""
+    import sys
+    sys.path.insert(0, os.path.join(ROOT, "python"))
+    from engine import Engine
+    e = Engine(stderr_sink=None)
+    try:
+        live = e.send({"cmd": "help"})
+    finally:
+        e.close()
+    with open(os.path.join(ROOT, "python", "engine_help.json"), encoding="utf-8") as f:
+        assert json.load(f) == live, "regenerate python/engine_help.json from {\"cmd\":\"help\"}"
+
+
+def test_start_requires_character(sts2):
+    rc, out = sts2("start", "--seed", "nochar")
+    assert rc == 1 and "requires --character" in out
