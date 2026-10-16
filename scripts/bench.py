@@ -2,8 +2,8 @@
 """
 Benchmark + regression harness for the headless simulator.
 
-Runs the deterministic random agent from python/play_full_run.py over fixed
-seeds and reports wall time, per-command latency, outcome, and a trajectory
+Runs the play_full_run.py bot (seeded policy over legal_actions, python/policy.py;
+--policy random|heuristic) over fixed seeds and reports wall time, per-command latency, outcome, and a trajectory
 fingerprint (hash of every state the engine returned). Two builds that behave
 identically produce identical fingerprints, so this doubles as a behaviour
 regression check for performance work.
@@ -80,8 +80,8 @@ _ENGINE = None
 
 def run_one(job):
     global _ENGINE
-    seed, character, dump_dir, reuse, manual = job
-    extra = {"manual_rewards": True} if manual else {}
+    seed, character, dump_dir, reuse, policy = job
+    extra = {"policy": policy}
     holder = {}
 
     def make_logger(*a, **kw):
@@ -138,14 +138,16 @@ def main():
     ap.add_argument("--compare", help="previous results JSON to diff fingerprints against")
     ap.add_argument("--dump", help="directory to write per-run trajectories (JSONL)")
     ap.add_argument("--manual-rewards", action="store_true",
-                    help="start runs with manual_rewards (agent claims rewards / treasure relics)")
+                    help="accepted for compatibility: rewards / treasure are always decisions")
+    ap.add_argument("--policy", default="random", choices=["random", "heuristic"],
+                    help="bot policy (python/policy.py)")
     ap.add_argument("--reuse", action="store_true",
                     help="reuse one engine process per worker across runs")
     args = ap.parse_args()
 
     if args.dump:
         os.makedirs(args.dump, exist_ok=True)
-    jobs = [(f"{args.seed_prefix}_{i}", c, args.dump, args.reuse, args.manual_rewards)
+    jobs = [(f"{args.seed_prefix}_{i}", c, args.dump, args.reuse, args.policy)
             for c in args.characters.split(",") for i in range(args.runs)]
     t0 = time.perf_counter()
     if args.jobs > 1:

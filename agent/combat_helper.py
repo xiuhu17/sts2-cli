@@ -1,9 +1,27 @@
 #!/usr/bin/env python3
-"""Combat helper: auto-plays one combat encounter."""
-import json, sys, urllib.request
+"""Combat helper: plays the card-playing part of one combat through the bridge.
+
+Usage: python3 agent/combat_helper.py [PORT]
+
+Policy (stated, nothing else is decided here):
+  - Only the engine's legal_actions are used: a card is played only if a legal play_card
+    lists it, a target only if that play_card entry lists it.
+  - Each step plays the best-scoring legal card (score: free cards first; block when the
+    incoming damage would get through; powers when safe; attacks otherwise); targets are
+    the legal target with the highest threat (one-shottable attackers first). When no legal
+    card scores as worth playing, it ends the turn.
+  - A potion is used only when HP < 20 or the incoming damage is lethal, and only potions
+    the engine lists as usable (untargeted ones first, lowest slot first).
+  - It STOPS and returns the state at every other decision (card selections from a card's
+    effect, rewards, card rewards, map, ...): those are the caller's choices.
+"""
+import json
+import sys
+import urllib.request
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 19044
 URL = f"http://localhost:{PORT}"
+
 
 def cmd(data):
     try:
@@ -12,141 +30,139 @@ def cmd(data):
     except Exception as e:
         return {"type": "error", "message": str(e)}
 
-def action(act, **args):
-    return cmd({"cmd": "action", "action": act, "args": args})
 
-def play_card(ci, ti=None):
-    args = {"card_index": ci}
-    if ti is not None: args["target_index"] = ti
-    return action("play_card", **args)
+def send_action(act):
+    return cmd({"cmd": "action", **act})
+
+
+def _name(x):
+    n = x.get("name") if isinstance(x, dict) else x
+    if isinstance(n, dict):
+        n = n.get("en") or next(iter(n.values()), "")
+    return str(n or "")
+
 
 def calc_incoming(enemies):
-    """Calculate total incoming damage from all enemies, accounting for multi-hit."""
+    """Total incoming damage from all enemies, accounting for multi-hit."""
     total = 0
     for en in enemies:
         for it in (en.get("intents") or []):
             if it.get("type") in ("Attack", "DeathBlow"):
-                dmg = min(it.get("damage", 0), 60)
-                hits = it.get("hits", 1)
-                total += dmg * hits if hits > 1 else dmg
+                dmg = it.get("total_damage")
+                if dmg is None:
+                    dmg = it.get("damage", 0) * max(it.get("hits") or 1, 1)
+                total += dmg
     return total
 
+
 def enemy_threat(en):
-    """Score enemy threat: higher = more dangerous."""
-    atk = 0
-    for it in (en.get("intents") or []):
-        if it.get("type") in ("Attack", "DeathBlow"):
-            hits = it.get("hits", 1)
-            atk += it.get("damage", 0) * (hits if hits > 1 else 1)
-    return atk * 100 + (200 - en["hp"])  # Prioritize high-damage, then low HP
+    atk = calc_incoming([en])
+    return atk * 100 + (200 - en.get("hp", 0))
 
-def pick_target(enemies, card_dmg=6):
-    """Pick best target: one-shottable high-threat > highest threat."""
-    if not enemies: return 0
-    # Can we one-shot anyone who's attacking?
-    best_oneshot = None
-    for j, en in enumerate(enemies):
-        if en["hp"] <= card_dmg and en.get("intends_attack"):
-            if best_oneshot is None or enemy_threat(en) > enemy_threat(enemies[best_oneshot]):
-                best_oneshot = j
-    if best_oneshot is not None: return best_oneshot
-    # Otherwise target highest threat
-    return max(range(len(enemies)), key=lambda j: enemy_threat(enemies[j]))
 
-def best_card(hand, enemies, osty, energy, rnd, inc, blk, hp):
+def pick_target(enemies, targets, card_dmg=6):
+    """Best of the legal targets: a one-shottable attacker, else the highest threat."""
+    by = {e.get("index"): e for e in enemies}
+    cands = [by[t] for t in targets if t in by]
+    if not cands:
+        return None
+    oneshot = [e for e in cands if e.get("hp", 0) <= card_dmg and calc_incoming([e]) > 0]
+    pool = oneshot or cands
+    return max(pool, key=lambda e: (enemy_threat(e), -e.get("index", 0))).get("index")
+
+
+def card_priority(c, inc, blk, hp):
+    """Lower = play first; None = not worth playing now."""
     block_gap = inc - blk
     lethal = block_gap >= hp
     can_tank = hp > inc * 2
     need_block = block_gap > 0 and (lethal or not can_tank or block_gap > 15)
-    best, best_p = None, 999
-    for i, c in enumerate(hand):
-        if not c.get("can_play") or c["cost"] > energy: continue
-        name, cost, ctype, tt = c["name"], c["cost"], c["type"], c.get("target_type", "")
-        kw = c.get("keywords") or []
-        if ctype in ("Status", "Curse") or "Unplayable" in kw: continue
-        if name in ["Slimed","Burn","Wound","Dazed","Infection"]: continue
-        is_block = ctype == "Skill" and tt != "AnyEnemy"
-        is_attack = tt == "AnyEnemy"
-        # Priority scoring (lower = play first)
-        if cost == 0 and is_block and need_block: p = 1  # Free block when needed
-        elif cost == 0 and ctype == "Power": p = 2  # Free powers always good
-        elif cost == 0 and is_attack: p = 3  # Free attacks
-        elif cost == 0: p = 4  # Other free cards
-        elif ctype == "Power" and not lethal and inc <= 15: p = 8 + cost  # Powers when safe
-        elif ctype == "Power" and not lethal: p = 15 + cost  # Powers when moderate danger
-        elif ctype == "Power" and lethal: p = 50  # Don't play powers when dying
-        elif is_block and lethal: p = 2 + cost  # Block everything when dying
-        elif is_block and need_block: p = 10 + cost  # Block when needed
-        elif is_block and inc == 0: p = 45  # Don't block when no damage incoming
-        elif is_block and block_gap <= 0: p = 42  # Already blocked enough
-        elif is_block: p = 25 + cost  # Normal block
-        elif is_attack and not lethal: p = 12 + cost  # Attacks when not dying
-        elif is_attack and lethal: p = 40  # Don't attack when dying (block instead)
-        else: p = 20 + cost
-        ti = None
-        if tt == "AnyEnemy" and enemies:
-            card_dmg = (c.get("stats") or {}).get("damage", 6)
-            ti = pick_target(enemies, card_dmg)
-        if p < best_p: best_p, best = p, (i, ti)
+    cost, ctype, tt = c.get("cost") or 0, c.get("type"), c.get("target_type", "")
+    if ctype in ("Status", "Curse"):
+        return None
+    is_block = ctype == "Skill" and tt != "AnyEnemy"
+    is_attack = tt == "AnyEnemy"
+    if cost == 0 and is_block and need_block: return 1
+    if cost == 0 and ctype == "Power": return 2
+    if cost == 0 and is_attack: return 3
+    if cost == 0: return 4
+    if ctype == "Power": return (8 + cost) if (not lethal and inc <= 15) else ((15 + cost) if not lethal else 50)
+    if is_block and lethal: return 2 + cost
+    if is_block and need_block: return 10 + cost
+    if is_block and inc == 0: return 45
+    if is_block and block_gap <= 0: return 42
+    if is_block: return 25 + cost
+    if is_attack: return (12 + cost) if not lethal else 40
+    return 20 + cost
+
+
+def best_play(d):
+    """The legal play_card entry to send, or None."""
+    hand = {c.get("index"): c for c in d.get("hand") or []}
+    enemies = d.get("enemies") or []
+    p = d.get("player") or {}
+    inc, blk, hp = calc_incoming(enemies), p.get("block", 0), p.get("hp", 99)
+    plays = {}
+    for a in d.get("legal_actions") or []:
+        if a.get("action") == "play_card":
+            plays.setdefault(a["args"]["card_index"], []).append(a)
+    best, best_p = None, None
+    for ci, entries in sorted(plays.items()):
+        c = hand.get(ci, {})
+        pr = card_priority(c, inc, blk, hp)
+        if pr is None or (best_p is not None and pr >= best_p):
+            continue
+        targets = [a["args"]["target_index"] for a in entries if "target_index" in a["args"]]
+        if targets:
+            ti = pick_target(enemies, targets, (c.get("stats") or {}).get("damage", 6))
+            entry = next(a for a in entries if a["args"].get("target_index") == ti)
+        else:
+            if len(entries) != 1:
+                continue
+            entry = entries[0]  # the card's only legal play
+        best, best_p = entry, pr
     return best
 
-def fight(d=None):
-    if d is None: d = action("end_turn")
-    for _ in range(200):
-        dec = d.get("decision", d.get("type", ""))
-        if dec in ("card_reward", "game_over", "map_select", "rest_site", "shop", "event_choice", "bundle_select"):
-            return d
-        if dec == "card_select":
-            n = d.get("min_select", 1)
-            d = action("select_cards", indices=",".join(str(i) for i in range(min(n, len(d.get("cards",[]))))))
-            continue
-        if dec != "combat_play":
-            d = action("proceed")
-            continue
-        hand, enemies, osty = d.get("hand",[]), d.get("enemies",[]), d.get("osty",{})
-        energy, rnd = d.get("energy",0), d.get("round",1)
-        hp = d.get("player",{}).get("hp",99) if "player" in d else 99
-        blk = d.get("player",{}).get("block",0) if "player" in d else 0
-        inc = calc_incoming(enemies)
-        # Use potions when critical
-        potions = d.get("potions", [])
-        if potions and (hp < 20 or (inc > hp and blk == 0)):
-            for pi, pot in enumerate(potions):
-                pname = pot.get("name", {}).get("en", "")
-                ptt = pot.get("target_type", "")
-                if "Heal" in pname or "Block" in pname or "Regen" in pname or "Fairy" in pname:
-                    r = action("use_potion", potion_index=pi)
-                    if r.get("type") != "error": d = r; break
-                elif ptt == "AnyEnemy" and enemies:
-                    ti = pick_target(enemies)
-                    r = action("use_potion", potion_index=pi, target_index=ti)
-                    if r.get("type") != "error": d = r; break
-                elif ptt in ("Self", "AnyPlayer", ""):
-                    r = action("use_potion", potion_index=pi)
-                    if r.get("type") != "error": d = r; break
-            hand, enemies = d.get("hand",[]), d.get("enemies",[])
-            energy = d.get("energy", energy)
-            inc = calc_incoming(enemies)
-        choice = best_card(hand, enemies, osty, energy, rnd, inc, blk, hp)
-        if choice is None:
-            d = action("end_turn"); continue
-        ci, ti = choice
-        r = play_card(ci, ti) if ti is not None else play_card(ci)
-        if r.get("type") == "error":
-            if d.get("hand") and ci < len(d["hand"]): d["hand"][ci]["can_play"] = False
-            continue
-        d = r
-    return action("end_turn")
+
+def emergency_potion(d):
+    p = d.get("player") or {}
+    hp, blk = p.get("hp", 99), p.get("block", 0)
+    inc = calc_incoming(d.get("enemies") or [])
+    if not (hp < 20 or (inc - blk >= hp)):
+        return None
+    uses = [a for a in d.get("legal_actions") or [] if a.get("action") == "use_potion"]
+    if not uses:
+        return None
+    targeted = [a for a in uses if "target_index" in a["args"]]
+    plain = [a for a in uses if "target_index" not in a["args"]]
+    if plain:
+        return min(plain, key=lambda a: a["args"]["potion_index"])  # stated tie-break: lowest slot
+    ti = pick_target(d.get("enemies") or [], [a["args"]["target_index"] for a in targeted])
+    return next(a for a in targeted if a["args"]["target_index"] == ti)
+
+
+def fight(d=None, max_steps=300):
+    """Play cards until the state is no longer a combat turn; returns that state."""
+    if d is None:
+        d = cmd({"cmd": "get_state"})
+    for _ in range(max_steps):
+        if d.get("type") != "decision" or d.get("decision") != "combat_play":
+            return d  # any other decision (or an error) is the caller's
+        act = emergency_potion(d) or best_play(d)
+        if act is None:
+            act = next((a for a in d.get("legal_actions") or [] if a.get("action") == "end_turn"), None)
+            if act is None:
+                return d
+        d = send_action({k: v for k, v in act.items() if k in ("action", "args")})
+    return d
+
 
 if __name__ == "__main__":
     result = fight()
-    dec = result.get("decision", "")
+    dec = result.get("decision", result.get("type", ""))
     p = result.get("player", {})
-    if dec == "card_reward":
-        print(f"WIN HP={p.get('hp')}/{p.get('max_hp')} g={p.get('gold')}")
-        for c in result.get("cards", []):
-            print(f"  C{c['index']}: {c['name']['zh']}({c.get('cost','?')}) {c.get('rarity','')} {c['type']} {c.get('stats',{})}")
-    elif dec == "game_over":
-        print(f"DEAD HP={p.get('hp')}")
-    else:
-        print(f"STATE: {dec} HP={p.get('hp','?')}/{p.get('max_hp','?')}")
+    print(f"STATE: {dec} HP={p.get('hp', '?')}/{p.get('max_hp', '?')} gold={p.get('gold', '?')}")
+    if result.get("type") == "error":
+        print(f"  error: {result.get('message')}")
+    for a in result.get("legal_actions") or []:
+        print(f"  {json.dumps(a, ensure_ascii=False)}")

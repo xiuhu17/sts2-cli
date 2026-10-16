@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """
-Fuzz legal_actions: play runs choosing uniformly at random among legal_actions and fail
-on any error response, or when the same decision repeats 40 times without progress.
+Fuzz legal_actions: play runs choosing at random among legal_actions and fail on any error
+response, or when the same decision repeats 40 times without progress.
+
+Policy (seeded per run): never discard a potion unless nothing else is legal; in combat, with
+probability 0.85 exclude end_turn when something else is legal; then pick uniformly among the
+remaining entries (selections / Crystal Sphere cells: uniform count, subset, cell and tool).
 Checks that everything listed as legal is actually accepted and actually does something.
 
 Usage:
@@ -20,24 +24,9 @@ from collections import Counter
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "python"))
 from engine import Engine  # noqa: E402
+from policy import to_command  # noqa: E402
 
 CHARACTERS = ["Ironclad", "Silent", "Defect", "Regent", "Necrobinder"]
-
-
-def to_command(entry, rng):
-    if "choose" in entry:
-        ch = entry["choose"]
-        k = rng.randint(ch["min"], ch["max"])
-        picks = rng.sample(ch["from"], k)
-        return {"cmd": "action", "action": entry["action"], "args": {"indices": ",".join(map(str, picks))}}
-    if "choose_cell" in entry:
-        x, y = rng.choice(entry["choose_cell"]["cells"])
-        tool = rng.choice(entry["choose_cell"]["tools"])
-        return {"cmd": "action", "action": entry["action"], "args": {"x": x, "y": y, "tool": tool}}
-    cmd = {"cmd": "action", "action": entry["action"]}
-    if entry.get("args"):
-        cmd["args"] = entry["args"]
-    return cmd
 
 
 def progress_key(state):
@@ -77,9 +66,9 @@ def main():
         seed = f"{args.seed_prefix}_{i}"
         character = CHARACTERS[i % len(CHARACTERS)]
         rng = random.Random(seed)
-        start = {"cmd": "start_run", "character": character, "seed": seed}
-        if args.manual_rewards:
-            start["manual_rewards"] = True
+        # Rewards screens and treasure chests are always decisions (--manual-rewards is kept
+        # for compatibility; older engine builds needed the flag).
+        start = {"cmd": "start_run", "character": character, "seed": seed, "manual_rewards": True}
         if log:
             log.write(f"=== start {json.dumps(start)}\n")
         state = engine.send(start)

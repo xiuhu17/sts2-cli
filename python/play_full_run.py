@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """
-Play a full STS2 run using the headless simulator with a random agent.
+Play full STS2 runs using the headless simulator with a bot.
+
+The bot decides through an explicit policy over the engine's legal_actions (python/policy.py):
+"random" (default: seeded, weighted by verb) or "heuristic". It never picks "the first" option.
+Rewards screens and treasure chests are decisions like any other.
 
 Usage:
-  python3 play_full_run.py <num_runs> [character]
+  python3 play_full_run.py <num_runs> [character] [--policy random|heuristic]
 
 Arguments:
   num_runs    Positive integer: number of runs to play
@@ -17,21 +21,22 @@ Examples:
 import argparse
 import json
 import sys
-import random
 from engine import Engine, EngineError
 from game_log import GameLogger
+from policy import NoLegalAction, make_policy
 
 VALID_CHARACTERS = ["Ironclad", "Silent", "Defect", "Regent", "Necrobinder"]
 
 
 def play_run(seed: str, character: str = "Ironclad", verbose: bool = True, log: bool = True,
-             engine: Engine = None, manual_rewards: bool = False):
+             engine: Engine = None, manual_rewards: bool = True, policy: str = "random"):
     """Play a complete run and return the result.
 
     Pass an existing Engine to reuse one process across runs (much faster for batches);
     if the result has "engine_broken": True, that engine must be discarded.
     """
-    rng = random.Random(seed)
+    # manual_rewards is accepted for compatibility: rewards screens are always decisions.
+    policy = make_policy(policy, seed)
     logger = GameLogger(character, seed, enabled=log)
     owns_engine = engine is None
 
@@ -65,9 +70,9 @@ def play_run(seed: str, character: str = "Ironclad", verbose: bool = True, log: 
                 print(f"Connected: {engine.ready}")
 
         # Start run
-        start = {"cmd": "start_run", "character": character, "seed": seed}
-        if manual_rewards:
-            start["manual_rewards"] = True
+        # manual_rewards: rewards/treasure are always decisions (the engine ignores false;
+        # sent so older engine builds behave the same).
+        start = {"cmd": "start_run", "character": character, "seed": seed, "manual_rewards": True}
         state = send(start)
 
         step = 0
@@ -95,7 +100,10 @@ def play_run(seed: str, character: str = "Ironclad", verbose: bool = True, log: 
             hand_len = len(state.get("hand", []))
             enemy_hp = sum(e.get("hp", 0) for e in state.get("enemies", []))
             energy = state.get("energy", 0)
-            state_key = f"{decision}:{state.get('round')}:{state.get('player',{}).get('hp')}:{hand_len}:{enemy_hp}:{energy}"
+            pl = state.get("player") or {}
+            state_key = (f"{decision}:{state.get('round')}:{pl.get('hp')}:{hand_len}:{enemy_hp}:{energy}:"
+                         f"{pl.get('gold')}:{pl.get('deck_size')}:{len(pl.get('potions') or [])}:"
+                         f"{len(state.get('legal_actions') or [])}")
             if state_key == last_state_key:
                 stuck_count += 1
                 if stuck_count > 20:
@@ -127,135 +135,13 @@ def play_run(seed: str, character: str = "Ironclad", verbose: bool = True, log: 
                     "max_hp": player.get("max_hp"),
                 }
 
-            elif decision == "map_select":
-                choices = state.get("choices", [])
-                if not choices:
-                    print("  No map choices available!")
-                    break
-                # Random selection
-                choice = rng.choice(choices)
-                state = send({
-                    "cmd": "action",
-                    "action": "select_map_node",
-                    "args": {"col": choice["col"], "row": choice["row"]}
-                })
-
-            elif decision == "combat_play":
-                hand = state.get("hand", [])
-                energy = state.get("energy", 0)
-                enemies = state.get("enemies", [])
-
-                # Simple strategy: play playable cards until out of energy
-                playable = [c for c in hand if c.get("can_play", False)
-                           and (c.get("cost", 0) <= energy)]
-
-                if playable:
-                    card = playable[0]
-                    args = {"card_index": card["index"]}
-                    # If card needs a target, pick first enemy
-                    if card.get("target_type") == "AnyEnemy" and enemies:
-                        args["target_index"] = 0
-                    state = send({
-                        "cmd": "action",
-                        "action": "play_card",
-                        "args": args
-                    })
-                else:
-                    # End turn - retry a few times if we get "Not in play phase"
-                    for retry in range(5):
-                        state = send({
-                            "cmd": "action",
-                            "action": "end_turn"
-                        })
-                        if state.get("type") != "error" or state.get("code") == "engine_stuck":
-                            break
-                        import time
-                        time.sleep(0.5)
-
-            elif decision == "event_choice":
-                options = state.get("options", [])
-                if options:
-                    # Pick first unlocked option
-                    choice = next((o for o in options if not o.get("is_locked")), options[0])
-                    state = send({
-                        "cmd": "action",
-                        "action": "choose_option",
-                        "args": {"option_index": choice["index"]}
-                    })
-                else:
-                    state = send({"cmd": "action", "action": "leave_room"})
-
-            elif decision == "rest_site":
-                options = state.get("options", [])
-                # Prefer heal (HEAL), then smith
-                enabled = [o for o in options if o.get("is_enabled", True)]
-                heal = next((o for o in enabled if o.get("option_id") == "HEAL"), None)
-                choice = heal or (enabled[0] if enabled else None)
-                if choice:
-                    state = send({
-                        "cmd": "action",
-                        "action": "choose_option",
-                        "args": {"option_index": choice["index"]}
-                    })
-                else:
-                    state = send({"cmd": "action", "action": "leave_room"})
-
-            elif decision == "card_reward":
-                # Pick the first card offered
-                cards = state.get("cards", [])
-                if cards:
-                    state = send({
-                        "cmd": "action",
-                        "action": "select_card_reward",
-                        "args": {"card_index": 0}
-                    })
-                else:
-                    state = send({"cmd": "action", "action": "skip_card_reward"})
-
-            elif decision == "bundle_select":
-                state = send({"cmd": "action", "action": "select_bundle",
-                             "args": {"bundle_index": 0}})
-
-            elif decision == "card_select":
-                # Auto-select the first card(s): as many as the prompt requires, at least one
-                cards = state.get("cards", [])
-                if cards:
-                    k = min(max(state.get("min_select", 1), 1), len(cards))
-                    state = send({"cmd": "action", "action": "select_cards",
-                                 "args": {"indices": ",".join(str(i) for i in range(k))}})
-                else:
-                    state = send({"cmd": "action", "action": "skip_select"})
-
-            elif decision == "rewards":
-                # Same order the auto mode uses: gold/relics/potions first, then cards.
-                rewards = state.get("rewards", [])
-                takeable = [r for r in rewards
-                            if not (r.get("type") == "potion" and state.get("potion_slots_full"))]
-                pick = (next((r for r in takeable if r.get("type") != "card"), None)
-                        or next((r for r in takeable if r.get("type") == "card"), None))
-                if pick:
-                    state = send({"cmd": "action", "action": "claim_reward",
-                                  "args": {"reward_index": pick["index"]}})
-                else:
-                    state = send({"cmd": "action", "action": "proceed"})
-
-            elif decision == "treasure_relic":
-                state = send({"cmd": "action", "action": "select_treasure_relic",
-                              "args": {"relic_index": 0}})
-
-            elif decision == "crystal_sphere":
-                x, y = state["hidden_cells"][0]
-                state = send({"cmd": "action", "action": "crystal_sphere_click",
-                              "args": {"x": x, "y": y, "tool": "big"}})
-
-            elif decision == "shop":
-                state = send({"cmd": "action", "action": "leave_room"})
-
-            elif decision == "unknown":
-                state = send({"cmd": "action", "action": "proceed"})
-
             else:
-                raise RuntimeError(f"Unsupported decision: {decision!r}")
+                # Every other decision: the policy picks one of the engine's legal_actions.
+                try:
+                    act = policy.choose(state)
+                except NoLegalAction as e:
+                    raise RuntimeError(str(e)) from None
+                state = send({"cmd": "action", **act})
 
         print(f"  Reached max steps ({max_steps})")
         return {"victory": False, "seed": seed, "steps": step, "timeout": True}
@@ -278,7 +164,7 @@ def play_run(seed: str, character: str = "Ironclad", verbose: bool = True, log: 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Play full STS2 runs using the headless simulator with a random agent.",
+        description="Play full STS2 runs using the headless simulator with a bot (policy over legal_actions).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="Valid characters: " + ", ".join(VALID_CHARACTERS),
     )
@@ -286,6 +172,8 @@ def main():
     parser.add_argument("character", nargs="?", default="Ironclad",
                         choices=VALID_CHARACTERS, metavar="character",
                         help=f"Character to play as (default: Ironclad). Choices: {', '.join(VALID_CHARACTERS)}")
+    parser.add_argument("--policy", default="random", choices=["random", "heuristic"],
+                        help="Decision policy (python/policy.py): seeded weighted random (default) or heuristic")
     parser.add_argument("--fresh-process", action="store_true",
                         help="Start a new engine process for every run instead of reusing one")
     args = parser.parse_args()
@@ -306,7 +194,7 @@ def main():
         print(f"\n--- Run {i+1}/{num_runs} (seed: {seed}) ---")
         if not args.fresh_process and engine is None:
             engine = Engine(stderr_sink=lambda l: print(l, file=sys.stderr))
-        result = play_run(seed, character, verbose=True, engine=engine)
+        result = play_run(seed, character, verbose=True, engine=engine, policy=args.policy)
         if engine is not None and (result.get("engine_broken") or result.get("error") == "engine_stuck"):
             engine.close()
             engine = None

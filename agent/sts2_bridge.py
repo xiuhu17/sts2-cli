@@ -164,7 +164,20 @@ class Game:
     def _dead(self, resp):
         return resp.get("type") == "fatal" or resp.get("code") in ("engine_exited", "engine_timeout", "restart_required")
 
+    @staticmethod
+    def _fingerprint(st):
+        if not isinstance(st, dict) or st.get("type") != "decision":
+            return None
+        p = st.get("player") or {}
+        ctx = st.get("context") or {}
+        return [st.get("decision"), ctx.get("seed"), ctx.get("act"), ctx.get("floor"), p.get("hp"),
+                p.get("max_hp"), p.get("gold"), p.get("deck_size"), st.get("round")]
+
     def _respawn(self):
+        """Restart the engine and replay the run. The stored start_run carries the seed the
+        engine reported, so this is the same run; a replay that ends somewhere else than the
+        last decision we returned is reported as diverged."""
+        before = self._fingerprint(self.last_resp)
         try:
             self.proc.kill()
         except Exception:
@@ -176,25 +189,43 @@ class Game:
             if self._dead(last):
                 self.history = self.history[:i]
                 break
-        if last and last.get("type") == "decision":
-            self.last_resp = last
-        return len(self.history), last
+        st = last.get("state") if isinstance(last, dict) and last.get("type") == "error" else last
+        if isinstance(st, dict) and st.get("type") == "decision":
+            self.last_resp = st
+        diverged = before is not None and self.history and self._fingerprint(st) != before
+        return len(self.history), last, diverged
 
     def send(self, cmd):
         with self.lock:
+            notes = []
             if not self._alive():
-                self._respawn()
-            resp = self._roundtrip(cmd)
-            if self._dead(resp):
-                replayed, last = self._respawn()
-                return self.step, {"type": "error", "code": "engine_restarted",
-                                   "message": f"The engine failed ({resp.get('message')}); it was restarted and "
-                                              f"{replayed} commands of this run were replayed. The command was not applied.",
-                                   "replayed": replayed, "state": last}
-            self.step += 1
+                replayed, _, diverged = self._respawn()
+                notes.append(f"The engine had exited; it was restarted and {replayed} commands of this run were replayed"
+                             + (" but the replay DIVERGED from the previous state" if diverged else "") + ".")
             kind = cmd.get("cmd")
             if kind in ("start_run", "load_save"):
-                self.history = [cmd] if resp.get("type") == "decision" else self.history
+                # Rewards screens / treasure chests are always decisions (older engines needed the flag).
+                cmd = dict(cmd, manual_rewards=True)
+            resp = self._roundtrip(cmd)
+            if self._dead(resp):
+                replayed, last, diverged = self._respawn()
+                return self.step, {"type": "error", "code": "engine_restarted",
+                                   "message": f"The engine failed ({resp.get('message')}); it was restarted and "
+                                              f"{replayed} commands of this run were replayed"
+                                              + (" but the replay DIVERGED from the previous state" if diverged else "")
+                                              + ". The command was not applied.",
+                                   "replayed": replayed, "diverged": bool(diverged), "state": last}
+            self.step += 1
+            if notes and isinstance(resp, dict):
+                resp = dict(resp, notes=notes)
+            if kind in ("start_run", "load_save"):
+                if resp.get("type") == "decision":
+                    # Keep the seed the engine used (it picks one when none is given), so a
+                    # crash replay is this run and not a new random one.
+                    seed = (resp.get("context") or {}).get("seed")
+                    if seed and kind == "start_run":
+                        cmd = dict(cmd, seed=seed)
+                    self.history = [cmd]
             elif kind == "action" and (resp.get("type") != "error" or resp.get("code") == "flow_failed"):
                 self.history.append(cmd)
             elif kind == "quit":
@@ -307,6 +338,8 @@ class Handler(BaseHTTPRequestHandler):
             if data["cmd"] == "quit":
                 # Keep serving: the next start_run gets a fresh engine.
                 with game.lock:
+                    game.history = []
+                    game.last_resp = None
                     game._respawn()
         except Exception as e:
             try:
