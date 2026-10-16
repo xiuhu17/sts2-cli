@@ -103,7 +103,9 @@ def _desc(s):
 
 
 class Glossary:
-    """Keyword tooltips (Vulnerable, Exhaust, ...) shown once per reply."""
+    """The game's hover tips (keywords such as Vulnerable or Exhaust, the powers a card,
+    potion, relic, power or event option refers to) shown once per reply. Two tips can share
+    a title (Tainted the affliction and Tainted the power it applies): both are listed."""
 
     def __init__(self):
         self.items = {}
@@ -111,12 +113,13 @@ class Glossary:
     def add(self, tips):
         for tip in tips or []:
             if isinstance(tip, dict) and tip.get("title") and tip.get("description"):
-                self.items.setdefault(tip["title"], _one_line(tip["description"]))
+                desc = _one_line(tip["description"])
+                self.items.setdefault((tip["title"], desc), None)
 
     def render(self):
         if not self.items:
             return []
-        return [t("Keywords:", "关键词："), *[f"  {k}: {v}" for k, v in self.items.items()]]
+        return [t("Keywords:", "关键词："), *[f"  {k}: {v}" for k, v in self.items]]
 
 
 # The hand card's glow (NHandCardHolder): gold = playable with its bonus condition met.
@@ -174,6 +177,7 @@ def powers_text(powers, gl):
     for p in powers or []:
         amt = p.get("amount")
         out.append(f"{p.get('name')}{' ' + str(amt) if amt not in (None, 0) else ''}{_desc(p.get('description'))}")
+        gl.add(p.get("tips"))
     return out
 
 
@@ -187,7 +191,7 @@ def run_id_parts(ctx):
     return out
 
 
-def header(st):
+def header(st, gl=None):
     ctx = st.get("context") or {}
     p = st.get("player") or {}
     parts = []
@@ -219,6 +223,8 @@ def header(st):
             lines.append(f"{t('Potions', '药水')} ({len(pots)}/{slots}):" + ("" if pots else f" {t('none', '无')}"))
             for x in pots:
                 lines.append(f"  P{x.get('index')} {x.get('name')} [{potion_tags(x)}]{_desc(x.get('description'))}")
+                if gl is not None:
+                    gl.add(x.get("tips"))
     return lines
 
 
@@ -278,7 +284,7 @@ EVENT_FMT = {
     "summon": lambda e: t(f"summoned {e.get('amount')}", f"召唤 {e.get('amount')}"),
     "relic": lambda e: t("relic: ", "遗物：") + str(e.get("relic")),
     "enemy_died": lambda e: f"{e.get('enemy')} {t('died', '死亡')}",
-    "gold": lambda e: f"{t('Gold', '金币')} {e['change']:+d} ({t('now', '现为')} {e.get('gold')})",
+    "gold": lambda e: gold_text(e),
     "max_hp": lambda e: f"{t('Max HP', '最大生命')} {e['change']:+d} ({t('now', '现为')} {e.get('max_hp')})",
     "hp": lambda e: f"{t('HP', '生命')} {e['change']:+d} ({t('now', '现为')} {e.get('hp')})",
     "deck_added": lambda e: t("deck + ", "牌组 + ") + str(e.get("card")),
@@ -288,8 +294,40 @@ EVENT_FMT = {
     "relic_lost": lambda e: t("relic - ", "遗物 - ") + str(e.get("relic")),
     "potion_obtained": lambda e: t("potion + ", "药水 + ") + str(e.get("potion")),
     "potion_lost": lambda e: t("potion - ", "药水 - ") + str(e.get("potion")),
+    "card_auto_selected": lambda e: auto_selected_text(e),
     "truncated": lambda e: "...",
 }
+
+
+def auto_selected_text(e):
+    """'Headbutt: auto-selected Strike (only 1 card could be chosen)': the game resolved a
+    selection itself (no screen opened) because it could take every card it offered."""
+    src = e.get("source")
+    cards = t(", ", "、").join(map(str, e.get("cards") or [])) or "?"
+    n = e.get("available") or len(e.get("cards") or [])
+    head = f"{src}{t(': ', '：')}" if src else ""
+    return head + t(f"auto-selected {cards} (only {n} {'card' if n == 1 else 'cards'} could be chosen; no selection screen opened)",
+                    f"自动选择了 {cards}（只有 {n} 张可选）")
+
+
+def auto_selected_events(events):
+    return [e for e in events or [] if isinstance(e, dict) and e.get("type") == "card_auto_selected"]
+
+
+_GOLD_REASON = {"stolen": ("stolen", "被偷走")}
+
+
+def gold_text(e):
+    """'Gold -73 (bought Clash; now 26)', 'Gold +15 (Lucky Fysh; now 41)': one gold change,
+    with what it paid for or which relic paid it out."""
+    why = ""
+    if e.get("item"):
+        why = t(f"bought {e['item']}; ", f"购买 {e['item']}；")
+    elif e.get("source"):
+        why = t(f"{e['source']}; ", f"来自 {e['source']}；")
+    elif e.get("reason") == "stolen":
+        why = t(*_GOLD_REASON[e["reason"]]) + t("; ", "；")
+    return f"{t('Gold', '金币')} {e['change']:+d} ({why}{t('now', '现为')} {e.get('gold')})"
 
 
 def event_lines(events):
@@ -456,8 +494,13 @@ def render_combat_core(st, gl, hand_title=None):
         for i in e.get("intents") or []:
             if i.get("description"):
                 out.append(f"     ({_one_line(i['description'])})")
-        for x in powers_text(e.get("powers"), gl):
-            out.append(f"     {x}")
+        epw = powers_text(e.get("powers"), gl)
+        if epw:
+            # The game lists these on the enemy (its hover tips): the text is the game's own,
+            # worded from the player's side ("your turn" is the player's turn).
+            out.append("     " + t(f"{e.get('name')}'s powers:", f"{e.get('name')}的能力："))
+        for x in epw:
+            out.append(f"       {x}")
     hand = st.get("hand") or []
     out.append(hand_title or t("Hand: (H#/E# renumber as cards/enemies leave; within one `do` chain they mean this view)",
                                "手牌：（卡牌/敌人离场后 H#/E# 会重新编号；同一条 do 指令链里它们指本视图中的牌和敌人）"))
@@ -695,7 +738,10 @@ def render_body(st, gl):
         body.append(f"{t('CARD SELECT', '选牌')} [{purpose_text(purpose)}] {_one_line(st.get('prompt')) or ''}".rstrip())
         scr = _SCREEN_KIND.get(st.get("screen"))
         nsel = select_count_text(st)
+        # How many cards, then which numbers name them: "select 0-6 cards (numbers 0-5)".
+        nums = index_range([c.get("index") for c in st.get("cards") or [] if isinstance(c, dict)])
         body.append(f"  {t('select', '选择')} {nsel} {t('card' if nsel == '1' else 'cards', '张牌')}"
+                    + t(f" (card numbers {nums})", f"（卡牌编号 {nums}）")
                     + (f" | {t('from', '来自')} {src}" if src else "")
                     + (f" | {t(*scr)}" if scr else (f" | {st['screen']}" if st.get("screen") else ""))
                     + (f" | {t('cancelable', '可取消')}" if st.get("cancelable") else ""))
@@ -781,9 +827,12 @@ def render_body(st, gl):
             if p.get("is_stocked") is False:
                 continue
             body.append(f" potion {p.get('index')}) {p.get('price', p.get('cost'))}g {p.get('name')}{_desc(p.get('description'))}")
+            gl.add(p.get("tips"))
     elif d == "rewards":
+        potion_offered = any(isinstance(w, dict) and w.get("type") == "potion" for w in st.get("rewards") or [])
         body.append(t("REWARDS", "奖励") + (t(" (potion slots full: discard a potion to take one)",
-                                               "（药水栏已满：丢弃药水后才能领取药水）") if st.get("potion_slots_full") else "")
+                                               "（药水栏已满：丢弃药水后才能领取药水）")
+                                             if st.get("potion_slots_full") and potion_offered else "")
                     + t("  (claim N: these numbers stay fixed; claiming one does not renumber the rest)",
                         "（claim N：编号固定，领取后其余奖励不会重新编号）"))
         if st.get("can_skip") is False and st.get("rewards"):
@@ -793,6 +842,7 @@ def render_body(st, gl):
         for w in st.get("rewards") or []:
             nos = t(" (cannot be skipped)", "（不可跳过）") if w.get("type") == "card" and w.get("can_skip") is False else ""
             body.append(f" {w.get('index')}) {reward_text(w)}{nos}")
+            gl.add(w.get("tips"))
     elif d == "treasure_relic":
         body.append(t("TREASURE", "宝箱"))
         for r in st.get("relics") or []:
@@ -825,7 +875,7 @@ def render_decision(st, numbered, extra_events=None, prefix=None):
     gl = Glossary()
     prefix = list(prefix or [])
     ev = event_lines(extra_events if extra_events is not None else st.get("events"))
-    head = header(st)
+    head = header(st, gl)
     body = render_body(st, gl)
     actions = render_actions(st, numbered) if numbered else []
     if not numbered and st.get("decision") == "game_over":
@@ -1476,6 +1526,25 @@ def _split_card_target(words, hand, enemies):
     return words[0], (" ".join(words[1:]) or None)
 
 
+def _not_your_turn_text(verb, st):
+    """Why a combat verb (play / end) can't run on this decision. A card selection opened by a
+    card, potion or power mid-fight (Headbutt, Armaments, ...) is still the fight: say so."""
+    st = st or {}
+    dec = st.get("decision")
+    what = {"play": ("'play' plays a card from your hand", "play 用于打出手牌"),
+            "end": ("'end' ends your turn", "end 用于结束回合")}[verb]
+    if dec == "card_select" and st.get("combat"):
+        src = (st.get("source") or {}).get("name")
+        frm_en, frm_zh = (f" by {src}", f"（由{src}打开）") if src else ("", "")
+        return t(f"you are in combat, but a card selection{frm_en} is open: finish it first "
+                 f"(select {select_count_text(st)} of cards {index_range([c.get('index') for c in st.get('cards') or []])}"
+                 + (", or skip" if st.get("cancelable") else "") + f"); {what[0]} once it is closed",
+                 f"仍在战斗中，但选牌界面{frm_zh}正在打开：请先完成选择"
+                 f"（从编号 {index_range([c.get('index') for c in st.get('cards') or []])} 中选择 {select_count_text(st)} 张"
+                 + ("，或 skip" if st.get("cancelable") else "") + f"）；关闭后再 {what[1]}")
+    return t(f"not in combat (decision: {dec}); {what[0]}", f"不在战斗中（现在处于{dec_name(dec)}）；{what[1]}")
+
+
 def parse_verb(text, st, numbered, refs=None):
     """One step of `sts2 do` -> engine action dict {action, args}. `refs` (a Refs) resolves
     index references against the state shown when the chain started; without it they are
@@ -1529,8 +1598,7 @@ def parse_verb(text, st, numbered, refs=None):
         if not a:
             raise VerbError("play <card: H0 | 0 | name> [target: E1 | 1 | name]")
         if dec != "combat_play":
-            raise NoScreen(t(f"not in combat (decision: {dec}); 'play' plays a card from your hand",
-                              f"不在战斗中（现在处于{dec_name(dec)}）；play 用于打出手牌"))
+            raise NoScreen(_not_your_turn_text("play", st))
         hand = (st or {}).get("hand") or []
         enemies = (st or {}).get("enemies") or []
         card_ref, target_ref = _split_card_target(a, hand, enemies)
@@ -1539,6 +1607,8 @@ def parse_verb(text, st, numbered, refs=None):
             args["target_index"] = _find_by_name(enemies, target_ref, "enemy", "E", lambda i: refs.enemy(i, st))
         return {"action": "play_card", "args": args}
     if v in ("end", "e", "endturn", "end_turn"):
+        if dec == "card_select" and (st or {}).get("combat"):
+            raise NoScreen(_not_your_turn_text("end", st))
         return {"action": "end_turn"}
     if v in ("potion", "use", "pot"):
         if not a:
@@ -1898,6 +1968,8 @@ _REASONS = [
     (r"potion slots are full", "your potion slots are full", "药水栏已满", None),
     (r"not enough gold", "not enough gold", "金币不足", None),
     (r"this option is locked", "this option is locked", "该选项已锁定", None),
+    (r"you are in combat, but a card selection is open: finish it first",
+     "you are in combat, but a card selection is open: finish it first", "仍在战斗中，但选牌界面正在打开：请先完成选择", None),
     (r"it is not available on (?P<w>.*)", "it is not available on {w}", "在{w_zh}不能执行此操作", None),
     (r"the run is over", "the run is over", "本局已结束", None),
     (r"this screen can't be confirmed with the cards it shows; leave it with skip_select",
@@ -2212,7 +2284,9 @@ selection). It stops before the next step on a new room, a fight starting or end
 turn, the end of the run, a step that does not apply to the new decision, a potion step on
 any screen but the very one the chain started at (a fight: the same turn; not a screen
 that opened since, even one that looks the same: "skip; remove; discard P0" stops), an
-index that can't be resolved (above), a later 'skip' on a rewards screen, and at
+index that can't be resolved (above), a later 'skip' on a rewards screen, a 'select' whose
+selection never opened because the game picked the cards itself ("Headbutt: auto-selected
+Strike (only 1 card could be chosen)", shown in the events), and at
 the first error: one explanation in the output language of what each index refers to now,
 by the index you typed ("H2 (Defend as shown when the chain started, now H1) is ..."), why
 the game refuses it (the engine's flag in brackets: (EnergyCostTooHigh); --json has the raw
@@ -2233,7 +2307,8 @@ that can't be played is an error saying why.
 Rules: only legal actions are accepted (the error lists them); nothing is chosen for you.
 Rewards screens and treasure chests are decisions (claim / pick / proceed); --manual-rewards
 is accepted but changes nothing. Each reply starts with what happened since the previous
-decision (cards played, damage, enemy moves, relic triggers...), once: `state` right after a
+decision (cards played, damage, enemy moves, relic triggers, each gold change: a purchase
+and a relic's refund are separate lines...), once: `state` right after a
 `do` does not repeat them (sts2 log does). The header shows ascension and seed; sts2 map
 numbers columns (COL) and rows (ROW, floor f) for `go COL ROW`. If the engine or the
 daemon dies, the run is replayed from its seed and commands (kept in $TMPDIR).
@@ -2587,6 +2662,7 @@ class Daemon:
         results, events, final, code = [], [], None, 0
         start = self.last
         refs = Refs(start, self.numbered)   # what the agent saw
+        prev_events = []                    # the events of the previous step
         for i, step in enumerate(steps):
             st = self.last
             dec = st.get("decision") if st else None
@@ -2598,6 +2674,22 @@ class Daemon:
                 if why:
                     results.append({"step": step, "ok": False, "stopped": True,
                                     "error": t(f"not run: {why}", f"未执行：{why}")})
+                    break
+            sv = step.split()[0].lower() if step.split() else ""
+            if dec != "card_select" and (sv in ("select", "sel", "s") or (
+                    sv in ("pick", "take") and start.get("decision") == "card_select" and i > 0)):
+                # The selection this step was written for never opened: the game picked the
+                # cards itself (Headbutt with one card in the discard pile, ...).
+                auto = auto_selected_events(prev_events if i > 0 else st.get("events"))
+                if auto:
+                    note = t("; ", "；").join(auto_selected_text(e) for e in auto)
+                    msg = t(f"the game already picked the cards for that selection: {note}; there is no card selection to answer now",
+                            f"游戏已经替这次选择选好了牌：{note}；现在没有需要回答的选牌界面")
+                    if i > 0:
+                        results.append({"step": step, "ok": False, "stopped": True, "error": t(f"not run: {msg}", f"未执行：{msg}")})
+                    else:
+                        results.append({"step": step, "ok": False, "error": msg})
+                        code = 1
                     break
             try:
                 action = parse_verb(step, st, self.numbered, refs)
@@ -2645,6 +2737,7 @@ class Daemon:
                 break
             results.append({"step": step, "ok": True, "did": label})
             events.extend(r.get("events") or [])
+            prev_events = r.get("events") or []
             self._set_last(r)
             final = r
             if r.get("decision") == "game_over":

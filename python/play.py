@@ -1598,7 +1598,7 @@ def show_rewards(state):
         d = desc(r.get("description")) if typ not in ("gold",) else ""
         note = "" if r.get("index") in claimable else c(t(" (potion slots full)", "（药水栏已满）"), "red")
         print(f"  [{r['index']}] {label}{note}" + (f" — {c(d, 'dim')}" if d and typ != "card" else ""))
-    if state.get("potion_slots_full"):
+    if state.get("potion_slots_full") and any(r.get("type") == "potion" for r in state.get("rewards", [])):
         print(f"  {c(t('Potion slots are full: discard a potion (x<N>) to take a potion reward.', '药水栏已满：丢弃药水（x<编号>）后才能领取药水。'), 'yellow')}")
 
 
@@ -2100,7 +2100,10 @@ def play(character, seed=None, auto=False, ascension=0, log=True,
                 max_sel = state.get("max_select", 1)
                 title = desc(state.get("prompt")) or t("Choose cards", "选择卡牌")
                 src = (state.get("source") or {}).get("name")
-                print(f"  {c(title, 'bold')} — {card_pick_quantity_hint(min_sel, max_sel)}"
+                idxs = sorted(cd.get("index") for cd in state.get("cards", []) if isinstance(cd.get("index"), int))
+                nums = (t(f" (numbers {idxs[0]}–{idxs[-1]})", f"（编号 {idxs[0]}–{idxs[-1]}）") if len(idxs) > 1
+                        else t(f" (number {idxs[0]})", f"（编号 {idxs[0]}）") if idxs else "")
+                print(f"  {c(title, 'bold')} — {card_pick_quantity_hint(min_sel, max_sel)}{nums}"
                       + (f"  {c('(' + n(src) + ')', 'dim')}" if src else ""))
                 show_player(state.get("player", {}))
                 print()

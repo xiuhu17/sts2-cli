@@ -5,6 +5,7 @@ using MegaCrit.Sts2.Core.Combat.History.Entries;
 using MegaCrit.Sts2.Core.Commands;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
+using MegaCrit.Sts2.Core.Entities.Gold;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 using MegaCrit.Sts2.Core.Localization;
@@ -54,6 +55,7 @@ public partial class RunSimulator
         public string? Prompt;                // the localized prompt text the screen shows
         public bool Cancelable;               // the screen has a cancel / skip button
         public bool RequireConfirm;
+        public int MinSelect = -1;            // the prefs' MinSelect (-1 unknown)
         // The game's screen class (Nodes.Screens.CardSelection / NPlayerHand): decides which
         // selection sizes its buttons can confirm (CardSelectRules.AllowedCounts).
         public string ScreenClass = "";
@@ -115,6 +117,7 @@ public partial class RunSimulator
                 RequireConfirm = prefs.RequireManualConfirmation,
                 Source = source,
             };
+            try { ctx.MinSelect = prefs.MinSelect; } catch { }
             try
             {
                 var p = prefs.Prompt;
@@ -191,6 +194,7 @@ public partial class RunSimulator
                 Prompt = Format(new LocString("gameplay_ui", "CHOOSE_CARD_UPGRADE_HEADER")),
                 Source = source ?? Involved(context),
                 HandSource = source,
+                MinSelect = 1,
             }, false);
         }
 
@@ -229,11 +233,46 @@ public partial class RunSimulator
             }, false);
         }
 
+        /// <summary>
+        /// Postfix of every CardSelectCmd entry point: the method returned a finished task
+        /// while its staged context was never taken by the selector, so the game resolved the
+        /// selection itself without opening a screen (n &lt;= MinSelect and no manual confirm,
+        /// FromHandForUpgrade with one upgradable card, ...). Records card_auto_selected.
+        /// A selector that opened a screen returns a pending task (and took the stage).
+        /// </summary>
+        public static void AfterSelect(object? __result, System.Reflection.MethodBase __originalMethod)
+        {
+            if (__result is not Task task || !task.IsCompleted) return;
+            SelectContext? ctx;
+            lock (Lock)
+            {
+                // Inside a wrapper (FromDeckForRemoval -> FromDeckGeneric) the inner call
+                // answers for both: the outer one sees nothing staged any more.
+                ctx = _staged;
+                _staged = null;
+            }
+            if (ctx == null || !task.IsCompletedSuccessfully) return;
+            List<CardModel> picked;
+            try
+            {
+                picked = task switch
+                {
+                    Task<IEnumerable<CardModel>> many => many.Result?.Where(c => c != null).ToList() ?? new(),
+                    Task<CardModel?> one => one.Result != null ? new List<CardModel> { one.Result } : new(),
+                    _ => new(),
+                };
+            }
+            catch { return; }
+            if (picked.Count == 0) return;
+            try { RecordAutoSelected(ctx, picked, __originalMethod?.Name ?? ""); } catch { }
+        }
+
         public static void Install()
         {
             var harmony = new Harmony("sts2headless.selectprompt");
             var t = typeof(CardSelectCmd);
             var done = HarmonyMethodFor(nameof(OuterDone));
+            var after = HarmonyMethodFor(nameof(AfterSelect));
             int patched = 0;
             void Patch(string method, string prefix, bool outer = false)
             {
@@ -242,7 +281,7 @@ public partial class RunSimulator
                 {
                     try
                     {
-                        harmony.Patch(m, prefix: HarmonyMethodFor(prefix), finalizer: outer ? done : null);
+                        harmony.Patch(m, prefix: HarmonyMethodFor(prefix), postfix: after, finalizer: outer ? done : null);
                         patched++;
                     }
                     catch (Exception ex) { Console.Error.WriteLine($"[WARN] select prompt patch {method}: {ex.Message}"); }
@@ -968,7 +1007,7 @@ public partial class RunSimulator
             {
                 ["index"] = i++,
                 ["id"] = r.Id.Entry,
-                ["name"] = _loc.Relic(r.Id.Entry),
+                ["name"] = RelicName(r),
                 ["description"] = RelicText(r),
             };
             if (vars.Count > 0) d["vars"] = vars;
@@ -1121,6 +1160,10 @@ public partial class RunSimulator
             if (dialogue != null)
                 harmony.Patch(dialogue, postfix: new HarmonyMethod(typeof(RunSimulator).GetMethod(nameof(PlayerDialogueLinePostfix),
                     System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)));
+            var loseGold = typeof(PlayerCmd).GetMethod("LoseGold");
+            if (loseGold != null)
+                harmony.Patch(loseGold, prefix: new HarmonyMethod(typeof(RunSimulator).GetMethod(nameof(LoseGoldPrefix),
+                    System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)));
             var flash = typeof(RelicModel).GetMethod("Flash", new[] { typeof(IEnumerable<Creature>) });
             if (flash != null)
                 harmony.Patch(flash, postfix: new HarmonyMethod(typeof(RunSimulator).GetMethod(nameof(RelicFlashPostfix),
@@ -1150,7 +1193,7 @@ public partial class RunSimulator
         if (sink == null) return;
         try
         {
-            var name = _loc.Relic(__instance.Id.Entry);
+            var name = RelicName(__instance);
             lock (sink._evLock)
             {
                 // Some relics flash once per target; one line is enough.
@@ -1158,6 +1201,93 @@ public partial class RunSimulator
                     && sink._events[^1].GetValueOrDefault("relic") as string == name)
                     return;
                 sink.AddEventLocked(new Dictionary<string, object?> { ["type"] = "relic", ["relic"] = name });
+            }
+        }
+        catch { }
+    }
+
+    /// <summary>
+    /// The game picked the cards of a selection itself (no screen opened): Headbutt with one
+    /// card in the discard pile, Armaments with one upgradable card, n &lt;= MinSelect, ...
+    /// The game just goes on; the event says what was chosen and why.
+    /// </summary>
+    private static void RecordAutoSelected(SelectContext ctx, List<CardModel> picked, string method)
+    {
+        var sink = _eventSink;
+        if (sink == null) return;
+        var e = new Dictionary<string, object?>
+        {
+            ["type"] = "card_auto_selected",
+            ["purpose"] = ctx.Purpose,
+            ["screen"] = ctx.Screen,
+            ["cards"] = picked.Select(CardName).ToList(),
+            // Every card the selection could take was taken (n <= MinSelect, or the only one).
+            ["available"] = picked.Count,
+        };
+        if (ctx.MinSelect >= 0) e["min_select"] = ctx.MinSelect;
+        if (ctx.Source != null)
+            e["source"] = ModelName(ctx.Source);
+        else
+        {
+            try
+            {
+                if (sink._runState?.CurrentRoom is EventRoom
+                    && RunManager.Instance.EventSynchronizer?.GetLocalEvent() is { } ev)
+                    e["source"] = EventTitle(ev.Id.Entry);
+            }
+            catch { }
+        }
+        if (ctx.Prompt != null) e["prompt"] = ctx.Prompt;
+        lock (sink._evLock) sink.AddEventLocked(e);
+    }
+
+    // ── gold, change by change (a purchase and a relic's refund are two lines, in the order
+    // the game applies them: MerchantCardEntry adds the card first, so Lucky Fysh's +15
+    // comes before the -price) ──
+
+    private Player? _goldPlayer;
+    private int _goldSeen;
+    private int _goldLogged;                 // sum of the gold events since the last snapshot
+    private static string? _goldLossReason;  // PlayerCmd.LoseGold's GoldLossType, for the next change
+    // What the current shop purchase is (set around OnTryPurchaseWrapper).
+    private static string? _purchaseItem;
+
+    private static void LoseGoldPrefix(GoldLossType goldLossType)
+    {
+        _goldLossReason = goldLossType.ToString().ToLowerInvariant();
+    }
+
+    private void WatchGold(Player? p)
+    {
+        if (ReferenceEquals(p, _goldPlayer)) return;
+        try { if (_goldPlayer != null) _goldPlayer.GoldChanged -= OnGoldChanged; } catch { }
+        _goldPlayer = p;
+        _goldSeen = p?.Gold ?? 0;
+        if (p != null) p.GoldChanged += OnGoldChanged;
+    }
+
+    private void OnGoldChanged()
+    {
+        var p = _goldPlayer;
+        if (p == null) return;
+        try
+        {
+            lock (_evLock)
+            {
+                var gold = p.Gold;
+                var change = gold - _goldSeen;
+                _goldSeen = gold;
+                var reason = _goldLossReason;
+                _goldLossReason = null;
+                if (change == 0) return;
+                var e = new Dictionary<string, object?> { ["type"] = "gold", ["change"] = change, ["gold"] = gold };
+                if (change < 0 && reason != null) e["reason"] = reason;
+                if (change < 0 && reason == "spent" && _purchaseItem != null) e["item"] = _purchaseItem;
+                // A relic that pays out flashes right before (Lucky Fysh, ...).
+                if (change > 0 && _events.Count > 0 && _events[^1].GetValueOrDefault("type") as string == "relic")
+                    e["source"] = _events[^1].GetValueOrDefault("relic");
+                _goldLogged += change;
+                AddEventLocked(e);
             }
         }
         catch { }
@@ -1312,7 +1442,7 @@ public partial class RunSimulator
                 e = new() { ["type"] = "block", ["target"] = CreatureName(bg.Receiver), ["amount"] = bg.Amount };
                 break;
             case PowerReceivedEntry pr:
-                e = new() { ["type"] = "power", ["target"] = CreatureName(pr.Actor), ["power"] = _loc.Power(pr.Power.Id.Entry), ["amount"] = (int)pr.Amount };
+                e = new() { ["type"] = "power", ["target"] = CreatureName(pr.Actor), ["power"] = PowerName(pr.Power), ["amount"] = (int)pr.Amount };
                 if (pr.Applier != null && pr.Applier != pr.Actor) e["source"] = CreatureName(pr.Applier);
                 break;
             case MonsterPerformedMoveEntry mv:
@@ -1392,7 +1522,7 @@ public partial class RunSimulator
             };
             foreach (var c in p.Deck?.Cards ?? Enumerable.Empty<CardModel>())
                 if (c != null) s.Deck.Add(DeckKey(c));
-            foreach (var r in p.Relics ?? Enumerable.Empty<RelicModel>()) s.Relics.Add(_loc.Relic(r.Id.Entry));
+            foreach (var r in p.Relics ?? Enumerable.Empty<RelicModel>()) s.Relics.Add(RelicName(r));
             foreach (var po in p.Potions ?? Enumerable.Empty<PotionModel?>())
                 if (po != null) s.Potions.Add(_loc.Potion(po.Id.Entry));
             if (s.InCombat)
@@ -1454,6 +1584,10 @@ public partial class RunSimulator
         }
         var now = TakeSnapshot();
         var prev = _snapshot;
+        WatchGold(LocalPlayer);
+        // Gold changes the live gold events didn't cover are added from the snapshots below.
+        int logged;
+        lock (_evLock) { logged = _goldLogged; _goldLogged = 0; }
         _snapshot = now;
         if (prev == null || now == null) return evs;
         // The blow that ends a combat is not in CombatHistory (it stops recording once the
@@ -1469,8 +1603,8 @@ public partial class RunSimulator
             if (dead && !evs.Any(e => e.GetValueOrDefault("killed") is true && e.GetValueOrDefault("target") as string == name))
                 evs.Add(new() { ["type"] = "enemy_died", ["enemy"] = name });
         }
-        if (now.Gold != prev.Gold)
-            evs.Add(new() { ["type"] = "gold", ["change"] = now.Gold - prev.Gold, ["gold"] = now.Gold });
+        if (now.Gold - prev.Gold != logged)
+            evs.Add(new() { ["type"] = "gold", ["change"] = now.Gold - prev.Gold - logged, ["gold"] = now.Gold });
         if (now.MaxHp != prev.MaxHp)
             evs.Add(new() { ["type"] = "max_hp", ["change"] = now.MaxHp - prev.MaxHp, ["max_hp"] = now.MaxHp });
         // In combat the damage/heal lines already say it; outside (events, rest, relics) they don't.

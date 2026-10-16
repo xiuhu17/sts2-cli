@@ -269,15 +269,38 @@ public partial class RunSimulator
 
     private static List<Dictionary<string, object?>>? SerializePowers(Creature? c)
     {
-        var list = c?.Powers?.Where(pw => pw != null).Select(pw => new Dictionary<string, object?>
+        var list = c?.Powers?.Where(pw => pw != null).Select(pw =>
         {
-            ["id"] = pw.Id.Entry,
-            ["name"] = PowerName(pw),
-            ["description"] = PowerText(pw),
-            ["amount"] = pw.Amount,
-            ["type"] = pw.Type.ToString(),
+            var d = new Dictionary<string, object?>
+            {
+                ["id"] = pw.Id.Entry,
+                ["name"] = PowerName(pw),
+                ["description"] = PowerText(pw),
+                ["amount"] = pw.Amount,
+                ["type"] = pw.Type.ToString(),
+            };
+            // PowerModel.HoverTips after the power's own tip: its ExtraHoverTips (Plating's
+            // Block, Sandpit's ..., the keywords and powers its text refers to).
+            var tips = Tips(() => PowerExtraTips(pw));
+            if (tips != null) d["tips"] = tips;
+            return d;
         }).ToList();
         return list?.Count > 0 ? list : null;
+    }
+
+    private static readonly PropertyInfo? PowerExtraTipsProp = typeof(PowerModel).GetProperty(
+        "ExtraHoverTips", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+
+    /// <summary>The tips the game shows after a power's own tip (PowerModel.HoverTips minus the
+    /// first), empty for a power the game doesn't show (IsVisible false).</summary>
+    private static IEnumerable<MegaCrit.Sts2.Core.HoverTips.IHoverTip>? PowerExtraTips(PowerModel pw)
+    {
+        try
+        {
+            if (!pw.IsVisible) return null;
+            return PowerExtraTipsProp?.GetValue(pw) as IEnumerable<MegaCrit.Sts2.Core.HoverTips.IHoverTip>;
+        }
+        catch { return null; }
     }
 
     // ── Enemies / targeting ──

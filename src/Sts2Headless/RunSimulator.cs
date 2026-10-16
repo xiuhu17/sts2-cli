@@ -1675,11 +1675,13 @@ public partial class RunSimulator
         var cardCost = entry.Cost;
         try
         {
+            _purchaseItem = entry.CreationResult?.Card != null ? CardName(entry.CreationResult.Card) : null;
             entry.OnTryPurchaseWrapper(merchantRoom.GetLocalInventory()).GetAwaiter().GetResult();
             _syncCtx.Pump();
             Log($"Bought card: {cardName} for {cardCost}g");
         }
         catch (Exception ex) { return Error($"Buy card failed: {ex.Message}"); }
+        finally { _purchaseItem = null; }
 
         return DetectDecisionPoint();
     }
@@ -1712,7 +1714,8 @@ public partial class RunSimulator
             // pending selection appears so the caller can resolve it; the background task
             // continues once the selector's TCS is fed by select_cards.
             var inv = shopInv;
-            if (RunInBackground(() => entry.OnTryPurchaseWrapper(inv)))
+            var item = entry.Model != null ? RelicName(entry.Model) : null;
+            if (RunInBackground(() => WithPurchase(item, () => entry.OnTryPurchaseWrapper(inv))))
             {
                 Log($"Buy relic {relicName}: yielded for pending selection");
                 return DetectDecisionPoint();
@@ -1745,8 +1748,10 @@ public partial class RunSimulator
         var potionCost = entry.Cost;
         try
         {
+            _purchaseItem = entry.Model != null ? _loc.Potion(entry.Model.Id.Entry) : null;
             entry.OnTryPurchaseWrapper(merchantRoom.GetLocalInventory()).GetAwaiter().GetResult();
             _syncCtx.Pump();
+            _purchaseItem = null;
             Log($"Bought potion: {potionName} for {potionCost}g");
         }
         catch (Exception ex)
@@ -1755,6 +1760,16 @@ public partial class RunSimulator
         }
 
         return DetectDecisionPoint();
+    }
+
+    /// <summary>Run a shop purchase with its item named for the gold event of the price. The
+    /// purchase may wait on a card selection (removal, a relic's pickup), so the name stays
+    /// set until the purchase task itself is done.</summary>
+    private static async Task<bool> WithPurchase(string? item, Func<Task<bool>> purchase)
+    {
+        _purchaseItem = item;
+        try { return await purchase(); }
+        finally { if (ReferenceEquals(_purchaseItem, item)) _purchaseItem = null; }
     }
 
     private Dictionary<string, object?> DoRemoveCard(Player player)
@@ -1774,7 +1789,8 @@ public partial class RunSimulator
             // A successful removal marks the service used (RewardPatches, standing in for
             // NMerchantCardRemoval.OnCardRemovalUsed), for this and Lord's Parasol's free one.
             var inv = merchantRoom.GetLocalInventory();
-            if (RunInBackground(() => removal.OnTryPurchaseWrapper(inv)))
+            var service = _loc.Bilingual("merchant_room", "MERCHANT.cardRemovalService.title");
+            if (RunInBackground(() => WithPurchase(service, () => removal.OnTryPurchaseWrapper(inv))))
             {
                 WaitForActionExecutor();
                 return DetectDecisionPoint();
@@ -4358,8 +4374,33 @@ public partial class RunSimulator
         string? text = null;
         try
         {
-            var ls = pw.HasSmartDescription ? pw.SmartDescription : pw.Description;
+            var smart = pw.HasSmartDescription && pw.IsMutable;
+            var ls = smart ? pw.SmartDescription : pw.Description;
+            if (smart)
+            {
+                // PowerModel.HoverTips: the smart text gets the owner's context. The same loc
+                // entry serves player- and enemy-owned powers; only entries that branch on
+                // {OnPlayer} (Poison, Doom, Ritual, Slow, Vigor, ...) word them differently.
+                try
+                {
+                    ls.Add("Amount", pw.Amount);
+                    var o = pw.Owner;
+                    if (o != null)
+                    {
+                        ls.Add("OnPlayer", o.IsPlayer);
+                        var players = o.CombatState?.Players.Count ?? 1;
+                        ls.Add("IsMultiplayer", players > 1);
+                        ls.Add("PlayerCount", players);
+                        if (o.IsPlayer && o.Player?.Character != null) ls.Add("OwnerName", o.Player.Character.Title);
+                        else if (o.Monster != null) ls.Add("OwnerName", o.Monster.Title);
+                    }
+                    if (pw.Applier?.Monster != null) ls.Add("ApplierName", pw.Applier.Monster.Title.GetFormattedText());
+                    if (pw.Target?.IsMonster == true && pw.Target.Monster != null) ls.Add("TargetName", pw.Target.Monster.Title);
+                }
+                catch { }
+            }
             AddPowerVars?.Invoke(pw, new object?[] { ls, null });
+            if (smart) { try { pw.DynamicVars.AddTo(ls); } catch { } }
             text = TryFormat(() => ls.GetFormattedText());
             if (text == null)
             {
@@ -4406,22 +4447,28 @@ public partial class RunSimulator
         {
             LocPatches.RealText = true;
             var list = new List<Dictionary<string, object?>>();
+            // The tip set the game draws (NHoverTipSet.Init -> IHoverTip.RemoveDupes: one tip per
+            // Id, a smart one replacing a dumb one). Two tips may share a title: Tainted's
+            // affliction tip and the Tainted power it applies are both "Tainted".
             var seen = new HashSet<string>();
-            foreach (var tip in source() ?? Enumerable.Empty<MegaCrit.Sts2.Core.HoverTips.IHoverTip>())
+            var tips = (source() ?? Enumerable.Empty<MegaCrit.Sts2.Core.HoverTips.IHoverTip>()).Where(x => x != null).ToList();
+            try { tips = MegaCrit.Sts2.Core.HoverTips.IHoverTip.RemoveDupes(tips).ToList(); } catch { }
+            foreach (var tip in tips)
             {
                 if (tip is MegaCrit.Sts2.Core.HoverTips.CardHoverTip cht)
                 {
                     // Card previews (the card an option/relic/card grants): name + its text.
                     var cardTip = CardTipInfo(cht);
-                    if (cardTip != null && cardTip["title"] is string ct && ct != skipTitle && seen.Add(ct))
+                    if (cardTip != null && cardTip["title"] is string ct && ct != skipTitle
+                        && seen.Add("card\u0001" + ct + "\u0001" + cardTip.GetValueOrDefault("description")))
                         list.Add(cardTip);
                     continue;
                 }
                 if (tip is not MegaCrit.Sts2.Core.HoverTips.HoverTip ht) continue;
                 var title = LocLookup.Clean(_loc.ResolveKey(ht.Title ?? "") ?? ht.Title ?? "").Trim();
                 var desc = LocLookup.Clean(_loc.ResolveKey(ht.Description ?? "") ?? ht.Description ?? "").Trim();
-                if (title.Length == 0 || desc.Length == 0 || title == skipTitle || desc.Contains('{')
-                    || IsBareKey(title) || IsBareKey(desc) || !seen.Add(title))
+                if (title.Length == 0 || desc.Length == 0 || desc.Contains('{')
+                    || IsBareKey(title) || IsBareKey(desc) || !seen.Add(title + "\u0001" + desc))
                     continue;
                 list.Add(new Dictionary<string, object?> { ["title"] = title, ["description"] = desc });
             }

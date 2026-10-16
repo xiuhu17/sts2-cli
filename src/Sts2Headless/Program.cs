@@ -375,7 +375,7 @@ class Program
         "get_map", "load_save", "write_continue_save", "help", "quit",
     };
 
-    static readonly HashSet<string> DebugOnly = new() { "set_player", "enter_room", "set_draw_order", "__debug_sleep" };
+    static readonly HashSet<string> DebugOnly = new() { "set_player", "enter_room", "set_draw_order", "__debug_sleep", "__audit_text" };
 
     static Dictionary<string, object?> BadRequest(string message) =>
         new() { ["type"] = "error", ["code"] = "bad_request", ["message"] = message };
@@ -579,6 +579,11 @@ class Program
 
             case "__debug_stats" when Environment.GetEnvironmentVariable("STS2_DEBUG_COMMANDS") == "1":
                 return RunSimulator.DebugStats();
+
+            // Tests: names that render as loc keys, hover tips we drop (see TextAudit.cs),
+            // in the current run's language.
+            case "__audit_text":
+                return RunSimulator.AuditText();
 
             case "set_player":
             {

@@ -78,6 +78,11 @@ public partial class RunSimulator
                     ? "the screen has no cancel button; confirm with nothing selected: select_cards with indices \"\""
                     : "this selection requires a choice (it is not cancelable)",
                 _ when action == "leave_room" && name is "event_choice" or "rest_site" => "a choice is still required here",
+                // A card/potion/power opened a selection mid-fight: still the fight, but the
+                // selection has to be finished before a card is played or the turn ends.
+                "card_select" when decision.GetValueOrDefault("combat") != null
+                                   && action is "play_card" or "end_turn"
+                    => "you are in combat, but a card selection is open: finish it first",
                 _ => ReasonFor(decision, action, args ?? new Dictionary<string, object?>()) is { } r
                     && (action is "use_potion" or "discard_potion" or "claim_reward"
                         || (action == "play_card" && name == "combat_play"))  // no card playable: say why this one isn't

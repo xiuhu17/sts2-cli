@@ -200,7 +200,9 @@ def test_chain_after_a_mid_turn_selection_and_stops():
     # A card selection pops up mid-chain: 'play' does not apply there -> stop, not an error.
     dm = FakeDaemon(fight, {_key("play_card", card_index=1, target_index=0): sel})
     out, code = dm.cmd_do(["play Bash E0; play Defend"], False)
-    assert code == 0 and "stopped before 'play Defend': not run: not in combat (decision: card_select); 'play' plays a card" in out
+    assert code == 0 and ("stopped before 'play Defend': not run: you are in combat, but a card selection is open: "
+                          "finish it first (select 1 of cards 0); 'play' plays a card from your hand once it is closed") in out
+    assert "not in combat" not in out
     # A potion step only runs on the screen the chain started at.
     pots = [{"index": 0, "uid": 5, "name": "Fire Potion", "target_type": "AnyEnemy"}]
     fight_p = _combat(hand, potions=pots)
