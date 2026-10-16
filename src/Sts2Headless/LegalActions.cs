@@ -88,12 +88,17 @@ internal static class LegalActions
             case "card_select":
             {
                 var from = Items(r, "cards").Select(c => c["index"]).ToList();
-                // Same clamping as DoSelectCards: a prompt can ask for more cards than it offers.
-                var min = Math.Min(Int(r, "min_select"), from.Count);
-                var max = Math.Min(Int(r, "max_select"), from.Count);
-                // Sizes with a gap (select_counts): nothing, or exactly max_select.
+                var min = Int(r, "min_select");
+                var max = Int(r, "max_select");
+                // Sizes with a gap (select_counts): nothing, or exactly max_select. An empty
+                // select_counts: the screen can't be confirmed with the cards it shows (no
+                // clamping, as in the game): only its close button, if it has one.
                 var counts = (r.GetValueOrDefault("select_counts") as IEnumerable<int>)?.ToList();
-                if (max == 1)
+                if (counts is { Count: 0 })
+                { }
+                else if (max == 0)
+                    acts.Add(Act("select_cards", ("indices", "")));  // only the open-time Confirm
+                else if (max == 1)
                 {
                     foreach (var i in from)
                         acts.Add(Act("select_cards", ("indices", i?.ToString())));
