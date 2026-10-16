@@ -687,7 +687,7 @@ def show_combat(state):
 
     # Character-specific: Defect's Orbs
     orbs = state.get("orbs")
-    if orbs:
+    if orbs is not None:
         orb_icons = {"Lightning": "⚡", "Frost": "❄", "Dark": "🌑", "Plasma": "🔆", "Glass": "💠"}
         orb_parts = []
         for orb in orbs:
@@ -731,6 +731,8 @@ def show_combat(state):
                 intent_parts.append(c(t("⬇Debuff","⬇减益"), "yellow"))
             elif itype == "DebuffStrong":
                 intent_parts.append(c(t("⬇Strong","⬇强减益"), "yellow"))
+            elif itype == "StatusCard" and it.get("card_count"):
+                intent_parts.append(c(t(f"⬇Cards x{it['card_count']}", f"⬇塞牌 x{it['card_count']}"), "yellow"))
             elif itype in ("CardDebuff", "StatusCard"):
                 intent_parts.append(c(t("⬇Cards","⬇塞牌"), "yellow"))
             elif itype == "DeathBlow":
@@ -759,9 +761,12 @@ def show_combat(state):
             pw_parts = [f"{n(pw['name'])} {pw.get('amount','')}" for pw in powers]
             power_str = "  " + c(", ".join(pw_parts), "dim")
 
+        behind = f"  {c(t('(behind you)','(在你身后)'), 'red')}" if e.get("behind_player") else ""
         print(f"  [{e['index']}] {n(e['name'])}  {bar(hp, mhp)} {hp}/{mhp}"
               + (f"  {c(str(blk), 'blue')} {t('blk','挡')}" if blk else "")
-              + f"  {intent_str}{power_str}")
+              + f"  {intent_str}{power_str}{behind}")
+    for e in state.get("inactive_enemies") or []:
+        print(f"  [-] {c(n(e['name']), 'dim')}  {c(t('(reviving)','(复活中)'), 'dim')}")
 
     print()
     hand = state.get("hand", [])
@@ -773,9 +778,11 @@ def show_combat(state):
 
         type_color = {"Attack": "red", "Skill": "blue", "Power": "magenta", "Status": "dim", "Curse": "dim"}.get(ctype, "reset")
         mark = c("●", "green") if playable else c("○", "dim")
-        star_cost = card.get("star_cost", 0)
-        cost_str = c(str(cost), "cyan")
-        if star_cost > 0:
+        star_cost = card.get("star_cost") or 0
+        cost_str = c("X" if card.get("costs_x") else str(cost), "cyan")
+        if card.get("star_cost_x"):
+            cost_str += f"+{c('X⭐', 'yellow')}"
+        elif star_cost > 0:
             cost_str += f"+{c(f'{star_cost}⭐', 'yellow')}"
 
         # Damage/block inline on title row; suffix keywords (e.g. 消耗) at end of title row
