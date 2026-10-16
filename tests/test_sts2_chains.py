@@ -139,7 +139,10 @@ def test_index_errors_say_what_the_index_is_now():
     assert d.describe_refs({"action": "buy_card", "args": {"card_index": 0}}, shop) == ["buy card 0 is Stomp (74g; you have 40g)"]
     assert d.describe_refs({"action": "buy_card", "args": {"card_index": 1}}, shop) == ["buy card 1 is sold out"]
     m = {"decision": "map_select", "choices": [{"col": 3, "row": 2, "type": "Unknown"}]}
-    assert "legal: go 3 2 Unknown" in d.describe_refs({"action": "select_map_node", "args": {"col": 9, "row": 9}}, m)[0]
+    assert d.describe_refs({"action": "select_map_node", "args": {"col": 9, "row": 9}}, m, map_bounds=(6, 15)) == \
+        ["(9,9) is outside the map (columns 0-6, rows 0-15; sts2 map)"]
+    assert d.describe_refs({"action": "select_map_node", "args": {"col": 1, "row": 2}}, m, map_bounds=(6, 15)) == \
+        ["(1,2) is not a move you can make now (sts2 map shows COL/ROW)"]
     d.LANG["lang"] = "zh"
     assert d.card_ref_text(_card(0, 1, "防御", "Skill", "Self", id="CARD.DEFEND_IRONCLAD")) == "防御（Defend，技能，1 能量，目标：自己）"
 
@@ -197,7 +200,7 @@ def test_chain_after_a_mid_turn_selection_and_stops():
     # A card selection pops up mid-chain: 'play' does not apply there -> stop, not an error.
     dm = FakeDaemon(fight, {_key("play_card", card_index=1, target_index=0): sel})
     out, code = dm.cmd_do(["play Bash E0; play Defend"], False)
-    assert code == 0 and "stopped before 'play Defend': not run: the game is now at card_select" in out
+    assert code == 0 and "stopped before 'play Defend': not run: not in combat (decision: card_select); 'play' plays a card" in out
     # A potion step only runs on the screen the chain started at.
     pots = [{"index": 0, "uid": 5, "name": "Fire Potion", "target_type": "AnyEnemy"}]
     fight_p = _combat(hand, potions=pots)
@@ -217,8 +220,8 @@ def test_engine_error_is_explained_with_the_referent():
                    "combat_play. Legal: play_card(card_index=0|1|2); end_turn"}
     out, code = dm.cmd_do(["play H2 E1"], False)
     assert code == 1
-    assert ("error in 'play H2 E1': H2 is now Defend (Skill, 1 energy, targets yourself); E1 is Seapunk (HP 30/30) - "
-            "it does not target a single enemy, so it takes no target. Legal now: [1] play H0 Defend; ") in out
+    assert ("error in 'play H2 E1': H2 is now Defend (Skill, 1 energy, targets yourself) - it takes no target: "
+            "play H2 without an E#. Legal now: [1] play H0 Defend; ") in out
     assert "'target_index' does not apply" not in out  # one explanation, not the engine text again
 
 
@@ -321,7 +324,7 @@ def test_live_hand_indices_never_slip(sts2):
     assert after["hand"][0]["target_type"] == "Self"
     rc, out = sts2("do", "play H0 E0")
     assert rc == 1 and f"H0 is now {after['hand'][0]['name']} (Skill, 1 energy, targets yourself)" in out \
-        and "it does not target a single enemy, so it takes no target" in out, out
+        and "it takes no target: play H0 without an E#" in out, out
     # The cards shown as H1 and H2: the second one moved to H1 after the first was played.
     shown = after["hand"]
     rc, out = sts2("do", "play H1; play H2")
@@ -412,7 +415,7 @@ def test_no_screen_errors_name_the_decision_and_never_an_empty_range():
     assert d.describe_refs({"action": "select_cards", "args": {"indices": "0"}}, sel)[0] == "there is no card 0 (have: none)"
     assert d.index_range([0, 1, 2, 3]) == "0-3" and d.index_range([]) == "none" and d.index_range([1, 4]) == "1, 4"
     d.LANG["lang"] = "zh"
-    with pytest.raises(d.VerbError, match="'go 0' 用于选择地图选项，但当前决策是 combat_play：现在这里没有这类选项。现在可选：\\[1\\]"):
+    with pytest.raises(d.VerbError, match="'go 0' 用于选择地图选项，但现在处于战斗回合：这里没有这类选项。现在可选：\\[1\\] 打出 H0"):
         d.parse_verb("go 0", st, [])
 
 
@@ -447,8 +450,8 @@ def test_live_chain_stops_on_a_later_card_select(game):
     b = dm.last
     assert code == 0 and b["decision"] == "card_select" and b["source"]["name"] == "坚毅+", out
     assert b["selection_id"] != a["selection_id"]
-    assert "ok: play H" in out and "stopped before 'select 0': 未执行：'select 0' 会在另一个 card_select 界面上选择" in out, out
-    assert "来自 坚毅+" in out and "当时显示：card_select [exhaust]" in out
+    assert "ok: 打出 H" in out and "stopped before 'select 0': 未执行：'select 0' 会在另一个选牌界面上选择" in out, out
+    assert "来自 坚毅+" in out and "当时显示：选牌界面 [消耗]" in out and "card_select" not in out
     assert "selection_id" not in out  # known field: not dumped as an extra line
 
 
@@ -494,7 +497,7 @@ def test_numbered_action_stops_on_a_reopened_screen():
     for lang, want in (("en", "stopped before '3': not run: '3' would run action 3 (skip / cancel the selection) on a "
                               "different card_select screen than the one this chain started on: the removal screen was "
                               "closed and opened again (new selection) - it was not shown to you; look at it first"),
-                       ("zh", "stopped before '3': 未执行：'3' 会在另一个 card_select 界面上执行操作 3（跳过 / 取消选择），"
+                       ("zh", "stopped before '3': 未执行：'3' 会在另一个选牌界面上执行操作 3（跳过 / 取消选择），"
                               "而不是指令链开始时的那个：移除界面已关闭并重新打开（新的选择）——它没有显示给你；请先查看")):
         d.LANG["lang"] = lang
         dm = FakeDaemon(_removal(1), {_key("skip_select"): _shop(), _key("remove_card"): _removal(2)})

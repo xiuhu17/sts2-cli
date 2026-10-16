@@ -137,7 +137,7 @@ def test_clip_never_cuts_legal_actions():
     out = d.render_decision(st, _numbered(st), prefix=["ok: something"] * 5)
     assert len(out.encode()) <= d.MAX_OUT
     assert "Actions:" in out and "[91] skip / cancel the selection" in out
-    assert "[1-90] select_cards indices 0-89" in out
+    assert "[1-90] select 0-89 ([1] = select 0, [2] = select 1, ...)" in out
     # Small selections keep one line per action.
     st2 = dict(st, cards=cards[:3], legal_actions=la[:3] + la[-1:], events=[])
     out2 = d.render_decision(st2, _numbered(st2))

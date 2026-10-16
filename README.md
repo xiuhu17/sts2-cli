@@ -123,7 +123,12 @@ tool rules. The rewards view says when every reward must be taken (no proceed) a
 `proceed` as skipping the rewards not claimed; a card reward's Skip is shown as the skip
 action, not as an alternative (`alt N` on it skips); unplayable hand cards say why
 (`[unplayable: I don't have enough Energy]`) and potions read `[targets one enemy, combat
-only]`. Fields the renderer does not know are printed as `key: value`. Replies stay
+only]`. A card selection says how many cards it takes and from where (`select 2 cards | from
+Neow | cards in your deck`, `select 0 or 2 cards`); X-star cards read `(0 X*)`; a glowing hand
+card says so (`[glows gold: its condition is met]`); the map says when you may ignore paths
+(the game's text; such moves are tagged `(off path)`); a returned stolen card is a reward by its name. No
+view prints `None` (`remove a card` outside a shop has no price). Fields the renderer does
+not know are printed as `key: value`. Replies stay
 under 8 KB and the legal actions are never cut (long selections are folded into one
 `[a-b]` line, the card list is shortened instead). The header line shows the act, floor,
 room, boss, **ascension and seed** (also on the game-over screen). Each block of events is
@@ -177,7 +182,12 @@ when the chain was submitted** (the last `state`/`do` reply):
   shown. `go COL ROW` names a map node and is not an index.
 - steps without an index (`end`, `skip`, `proceed`, `leave`, `remove`, `select none`,
   `go COL ROW`, card and enemy names) are read against the game where it is now:
-  `claim 2; skip` skips the card reward that `claim 2` opened.
+  `claim 2; skip` skips the card reward that `claim 2` opened. `skip` on the rewards screen
+  is `proceed` only as the first step of a chain; later in a chain it never leaves the
+  rewards screen (that would give up the rewards not claimed): `claim 0; skip` and
+  `pick 0; skip` stop before `skip`, saying what would be given up. Write `proceed` for that.
+- an action number that was not in the list shown is an error (not a stop) that lists the
+  legal actions where the game is now.
 - `raw` / engine verbs (`play_card card_index=2`) are sent as written.
 
 After each step the chain continues while the next step is legal and unambiguous on the
@@ -185,23 +195,36 @@ decision the game is at now, also when its type changed (`pick 1; proceed`: card
 -> rewards; `select 1; end` after a mid-turn card selection). It stops before the next step
 when the game entered a new room, a fight started or ended, a new turn began or the run
 ended; when the step does not apply to the new decision (`play` on a card selection that
-popped up); when a potion step would run on a different screen than the one the chain
-started at; or when an index cannot be resolved safely (above); and at the first error.
+popped up); when a potion step would run on any screen but the very one the chain started
+at (in a fight the same turn; not a screen that opened since, even one that looks the same:
+`skip; remove; discard P0` on the shop's removal screen stops before `discard P0`); or when
+an index cannot be resolved safely (above); and at the first error.
 
 Reward numbers are **stable**: claiming reward 0 does not renumber the others (`claim 0;
 claim 1` claims what was shown as 0 and 1), unlike hand/enemy indices. Claiming one that
 is gone says `reward 0 (8 Gold) was already claimed`. A step error is one explanation in
 the output language: what each index refers to now, why the game refuses the step (said
 once; the engine's flag, if any, in brackets) and the legal actions, e.g. `H2 is now Defend
-(Skill, 1 energy, targets yourself); E1 is Toadpole (HP 22/22) - it does not target a single
-enemy, so it takes no target. Legal now: [1] ...` or `H0 is now True Grit+ (...) - not
-playable: I don't have enough Energy (EnergyCostTooHigh)` (also for E#, P#, select, claim,
-buy, pick, choose and go); `--json` keeps the engine's raw message. They name the index you typed:
+(Skill, 1 energy, targets yourself) - it takes no target: play H2 without an E#. Legal now:
+[1] ...`, `H1 is now Strike (...) - with several enemies it needs a target: E0 Toadpole, E1
+Seapunk (e.g. play H1 E0)` or `H0 is now True Grit+ (...) - not playable: I don't have enough
+Energy (EnergyCostTooHigh)` (also for E#, P#, select, claim, buy, pick, choose and go). Every
+error message the engine has (tests/test_sts2_messages.py reads them from its C# source) has
+such a text in English and Chinese, matched case-insensitively, and none repeats what the
+index description already says: `select 0,0` -> `card 0 is Strike - card 0 is listed twice:
+each card can be selected once`, `select 0` on a 2-3 card screen -> `this screen takes 2-3
+cards, not 1`, `go 9 9` -> `(9,9) is outside the map (columns 0-6, rows 0-16; sts2 map)`
+(the legal moves once, in the list), `alt 1` on a card reward with only its Skip button ->
+`this card reward has no alternatives (its only other button is Skip): use 'skip' (action
+[4]) or pick a card`. `--json` keeps the engine's raw message. They name the index you typed:
 when an earlier step of the chain moved it, the message says so - `H2 (Defend as shown when
 the chain started, now H1) is Defend (...)`. A screen step on a decision without that
-screen says what the decision is and lists the legal actions (`'go 0' picks a map choice,
-but the current decision is combat_play: there is none here now. Legal now: [1] ...`);
-no message prints an empty range.
+screen says what the decision is (once) and lists the legal actions (`'go 0' picks a map
+choice, but the current decision is combat_play: there is none here now. Legal now: [1]
+...`); no message prints an empty range. With `--lang zh` the action labels (`[3] 打出 H1 痛击
+-> E0 蟾蜍蝌蚪`, `丢弃药水 P0 火焰药水`), decision names (选牌界面, 地图, 事件页面) and
+messages are Chinese; the steps you type stay as listed in `sts2 help` (`play`, `select 0,2`,
+`go 3 2`), and a command shown as a hint is printed as typed (`sts2 do "select 0,2"`).
 
 `agent/sts2_bridge.py` (HTTP, one JSON command per POST) is still available; it now
 restarts a dead engine and replays the run on the seed the engine reported (a response
@@ -421,7 +444,7 @@ bin/sts2 help                      # 全部指令（在本地输出，不会启�
 bin/sts2 stop [--forget]           # --forget 同时结束本局（否则下次调用会重放本局）
 ```
 
-每次返回先列出上次决策以来发生的事（打出和抽到的牌、伤害、格挡、能力、敌人行动、遗物触发、金币/牌组/遗物变化），然后是当前决策：战斗中显示敌人的意图和能力、带卡牌说明的手牌、能量、充能球/辉星/奥斯提、牌堆；选牌时显示用途（升级/移除/变化/附魔/丢弃/消耗/选择）、游戏的提示语、来源、能否取消，以及升级/附魔/变化预览；还会显示先古之民的对话、每个目标的实际伤害（只有一个敌人时也显示）、游戏自己的意图名称、游戏结束时的分数和死因、商店删牌已使用，以及带坐标轴、图例和工具说明的水晶球格子。奖励界面会说明何时必须领取全部奖励（不能继续），并把 `proceed` 标为放弃未领取的奖励；卡牌奖励的“跳过”显示为跳过操作而不是其他选项（对它用 `alt N` 也是跳过）；不能打出的手牌会说明原因（`[不可打出：我没有足够的能量]`），药水显示为 `[目标：单个敌人，仅限战斗]`。渲染器不认识的字段会以 `key: value` 输出。每次输出都小于 8 KB，且合法操作永远不会被截掉（长列表的选牌操作会合并成一行 `[a-b]`，改为缩短卡牌列表）。标题行显示幕、楼层、房间、Boss、**进阶和种子**（游戏结束界面也会显示）。每段事件只显示一次：`do` 之后紧接着的 `state` 不会重复 `do` 已经显示过的事件（`sts2 log` 可以再看）。伤害行会说明每个数字的含义：`蟾蜍蝌蚪 -> 铁甲战士 受到 12 点伤害（另有 12 点被格挡）`（失去 12 点生命，格挡吸收 12 点）、`…… 格挡了全部 6 点伤害`；格挡行为 `铁甲战士 获得 5 点格挡`。`sts2 map` 在上方标出列号（COL）、左侧标出行号（ROW，以及对应楼层 `f`），标出当前位置（`<x>`），列出合法的 `go COL ROW = 房间类型`，并在有可走节点的行尾注明；地图决策的操作可以照抄输入（`go 3 2 未知` -> `sts2 do "go 3 2"`）。`click X Y` 必须带工具（`big` = 3x3，`small` = 单格）。牌名会匹配手牌中所有同名（或以它开头）的牌，不论能否打出：手里有一张不能打出的防御和一张能打出的偏斜时，`play Def` 会报歧义并列出两张，绝不会替你打出另一张；指定的牌不能打出时会报错并说明原因。各命令会拒绝不接受的参数（`log x`、`map extra`：输出用法，退出码 1）。开局命令连同引擎实际使用的种子（即使你没有指定）保存在 `$TMPDIR`，所以引擎崩溃、空闲时退出或守护进程被杀后，重放的都是同一局；重放结果与原局面不一致时会明确提示。守护进程停止时（`sts2 stop`、空闲超时）会从 `$TMPDIR` 删除自己的 socket、锁文件和空日志，只保留本局记录文件，下次调用可以接着玩；`sts2 stop --forget` 连它一起删除。`--lang zh` 使用游戏官方中文。守护进程里永远不会开启调试命令。设置 `STS2_SESSION` 可以同时进行多局互不影响的游戏。
+每次返回先列出上次决策以来发生的事（打出和抽到的牌、伤害、格挡、能力、敌人行动、遗物触发、金币/牌组/遗物变化），然后是当前决策：战斗中显示敌人的意图和能力、带卡牌说明的手牌、能量、充能球/辉星/奥斯提、牌堆；选牌时显示用途（升级/移除/变化/附魔/丢弃/消耗/选择）、游戏的提示语、来源、能否取消，以及升级/附魔/变化预览；还会显示先古之民的对话、每个目标的实际伤害（只有一个敌人时也显示）、游戏自己的意图名称、游戏结束时的分数和死因、商店删牌已使用，以及带坐标轴、图例和工具说明的水晶球格子。奖励界面会说明何时必须领取全部奖励（不能继续），并把 `proceed` 标为放弃未领取的奖励；卡牌奖励的“跳过”显示为跳过操作而不是其他选项（对它用 `alt N` 也是跳过）；不能打出的手牌会说明原因（`[不可打出：我没有足够的能量]`），药水显示为 `[目标：单个敌人，仅限战斗]`。选牌界面会说明要选几张、从哪里选（`选择 2 张牌 | 来自 涅奥 | 牌组中的牌`、`选择 0 或 2 张牌`）；X 辉星费用的牌显示为 `(0 X*)`；发光的手牌会注明（`[金色高亮：条件已满足]`）；可以无视路线时地图会用游戏的原文说明（这类走法标有`（无视路线）`）；被偷走后归还的卡牌奖励显示其牌名。任何视图都不会输出 `None`（商店之外的 `移除一张牌` 不带价格）。渲染器不认识的字段会以 `key: value` 输出。每次输出都小于 8 KB，且合法操作永远不会被截掉（长列表的选牌操作会合并成一行 `[a-b]`，改为缩短卡牌列表）。标题行显示幕、楼层、房间、Boss、**进阶和种子**（游戏结束界面也会显示）。每段事件只显示一次：`do` 之后紧接着的 `state` 不会重复 `do` 已经显示过的事件（`sts2 log` 可以再看）。伤害行会说明每个数字的含义：`蟾蜍蝌蚪 -> 铁甲战士 受到 12 点伤害（另有 12 点被格挡）`（失去 12 点生命，格挡吸收 12 点）、`…… 格挡了全部 6 点伤害`；格挡行为 `铁甲战士 获得 5 点格挡`。`sts2 map` 在上方标出列号（COL）、左侧标出行号（ROW，以及对应楼层 `f`），标出当前位置（`<x>`），列出合法的 `go COL ROW = 房间类型`，并在有可走节点的行尾注明；地图决策的操作可以照抄输入（`go 3 2 未知` -> `sts2 do "go 3 2"`）。`click X Y` 必须带工具（`big` = 3x3，`small` = 单格）。牌名会匹配手牌中所有同名（或以它开头）的牌，不论能否打出：手里有一张不能打出的防御和一张能打出的偏斜时，`play Def` 会报歧义并列出两张，绝不会替你打出另一张；指定的牌不能打出时会报错并说明原因。各命令会拒绝不接受的参数（`log x`、`map extra`：输出用法，退出码 1）。开局命令连同引擎实际使用的种子（即使你没有指定）保存在 `$TMPDIR`，所以引擎崩溃、空闲时退出或守护进程被杀后，重放的都是同一局；重放结果与原局面不一致时会明确提示。守护进程停止时（`sts2 stop`、空闲超时）会从 `$TMPDIR` 删除自己的 socket、锁文件和空日志，只保留本局记录文件，下次调用可以接着玩；`sts2 stop --forget` 连它一起删除。`--lang zh` 使用游戏官方中文。守护进程里永远不会开启调试命令。设置 `STS2_SESSION` 可以同时进行多局互不影响的游戏。
 
 **`do` 指令链与编号。** 建议用牌名（`play 打击`、`play 痛击 蟾蜍蝌蚪`）：每当有牌离开手牌或敌人死亡，H#/E# 就会重新编号，`play H0` 之后原来的 H1 就变成了 H0。为了让编号步骤也安全，指令链里的每个编号都指**提交指令链时显示的视图**（上一次 `state`/`do` 的输出）：
 
@@ -429,12 +452,13 @@ bin/sts2 stop [--forget]           # --forget 同时结束本局（否则下次�
 - `E#`：就是那个敌人，按 `combat_id` 查找；已死亡或不可选中则停止。
 - 操作编号 `N`——所有编号都一样（`select`、`skip`、`proceed`、`leave`、`remove`、`end`、药水、`claim`、`buy` 等）：指那个视图里打印的列表中编号为 N 的操作，按同样方式重新对应，而且只在显示时的那一个界面上执行（见下；战斗中是同一回合，奖励 / 商店界面是它剩下的项目）。在商店的移除界面上执行 `skip; remove; 13` 会在 `13` 之前停止：`remove` 重新打开了移除界面，而这个新界面从没显示给你。
 - 界面编号（`choose N`、`pick N`、`claim N`、`buy card N`、`select i,j`、`alt N`、`go N`）：只在显示时的那一个界面上执行——决策、房间、来源、用途、提示语、所列项目（按 `uid`）以及引擎的 `selection_id` 都相同（已领取的奖励 / 已买下的商品可以不在了）——且该编号对应的项目没变。如果是指令链没有给你看过的界面，会在这样的步骤之前停止：`claim 2` 打开的卡牌奖励、`remove` 打开的选牌界面、事件的下一页，或者同类型的另一个选牌界面（在燃烧契约的消耗界面上执行 `select 2; play 坚毅+; select 0`，会在 `select 0` 之前停止：坚毅+ 的界面从没显示过）。停止时会说明哪里不同：`它来自 坚毅+（显示的那个来自 燃烧契约）`、`移除界面已关闭并重新打开（新的选择）——它没有显示给你`、`事件已进入另一页`、卡牌 / 选项不同、出现了没有显示过的奖励。`go COL ROW` 指的是地图节点，不算编号。
-- 不带编号的步骤（`end`、`skip`、`proceed`、`leave`、`remove`、`select none`、`go COL ROW`、牌名和敌人名）按游戏当前所处的状态解读：`claim 2; skip` 会跳过 `claim 2` 打开的卡牌奖励。
+- 不带编号的步骤（`end`、`skip`、`proceed`、`leave`、`remove`、`select none`、`go COL ROW`、牌名和敌人名）按游戏当前所处的状态解读：`claim 2; skip` 会跳过 `claim 2` 打开的卡牌奖励。奖励界面上的 `skip` 只有作为指令链的第一步时才等于 `proceed`；指令链后面的 `skip` 绝不会离开奖励界面（那会放弃未领取的奖励）：`claim 0; skip` 和 `pick 0; skip` 会在 `skip` 之前停止，并说明会放弃什么。确实要离开请写 `proceed`。
+- 不在所显示列表中的操作编号是错误（不是停止），并列出游戏当前的合法操作。
 - `raw` / 引擎动词（`play_card card_index=2`）按原样发送。
 
-每一步之后，只要下一步在游戏当前所处的决策上合法且没有歧义，指令链就继续执行，即使决策类型变了（`pick 1; proceed`：卡牌奖励 -> 奖励界面；回合中途选牌之后的 `select 1; end`）。以下情况会在下一步之前停止：进入了新房间、战斗开始或结束、新回合开始或本局结束；该步骤不适用于新的决策（弹出选牌时的 `play`）；药水步骤将在与指令链开始时不同的界面上执行；编号无法安全对应（见上）；以及遇到第一个错误。
+每一步之后，只要下一步在游戏当前所处的决策上合法且没有歧义，指令链就继续执行，即使决策类型变了（`pick 1; proceed`：卡牌奖励 -> 奖励界面；回合中途选牌之后的 `select 1; end`）。以下情况会在下一步之前停止：进入了新房间、战斗开始或结束、新回合开始或本局结束；该步骤不适用于新的决策（弹出选牌时的 `play`）；药水步骤将在指令链开始时那一个界面以外的任何界面上执行（战斗中是同一回合；之后打开的界面不算，即使看起来一样：在商店的移除界面上执行 `skip; remove; discard P0` 会在 `discard P0` 之前停止）；编号无法安全对应（见上）；以及遇到第一个错误。
 
-奖励编号是**固定的**：领取奖励 0 不会让其他奖励重新编号（`claim 0; claim 1` 领取的是显示为 0 和 1 的奖励），这一点与手牌/敌人编号不同。领取已经不在的奖励时会提示 `奖励 0（8 金币）已经领取过了`。步骤出错时只给出一段用输出语言写的说明：该编号现在指什么、游戏为什么拒绝（只说一次；引擎的标志放在括号里）以及合法操作，例如 `H2 现在是 防御（Defend，技能，1 能量，目标：自己）；E1 是 蟾蜍蝌蚪（生命 22/22）；它不以单个敌人为目标，不能指定目标。现在可选：[1] ……`，或 `H0 现在是 坚毅+（技能，1 能量，目标：自己），不能打出：我没有足够的能量 (EnergyCostTooHigh)`（E#、P#、select、claim、buy、pick、choose 和 go 也一样）；`--json` 保留引擎的原始消息。说明里用的是你输入的编号：如果指令链前面的步骤让它换了位置，会注明——`H2（指令链开始时显示的 防御，现在是 H1）是 防御（……）`。在没有对应界面的决策上执行界面步骤时，会说明当前决策是什么并列出合法操作（`'go 0' 用于选择地图选项，但当前决策是 combat_play：现在这里没有这类选项。现在可选：[1] ……`）；任何提示都不会出现空的编号范围。
+奖励编号是**固定的**：领取奖励 0 不会让其他奖励重新编号（`claim 0; claim 1` 领取的是显示为 0 和 1 的奖励），这一点与手牌/敌人编号不同。领取已经不在的奖励时会提示 `奖励 0（8 金币）已经领取过了`。步骤出错时只给出一段用输出语言写的说明：该编号现在指什么、游戏为什么拒绝（只说一次；引擎的标志放在括号里）以及合法操作，例如 `H2 现在是 防御（Defend，技能，1 能量，目标：自己）；它不需要目标：play H2，不要加 E#。现在可选：[1] ……`、`H1 现在是 打击（……）；敌人不止一个，需要指定目标：E0 蟾蜍蝌蚪, E1 海洋混混（例如 play H1 E0）`，或 `H0 现在是 坚毅+（技能，1 能量，目标：自己），不能打出：我没有足够的能量 (EnergyCostTooHigh)`（E#、P#、select、claim、buy、pick、choose 和 go 也一样）。引擎的每一条错误消息（tests/test_sts2_messages.py 从 C# 源码中读出全部消息）都有这样的中英文说明，匹配不区分大小写，而且不会重复编号说明里已经说过的内容：`select 0,0` -> `卡牌 0 是 打击；卡牌 0 列了两次：每张牌只能选一次`，在要选 2-3 张牌的界面上 `select 0` -> `此界面需要选择 2-3 张牌，而不是 1 张`，`go 9 9` -> `(9,9) 在地图之外（列 0-6，行 0-16；sts2 map）`（合法走法只在列表里出现一次），在只有跳过按钮的卡牌奖励上 `alt 1` -> `这个卡牌奖励没有其他选项（除选牌外只有跳过按钮）：请用 'skip'（操作 [4]）或选择一张牌`。`--json` 保留引擎的原始消息。说明里用的是你输入的编号：如果指令链前面的步骤让它换了位置，会注明——`H2（指令链开始时显示的 防御，现在是 H1）是 防御（……）`。在没有对应界面的决策上执行界面步骤时，会（只说一次）说明当前处于什么界面并列出合法操作（`'go 0' 用于选择地图选项，但现在处于战斗回合：这里没有这类选项。现在可选：[1] ……`）；任何提示都不会出现空的编号范围。使用 `--lang zh` 时，操作标签（`[3] 打出 H1 痛击 -> E0 蟾蜍蝌蚪`、`丢弃药水 P0 火焰药水`）、决策名称（选牌界面、地图、事件页面）和提示都是中文；输入的步骤仍按 `sts2 help` 中的写法（`play`、`select 0,2`、`go 3 2`），作为提示给出的命令也按原样显示（`sts2 do "select 0,2"`）。
 
 `agent/sts2_bridge.py`（HTTP，每次 POST 一条 JSON 命令）仍然可用：现在引擎退出后会自动重启，并用引擎报告的种子重放本局（重启后的响应带 `notes`，重放不一致时会说明），非法请求体会返回 JSON 错误，提供 `GET /state` 和 `GET /help`，`--compact` 模式保留所有说明文字、附魔、苦难以及升级/附魔预览，只删除：`id` / `text_key` / `act_name` 字段、null 值和空列表/空对象、完整的 `deck`（用 `get_deck` 获取），以及说明里已经填好数值时的 `vars`；牌堆列表变成 `"牌名 xN"` 字符串，卡牌的附魔/苦难并入牌名（`"Strike [Sharp 2]"`）。附魔界面顶层的 `enchantment` 仍是对象 `{name, amount, description}`。`agent/combat_helper.py` 只打合法的牌，遇到任何非战斗决策都会停下交还给调用者；评分相同的牌、目标或药水由带种子的随机数决定，而不是按列表顺序。
 
