@@ -239,3 +239,49 @@ class TestTreasureOrder:
         opened = state["player"]["gold"]
         state = game.act("skip_treasure_relic")
         assert state["decision"] == "map_select" and state["player"]["gold"] == opened
+
+
+class TestRewardScreenLifecycle:
+    def test_all_claimed_keeps_screen_until_proceed(self, game):
+        """NRewardsScreen (terminal): once every reward is taken the empty screen stays up with
+        Proceed; potions can still be used/discarded there."""
+        state = win_combat(game, "mr2")
+        while state["rewards"]:
+            r = state["rewards"][0]
+            if r["type"] == "potion" and state["potion_slots_full"]:
+                break
+            state = game.act("claim_reward", reward_index=r["index"])
+            if state["decision"] == "card_reward":
+                state = game.act("select_card_reward", card_index=0)
+            assert state["decision"] == "rewards"
+        assert state["rewards"] == []
+        acts = {a["action"] for a in state["legal_actions"]}
+        assert "proceed" in acts and "claim_reward" not in acts
+        assert game.act("claim_reward", reward_index=0)["type"] == "error"
+        assert game.act("select_map_node", col=0, row=1)["type"] == "error"
+        state = game.act("proceed")
+        assert state["decision"] == "map_select"
+
+    def test_potion_usable_on_empty_rewards_screen(self, game):
+        state = win_combat(game, "mr6")
+        game.set_player(potions=["BLOOD_POTION"])
+        for r in list(state["rewards"]):
+            state = game.act("claim_reward", reward_index=r["index"])
+            if state["decision"] == "card_reward":
+                state = game.act("skip_card_reward")
+                card = next(x for x in state["rewards"] if x["type"] == "card")
+                state = game.act("claim_reward", reward_index=card["index"])
+                state = game.act("select_card_reward", card_index=0)
+        state = game.send({"cmd": "get_state"}) if state.get("decision") != "rewards" else state
+        assert state["decision"] == "rewards" and state["rewards"] == []
+        acts = {a["action"] for a in state["legal_actions"]}
+        assert "discard_potion" in acts
+
+    def test_consecutive_debug_fights_both_get_rewards(self, game):
+        """enter_room resets the per-room reward tracking like map travel does."""
+        state = win_combat(game, "mr7")
+        state = game.act("proceed")
+        assert state["decision"] == "map_select"
+        state = game.auto_play_combat(game.enter_room("combat"))
+        assert state["decision"] == "rewards"
+        assert any(r["type"] == "gold" for r in state["rewards"])

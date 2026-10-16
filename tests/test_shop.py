@@ -96,3 +96,34 @@ class TestShopRemove:
             # Should return to shop with deck_size - 1
             if state.get("decision") == "shop":
                 assert state["player"]["deck_size"] == deck_before - 1
+
+
+class TestLordsParasol:
+    def test_free_removal_uses_the_shop_removal(self, game):
+        """Lord's Parasol buys everything, including the card removal (ignoreCost). The game marks
+        the removal used (NMerchantCardRemoval.OnCardRemovalUsed): no second, paid removal."""
+        game.skip_neow(game.start(seed="p1"))
+        game.set_player(gold=500, relics=["LORDS_PARASOL"])
+        state = game.enter_room("Shop")
+        assert state["decision"] == "card_select"
+        assert state.get("purpose") == "remove" and state.get("cancelable") is False
+        deck = state["player"]["deck_size"]
+        state = game.act("select_cards", indices="0")
+        assert state["decision"] == "shop"
+        assert state["player"]["deck_size"] == deck - 1
+        assert state["card_removal_available"] is False
+        assert "remove_card" not in [a["action"] for a in state["legal_actions"]]
+        err = game.act("remove_card")
+        assert err["type"] == "error"
+        assert state["player"]["gold"] == 500
+
+    def test_paid_removal_once_per_visit(self, game):
+        game.skip_neow(game.start(seed="sr2"))
+        game.set_player(gold=999)
+        state = game.enter_room("shop")
+        state = game.act("remove_card")
+        assert state["decision"] == "card_select"
+        state = game.act("select_cards", indices="0")
+        assert state["decision"] == "shop"
+        assert state["card_removal_available"] is False
+        assert "remove_card" not in [a["action"] for a in state["legal_actions"]]
