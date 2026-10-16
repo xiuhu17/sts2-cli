@@ -23,8 +23,34 @@ namespace Sts2Headless;
 /// </summary>
 internal static class ContinueSave
 {
-    /// <summary>The latest save the game made (null until the first save of the run).</summary>
-    internal static SerializableRun? Last;
+    // The latest save the game made, as the JSON the game would have written at that moment
+    // (null until the first save of the run). Kept serialized: RunManager.ToSave copies the
+    // history lists but shares their entries with the live run, so a captured object would
+    // keep changing (card picks, gold gained, ... recorded after the save) — the file on disk
+    // does not. Parsed on demand into a private copy.
+    private static string? _lastJson;
+    private static SerializableRun? _lastParsed;
+
+    /// <summary>The latest save the game made (an unshared copy; null until the first save).</summary>
+    internal static SerializableRun? Last
+    {
+        get
+        {
+            if (_lastParsed == null && _lastJson != null)
+            {
+                _lastParsed = Snapshot(_lastJson);
+                if (_lastParsed == null) _lastJson = null;
+            }
+            return _lastParsed;
+        }
+    }
+
+    /// <summary>Record a save as it is on disk now (null: none).</summary>
+    internal static void Capture(string? saveJson)
+    {
+        _lastJson = saveJson;
+        _lastParsed = null;
+    }
 
     /// <summary>
     /// While loading a save into a combat that was already won, the CLI generates the room-end
@@ -58,13 +84,24 @@ internal static class ContinueSave
         catch (Exception ex) { Console.Error.WriteLine($"[WARN] ContinueSave rewards: {ex.Message}"); }
     }
 
+    /// <summary>A fresh, unshared copy of a save (null if it does not parse).</summary>
+    internal static SerializableRun? Snapshot(string saveJson)
+    {
+        try
+        {
+            var r = SaveManager.FromJson<SerializableRun>(saveJson);
+            return r.Success ? r.SaveData : null;
+        }
+        catch { return null; }
+    }
+
     public static bool SaveRunPrefix(AbstractRoom? preFinishedRoom, ref Task __result)
     {
-        try { Last = RunManager.Instance.ToSave(preFinishedRoom); }
+        try { Capture(SaveManager.ToJson(RunManager.Instance.ToSave(preFinishedRoom))); }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"[SIM] Continue-save capture failed: {ex.Message}");
-            Last = null;
+            Capture(null);
         }
         __result = Task.CompletedTask;
         return false;

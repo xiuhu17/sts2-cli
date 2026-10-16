@@ -387,26 +387,6 @@ public partial class RunSimulator
 
     // ───────────────────────── action validation ─────────────────────────
 
-    // Verbs that belong to each decision; the handler checks the arguments (and gives the
-    // specific reason, e.g. "not enough energy"). Verbs that can skip content (leave_room in
-    // events/rest sites, skip_select) are only accepted when legal_actions offers them.
-    private static readonly Dictionary<string, string[]> NativeVerbs = new()
-    {
-        ["map_select"] = new[] { "select_map_node" },
-        ["combat_play"] = new[] { "play_card", "end_turn", "use_potion" },
-        ["card_reward"] = new[] { "select_card_reward" },
-        ["card_select"] = new[] { "select_cards" },
-        ["bundle_select"] = new[] { "select_bundle" },
-        ["event_choice"] = new[] { "choose_option" },
-        ["rest_site"] = new[] { "choose_option" },
-        ["shop"] = new[] { "buy_card", "buy_relic", "buy_potion", "remove_card", "leave_room" },
-        ["rewards"] = new[] { "claim_reward", "proceed", "leave_room", "skip_rewards" },
-        ["crystal_sphere"] = new[] { "crystal_sphere_click" },
-        ["treasure_relic"] = new[] { "select_treasure_relic", "skip_treasure_relic", "proceed", "leave_room" },
-        ["unknown"] = new[] { "proceed", "leave_room" },
-        ["game_over"] = Array.Empty<string>(),
-    };
-
     internal static readonly string[] AllActions =
     {
         "select_map_node", "play_card", "end_turn", "choose_option", "select_card_reward", "skip_card_reward",
@@ -423,15 +403,6 @@ public partial class RunSimulator
     {
         if (decision.GetValueOrDefault("legal_actions") is List<Dictionary<string, object?>> l) return l;
         try { return LegalActions.For(decision); } catch { return new(); }
-    }
-
-    private static bool IsAllowed(Dictionary<string, object?> decision, string action)
-    {
-        var name = decision.GetValueOrDefault("decision") as string ?? "";
-        if (name == "game_over") return false;
-        if (action is "discard_potion" or "use_potion") return true;
-        if (NativeVerbs.TryGetValue(name, out var native) && native.Contains(action)) return true;
-        return LegalOf(decision).Any(a => a.GetValueOrDefault("action") as string == action);
     }
 
     /// <summary>"choose_option(option_index=0|1|2), leave_room" — a short list for error messages.</summary>
@@ -483,17 +454,10 @@ public partial class RunSimulator
         _ => decision,
     };
 
-    private static Dictionary<string, object?> IllegalAction(Dictionary<string, object?> decision, string action)
+    private static Dictionary<string, object?> IllegalAction(Dictionary<string, object?> decision, string action, string why)
     {
         var name = decision.GetValueOrDefault("decision") as string ?? "?";
         var legal = LegalOf(decision);
-        string why = name switch
-        {
-            "game_over" => "the run is over",
-            "card_select" when action == "skip_select" => "this selection requires a choice (it is not cancelable)",
-            _ when action == "leave_room" && name is "event_choice" or "rest_site" => "a choice is still required here",
-            _ => $"it is not available on {Where(name)}",
-        };
         return new Dictionary<string, object?>
         {
             ["type"] = "error",
@@ -559,16 +523,28 @@ public partial class RunSimulator
 
         // Validate against the decision the client was shown; recompute before rejecting in
         // case the game moved on by itself (a detached background flow).
+        // Strict: the action (after aliases) must be one of legal_actions, arguments included.
         var cur = _lastDecision;
-        if (cur == null || !IsAllowed(cur, action))
+        string? why = null;
+        if (cur != null)
+        {
+            var (a0, args0) = Canonical(cur, action, args);
+            why = CheckLegal(cur, a0, ref args0);
+            if (why == null) { action = a0; args = args0; }
+        }
+        if (cur == null || why != null)
         {
             cur = SafeCurrentDecision();
-            if (cur != null)
-            {
-                _lastDecision = cur = Viewed(cur);
-                if (cur.GetValueOrDefault("type") as string == "decision" && !IsAllowed(cur, action))
-                    return IllegalAction(cur, action);
-            }
+            // No decision to check the action against: never run it unvalidated.
+            if (cur == null) return Error($"'{action}' rejected: the current decision could not be determined");
+            if (cur.GetValueOrDefault("type") as string != "decision")
+                return cur.GetValueOrDefault("type") as string == "error" ? cur
+                    : Error($"'{action}' rejected: no decision is waiting ({cur.GetValueOrDefault("type")})");
+            _lastDecision = cur = Viewed(cur);
+            var (a1, args1) = Canonical(cur, action, args);
+            why = CheckLegal(cur, a1, ref args1);
+            if (why != null) return IllegalAction(cur, action, why);
+            action = a1; args = args1;
         }
 
         _flowFault = null;
@@ -1293,10 +1269,10 @@ public partial class RunSimulator
             ["remove_card"] = "{} shop card removal (opens a card_select)",
             ["claim_reward"] = "{reward_index}",
             ["proceed"] = "{} leave a rewards screen (not when its can_skip is false) / continue",
-            ["leave_room"] = "{} leave a shop (or a finished event/rest site)",
+            ["leave_room"] = "{} leave a shop, a used rest site or a finished event page (alias of its Proceed option)",
             ["select_treasure_relic"] = "{relic_index}", ["skip_treasure_relic"] = "{}",
-            ["crystal_sphere_click"] = "{x, y, tool:big|small} from choose_cell",
+            ["crystal_sphere_click"] = "{x, y, tool?:big|small} from choose_cell (no tool = current_tool)",
         },
-        ["notes"] = "Every decision lists legal_actions; an action not listed (or not an action of the current decision) is rejected with code illegal_action. 'events' lists what happened since the previous decision.",
+        ["notes"] = "Every decision lists legal_actions; an action (verb and args) not listed is rejected with code illegal_action - nothing is chosen for you; only a missing target_index is filled in when a single entry matches. Aliases of the same button: finished event page leave_room|proceed = choose_option Proceed; rewards leave_room|skip_rewards = proceed; treasure proceed|leave_room = skip_treasure_relic; rest site/shop proceed = leave_room. 'events' lists what happened since the previous decision.",
     };
 }
