@@ -376,4 +376,22 @@ public partial class RunSimulator
         catch { }
         return null;
     }
+
+    /// <summary>
+    /// How many times playing this card runs its effect: GetEnchantedReplayCount() + 1 (Replay
+    /// from Soldier's Stew, enchantments, ...) passed through Hook.ModifyCardPlayCount (Echo Form,
+    /// Burst, Duplication, Throwing Axe, Tag Team, ...), as CardModel.GeneratePlayCount does. The
+    /// ModifyCardPlayCount hooks are pure reads; AfterModifyingCardPlayCount (which consumes
+    /// charges) is not called.
+    /// </summary>
+    private static int PlayCount(CardModel c, CombatState? state, Creature? target)
+    {
+        try
+        {
+            int n = c.GetEnchantedReplayCount() + 1;
+            if (state != null) n = MegaCrit.Sts2.Core.Hooks.Hook.ModifyCardPlayCount(state, c, n, target, out _);
+            return Math.Max(1, n);
+        }
+        catch { return 1; }
+    }
 }

@@ -27,7 +27,7 @@ sys.path.insert(0, os.path.join(ROOT, "python"))
 import play_full_run  # noqa: E402
 
 # Fields that legitimately differ between otherwise identical runs.
-VOLATILE_KEYS = {"stack_trace", "ts"}
+VOLATILE_KEYS = {"stack_trace", "ts", "run_time_seconds"}
 
 
 def _strip(obj):
