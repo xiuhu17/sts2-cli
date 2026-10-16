@@ -31,10 +31,13 @@ internal static class LegalActions
         var acts = new List<Dictionary<string, object?>>();
         var decision = r.GetValueOrDefault("decision") as string;
         var player = r.GetValueOrDefault("player") as Dictionary<string, object?>;
-        // The game shows nothing clickable here (every event option locked, a rest site with
-        // only disabled options before any was used): no action, "softlocked": true.
-        if (r.GetValueOrDefault("softlocked") is true) return acts;
+        // The room shows no button that moves on (every event option locked, an unfinished
+        // event with no options, a rest site with only disabled options before any was used):
+        // "softlocked": true. The top bar's potion belt still works there (NPotionPopup: Use for
+        // AnyTime potions, Discard), so only the potion actions below are listed.
+        var softlocked = r.GetValueOrDefault("softlocked") is true;
 
+        if (!softlocked)
         switch (decision)
         {
             case "map_select":
@@ -89,16 +92,22 @@ internal static class LegalActions
                 var min = Math.Min(Int(r, "min_select"), from.Count);
                 var max = Math.Min(Int(r, "max_select"), from.Count);
                 if (max == 1)
+                {
                     foreach (var i in from)
                         acts.Add(Act("select_cards", ("indices", i?.ToString())));
+                    // min 0: the screen's confirm button is enabled with nothing selected.
+                    if (min == 0)
+                        acts.Add(Act("select_cards", ("indices", "")));
+                }
                 else if (max > 1)
                     acts.Add(new Dictionary<string, object?>
                     {
                         ["action"] = "select_cards",
-                        ["choose"] = new Dictionary<string, object?> { ["from"] = from, ["min"] = Math.Min(Math.Max(min, 1), max), ["max"] = max },
+                        ["choose"] = new Dictionary<string, object?> { ["from"] = from, ["min"] = Math.Min(min, max), ["max"] = max },
                     });
-                // Skipping is selecting nothing (min 0) or the screen's cancel button.
-                if (min == 0 || r.GetValueOrDefault("cancelable") is true)
+                // skip_select is the screen's cancel / skip button (CardSelectorPrefs.Cancelable,
+                // a choose-a-card screen's Skip). Confirming nothing (min 0) is select_cards [].
+                if (r.GetValueOrDefault("cancelable") is true)
                     acts.Add(Act("skip_select"));
                 break;
             }

@@ -205,18 +205,46 @@ public partial class RunSimulator
     // ─── after_upgrade preview cache ───
 
     // GetUpgradedInfo clones the canonical card, replays its upgrades plus one, and formats the
-    // clone: the result depends only on (language, card id, upgrade level, the live card's
-    // keyword sequence). Every decision response lists the whole deck with it, so memoize.
+    // clone: for a card in its base state the result depends only on (language, card id,
+    // upgrade level, base energy / star cost, enchantment / affliction, the live card's keyword
+    // sequence). Every decision response lists the whole deck with it, so memoize. A card whose
+    // preview depends on its live state (combat-time cost changes, a combat pile's hooks)
+    // previews on a clone of itself and is never cached (UpgradePreviewIsLive).
     // Callers only serialize the returned dictionary, so one shared instance is safe.
     private static readonly Dictionary<string, Dictionary<string, object?>> s_upgradeCache = new();
 
+    /// <summary>
+    /// True when the upgrade preview must be computed on a clone of the card itself (as
+    /// NUpgradePreview / NDeckUpgradeSelectScreen do) because its state differs from a
+    /// canonical card at the same upgrade level in a way the cache key can't name: temporary
+    /// cost changes (Enlightenment, Madness, Snecko, Touch of Insanity,
+    /// "free this turn"/"this combat", star-cost changes), or being in a combat pile, where
+    /// the preview runs the combat's cost and value hooks (Corruption, Tangled, Strength).
+    /// </summary>
+    private static bool UpgradePreviewIsLive(CardModel card)
+    {
+        try
+        {
+            if (card.Pile?.IsCombatPile == true) return true;
+            if (card.EnergyCost?.HasLocalModifiers == true) return true;
+            if (card.TemporaryStarCost != null) return true;
+            return false;
+        }
+        catch { return true; }
+    }
+
     private static Dictionary<string, object?>? CachedUpgradedInfo(CardModel card, Func<CardModel, Dictionary<string, object?>?> compute)
     {
+        // Live previews depend on the whole card (and the combat): computed fresh every time.
+        if (UpgradePreviewIsLive(card)) return compute(card);
         string key;
         try
         {
             var sb = new System.Text.StringBuilder(48);
             sb.Append(_loc.Lang).Append('|').Append(card.Id.ToString()).Append('|').Append(card.CurrentUpgradeLevel);
+            // A permanently changed base cost previews on a clone of the card (ComputeUpgradedInfo).
+            sb.Append("|b").Append(card.EnergyCost?.GetWithModifiers(MegaCrit.Sts2.Core.Entities.Cards.CostModifiers.None) ?? 0)
+              .Append("|s").Append(card.BaseStarCost);
             // Enchanted / afflicted cards preview the upgrade on a clone of themselves.
             if (card.Enchantment != null) sb.Append("|e").Append(card.Enchantment.Id.Entry).Append(':').Append(card.Enchantment.Amount);
             if (card.Affliction != null) sb.Append("|a").Append(card.Affliction.Id.Entry).Append(':').Append(card.Affliction.Amount);

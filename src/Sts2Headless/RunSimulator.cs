@@ -576,6 +576,10 @@ public partial class RunSimulator
                 }
             }
 
+            // The potion belt lock events set (Stone of All Time, Ranwid: Player.CanUseOrRemovePotions).
+            if (args.TryGetValue("can_use_or_remove_potions", out var cuEl)
+                && cuEl.ValueKind is System.Text.Json.JsonValueKind.True or System.Text.Json.JsonValueKind.False)
+                player.CanUseOrRemovePotions = cuEl.GetBoolean();
             Log($"SetPlayer: hp={player.Creature?.CurrentHp} gold={player.Gold} relics={player.Relics.Count} deck={player.Deck?.Cards?.Count}");
             if (args.TryGetValue("obtain_relic", out var obtainEl))
             {
@@ -1800,8 +1804,8 @@ public partial class RunSimulator
     {
         if (!_cardSelector.HasPending)
             return Error("No pending card selection");
-        if (args == null || !args.ContainsKey("indices"))
-            return Error("select_cards requires 'indices' (comma-separated card indices)", "bad_request");
+        if (args == null || args.GetValueOrDefault("indices") == null)
+            return Error("select_cards requires 'indices' (comma-separated card indices; \"\" or [] confirms nothing when min_select is 0)", "bad_request");
 
         // Accept "0,2" or [0, 2] (Program flattens arrays to "0,2"). Invalid entries used to be
         // dropped silently, which could resolve the prompt with nothing selected.
@@ -1844,9 +1848,12 @@ public partial class RunSimulator
     {
         if (!_cardSelector.HasPending)
             return Error("No pending card selection");
-        if (_cardSelector.PendingMinSelect > 0 && _cardSelector.PendingContext?.Cancelable != true
-            && (_cardSelector.PendingOptions?.Count ?? 0) > 0)
-            return Error($"This selection can't be skipped: choose at least {_cardSelector.PendingMinSelect} card(s) with select_cards");
+        // skip_select is the screen's cancel / skip button. A min-0 screen without one is
+        // confirmed with nothing selected (select_cards with empty indices) instead.
+        if (_cardSelector.PendingContext?.Cancelable != true && (_cardSelector.PendingOptions?.Count ?? 0) > 0)
+            return Error(_cardSelector.PendingMinSelect == 0
+                ? "This screen has no cancel button: confirm with nothing selected (select_cards with indices \"\")"
+                : $"This selection can't be skipped: choose at least {_cardSelector.PendingMinSelect} card(s) with select_cards");
         if (_cardSelector.HasPending)
         {
             Log("Skipping card selection");
@@ -4418,22 +4425,36 @@ public partial class RunSimulator
         try
         {
             CardModel clone;
-            var modded = card.Enchantment != null || card.Affliction != null;
-            if (modded)
+            var modded = card.Enchantment != null || card.Affliction != null || UpgradePreviewIsLive(card);
+            if (!modded)
             {
-                // The upgrade preview (NUpgradePreview / NDeckUpgradeSelectScreen) upgrades a
-                // clone of the card itself, enchantment included. The clone is not added to the run.
-                clone = (CardModel)card.ClonePreservingMutability();
-            }
-            else
-            {
+                // Shortcut for a card in its base state: the canonical card replayed to its level.
                 clone = ModelDb.GetById<CardModel>(card.Id).ToMutable();
-                // Apply existing upgrades first
                 for (int i = 0; i < card.CurrentUpgradeLevel; i++)
                 {
                     clone.UpgradeInternal();
                     clone.FinalizeUpgradeInternal();
                 }
+                // A base cost changed for good (not by upgrading): preview the card itself.
+                var none = MegaCrit.Sts2.Core.Entities.Cards.CostModifiers.None;
+                if (clone.EnergyCost?.GetWithModifiers(none) != card.EnergyCost?.GetWithModifiers(none)
+                    || clone.BaseStarCost != card.BaseStarCost)
+                    modded = true;
+            }
+            else clone = null!;
+            if (modded)
+            {
+                // The upgrade preview (NUpgradePreview / NDeckUpgradeSelectScreen) upgrades a
+                // clone of the card itself: enchantment, temporary costs and all. In a combat pile
+                // it is a Combat preview (the combat's cost and value hooks apply). The clone is
+                // not added to the run.
+                clone = (CardModel)card.ClonePreservingMutability();
+                try
+                {
+                    if (card.Pile?.IsCombatPile == true)
+                        clone.UpgradePreviewType = CardUpgradePreviewType.Combat;
+                }
+                catch { }
             }
             // Apply one more upgrade
             clone.UpgradeInternal();

@@ -70,7 +70,9 @@ public partial class RunSimulator
         {
             return name switch
             {
-                "card_select" when action == "skip_select" => "this selection requires a choice (it is not cancelable)",
+                "card_select" when action == "skip_select" => decision.GetValueOrDefault("min_select") is 0
+                    ? "the screen has no cancel button; confirm with nothing selected: select_cards with indices \"\""
+                    : "this selection requires a choice (it is not cancelable)",
                 _ when action == "leave_room" && name is "event_choice" or "rest_site" => "a choice is still required here",
                 _ => ReasonFor(decision, action, args ?? new Dictionary<string, object?>()) is { } r
                     && (action is "use_potion" or "discard_potion" or "claim_reward"

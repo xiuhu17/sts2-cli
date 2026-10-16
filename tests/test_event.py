@@ -1,4 +1,6 @@
 """Tests for events."""
+import json
+
 import pytest
 
 
@@ -150,6 +152,47 @@ class TestTrialAbandonPopup:
                            policy=game.policy("t2"))
         assert state["decision"] == "game_over", state["decision"]  # 1 HP: the beetle kills you
         assert state["victory"] is False and state["abandoned"] is False
+
+
+class TestArchitectContinue:
+    """The Architect's room is never saved (TheArchitect is not an AncientEventModel, and
+    RunManager.EnterNextAct enters it with EnterRoom, which doesn't save): the game's Continue
+    file there is the one CombatManager wrote when the last boss died (pre-finished boss room).
+    NGame.LoadRun -> LoadIntoLatestMapCoord re-enters the boss node with that room: its
+    (empty) terminal rewards screen, whose Proceed (EnterNextAct) brings The Architect back."""
+
+    def test_continue_in_architect_room(self, game, tmp_path):
+        import random
+        from test_map_run_parity import _finish_rooms, _to_map
+        rng = random.Random(1)
+        state = _to_map(game, game.start(seed="archc"))
+        game.set_player(max_hp=5000, hp=5000, deck=["BLUDGEON"] * 6)
+        state = _finish_rooms(game, game.enter_room("treasure", act=3))
+        for _ in range(40):
+            if state["decision"] != "map_select":
+                break
+            pick = rng.choice([c for c in state["choices"] if c["type"] != "Elite"] or state["choices"])
+            state = game.act("select_map_node", col=pick["col"], row=pick["row"])
+            policy = game.policy()
+            for _ in range(400):
+                if state["decision"] in ("map_select", "game_over") or state.get("event_id") == "THE_ARCHITECT":
+                    break
+                state = game.step(state, policy)
+            if state.get("event_id") == "THE_ARCHITECT":
+                break
+        assert state["decision"] == "event_choice" and state["event_id"] == "THE_ARCHITECT", state
+        state = game.choose(state, 0)  # one line in: the room has no save of its own
+        path = tmp_path / "architect.save"
+        assert game.send({"cmd": "write_continue_save", "path": str(path)})["success"] is True
+        save = json.loads(path.read_text())
+        assert save["pre_finished_room"]["room_type"] == "boss" and save["pre_finished_room"]["is_pre_finished"]
+        for _ in range(2):  # Continue twice: the reloaded run saves the same way
+            state = game.send({"cmd": "load_save", "path": str(path)})
+            assert state["decision"] == "rewards" and state["rewards"] == [], state
+            assert state["context"]["room_type"] == "Boss" and state["context"]["act"] == 3
+            state = game.act("proceed")
+            assert state["decision"] == "event_choice" and state["event_id"] == "THE_ARCHITECT", state
+            assert game.send({"cmd": "write_continue_save", "path": str(path)})["success"] is True
 
 
 class TestArchitectEpilogue:

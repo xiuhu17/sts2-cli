@@ -292,6 +292,8 @@ def action_label(a, st):
             ch = a["choose"]
             return f"select {ch.get('min')}-{ch.get('max')} of {ch.get('from')}  (sts2 do \"select 0,2\")"
         idx = str(args.get("indices"))
+        if idx == "":
+            return t("confirm with no card selected", "不选任何牌，直接确认") + '  (sts2 do "select none")'
         cards = {c.get("index"): c for c in st.get("cards") or []}
         c = cards.get(int(idx)) if idx.isdigit() else None
         return f"select {idx} {c.get('name') if c else ''}".rstrip()
@@ -404,7 +406,8 @@ def render_actions(st, numbered, compact=False):
             discards.append(f"[{n}] P{(a.get('args') or {}).get('potion_index')}")
             continue
         if compact and a.get("action") in ("select_cards", "select_card_reward", "claim_reward",
-                                           "select_treasure_relic", "buy_card") and "args" in a:
+                                           "select_treasure_relic", "buy_card") and "args" in a \
+                and (a.get("args") or {}).get("indices") != "":
             selects.append((n, a))
             continue
         out.append(f" [{n}] {action_label(a, st)}")
@@ -689,9 +692,12 @@ def render_decision(st, numbered, extra_events=None, prefix=None):
     actions = render_actions(st, numbered) if numbered else []
     if not numbered and st.get("decision") == "game_over":
         actions = [t("No actions: the run is over.", "没有可选操作：本局已结束。")]
-    elif not numbered and st.get("softlocked"):
-        actions = [t(f"No actions: softlock ({st.get('softlock_reason')}); the game shows no button here.",
-                     f"没有可选操作：软锁（{st.get('softlock_reason')}），游戏在这里没有可点的按钮。")]
+    elif st.get("softlocked"):
+        note = t(f"No way on: softlock ({st.get('softlock_reason')}); the game shows no button that moves on here"
+                 + ("; only the potion belt works." if numbered else "."),
+                 f"软锁（{st.get('softlock_reason')}）：游戏在这里没有能继续的按钮"
+                 + ("；只能使用药水栏。" if numbered else "。"))
+        actions = [note] + actions
     budget = MAX_OUT - 200
     if _size(prefix + head + actions) + _size(body) > budget and numbered:
         actions = render_actions(st, numbered, compact=True)
@@ -971,13 +977,18 @@ def parse_verb(text, st, numbered):
             return {"action": "select_bundle", "args": {"bundle_index": n}}
         raise VerbError(f"'pick' does not apply to {dec}")
     if v in ("select", "sel", "s"):
+        if [x.lower() for x in a] in (["none"], ["-"]):
+            return {"action": "select_cards", "args": {"indices": ""}}  # confirm nothing (min_select 0)
         idx = ",".join(x for part in a for x in part.split(",") if x.strip())
         if not idx:
-            raise VerbError("select <i,j,...>")
+            raise VerbError("select <i,j,...> (or select none: confirm with no card when min_select is 0)")
         return {"action": "select_cards", "args": {"indices": idx}}
     if v == "skip":
         m = {"card_reward": "skip_card_reward", "card_select": "skip_select", "treasure_relic": "skip_treasure_relic",
              "rewards": "proceed"}
+        # A min-0 screen without a cancel button: "skip" is confirming with nothing selected.
+        if dec == "card_select" and not (st or {}).get("cancelable") and (st or {}).get("min_select") == 0:
+            return {"action": "select_cards", "args": {"indices": ""}}
         if dec not in m:
             raise VerbError(f"'skip' does not apply to {dec}")
         return {"action": m[dec]}

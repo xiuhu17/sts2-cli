@@ -106,7 +106,9 @@ public partial class RunSimulator
             {
                 Purpose = purpose,
                 Screen = screen,
-                Cancelable = prefs.Cancelable,
+                // Only the deck screens (NDeck*SelectScreen) have a close button; the hand,
+                // grid and combat-pile screens ignore CardSelectorPrefs.Cancelable.
+                Cancelable = prefs.Cancelable && screen == "deck",
                 RequireConfirm = prefs.RequireManualConfirmation,
                 Source = source,
             };
@@ -216,7 +218,9 @@ public partial class RunSimulator
                 Screen = "choose_a_card",
                 Prompt = Format(new LocString("gameplay_ui", "CHOOSE_CARD_HEADER")),
                 Cancelable = canSkip,
-                ForceMinSelect = canSkip ? 0 : 1,
+                // A card is picked by clicking it; leaving without one is the Skip button
+                // (Cancelable), there is no confirm-with-nothing.
+                ForceMinSelect = 1,
                 Source = Involved(context),
             }, false);
         }
@@ -1464,7 +1468,7 @@ public partial class RunSimulator
             ["get_map"] = "the whole act map",
             ["load_save"] = "{cmd:load_save, path|json, lang?, manual_rewards? (ignored), omit_deck?, profile?}",
             ["write_continue_save"] = "{cmd:write_continue_save, path?}",
-            ["force_leave_room"] = "NOT game behaviour: leave a softlocked room (softlocked:true, no legal actions); only with STS2_SOFTLOCK_ESCAPE=1",
+            ["force_leave_room"] = "NOT game behaviour: leave a softlocked room (softlocked:true: nothing but potion actions); only with STS2_SOFTLOCK_ESCAPE=1",
             ["quit"] = "{cmd:quit, path?}",
             ["help"] = "this text",
         },
@@ -1479,8 +1483,8 @@ public partial class RunSimulator
             ["select_card_reward"] = "{card_index}",
             ["skip_card_reward"] = "{} (only when can_skip)",
             ["select_card_alternative"] = "{alternative_index} card_reward alternatives other than Skip (Driftwood reroll, Pael's Wing sacrifice)",
-            ["select_cards"] = "{indices:\"0,2\"} card_select; legal_actions gives choose:{from,min,max} for multi-picks",
-            ["skip_select"] = "{} only when card_select has min_select 0 or cancelable true",
+            ["select_cards"] = "{indices:\"0,2\" or [0,2]} card_select; legal_actions gives choose:{from,min,max} for multi-picks; indices \"\" / [] confirms nothing when min_select is 0",
+            ["skip_select"] = "{} only when card_select is cancelable (the screen's cancel/skip button); with min_select 0 and no such button confirm nothing with select_cards indices \"\"",
             ["select_bundle"] = "{bundle_index}",
             ["buy_card"] = "{card_index}", ["buy_relic"] = "{relic_index}", ["buy_potion"] = "{potion_index}",
             ["remove_card"] = "{} shop card removal (opens a card_select)",
@@ -1490,6 +1494,6 @@ public partial class RunSimulator
             ["select_treasure_relic"] = "{relic_index}", ["skip_treasure_relic"] = "{}",
             ["crystal_sphere_click"] = "{x, y, tool?:big|small} from choose_cell (no tool = current_tool)",
         },
-        ["notes"] = "Every decision lists legal_actions; an action (verb and args) not listed is rejected with code illegal_action - nothing is chosen for you; only a missing target_index is filled in when a single entry matches. An argument the verb doesn't take is illegal_action; a null argument counts as absent. Every error has a code (bad_request, unknown_command, unknown_action, illegal_action, unknown_character, no_run, io_error, ...) and, while a run waits on a decision, decision and legal_actions. Aliases of the same button: finished event page leave_room|proceed = choose_option Proceed; rewards leave_room|skip_rewards = proceed; treasure proceed|leave_room = skip_treasure_relic; rest site/shop proceed = leave_room. 'events' lists what happened since the previous decision. A decision with softlocked:true has no legal action: the game shows no button there (the run can't go on).",
+        ["notes"] = "Every decision lists legal_actions; an action (verb and args) not listed is rejected with code illegal_action - nothing is chosen for you; only a missing target_index is filled in when a single entry matches. An argument the verb doesn't take is illegal_action; a null argument counts as absent. Every error has a code (bad_request, unknown_command, unknown_action, illegal_action, unknown_character, no_run, io_error, ...) and, while a run waits on a decision, decision and legal_actions. Aliases of the same button: finished event page leave_room|proceed = choose_option Proceed; rewards leave_room|skip_rewards = proceed; treasure proceed|leave_room = skip_treasure_relic; rest site/shop proceed = leave_room. 'events' lists what happened since the previous decision. A decision with softlocked:true has no button that moves on (the run can't go on); only the potion belt's use_potion / discard_potion are legal there.",
     };
 }

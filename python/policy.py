@@ -204,7 +204,7 @@ class HeuristicPolicy(RandomPolicy):
             return to_args(self.rng.choice(by["select_treasure_relic"]), self.rng)
         if dec == "card_select" and state.get("purpose") in ("remove", "transform"):
             cards = {c.get("index"): c for c in state.get("cards") or []}
-            singles = [a for a in by.get("select_cards", []) if "args" in a]
+            singles = [a for a in by.get("select_cards", []) if str((a.get("args") or {}).get("indices", "")).isdigit()]
             basic = [a for a in singles
                      if _name(cards.get(int(a["args"]["indices"]), {})).startswith(("Strike", "Defend"))]
             if basic:

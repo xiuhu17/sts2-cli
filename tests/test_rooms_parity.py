@@ -466,6 +466,35 @@ class TestSoftlock:
         err = game.send({"cmd": "force_leave_room"})
         assert err["type"] == "error" and err["code"] == "softlock_escape_disabled"
 
+    def test_softlock_keeps_the_potion_belt(self, game):
+        """The room has no button that moves on, but the top bar's potion belt still works
+        (NPotionPopup): AnyTime potions can be used and potions discarded, unless the event
+        locks the belt (Stone of All Time sets Player.CanUseOrRemovePotions = false)."""
+        state = self._stone_softlock(game)
+        assert state["softlocked"] is True and state["legal_actions"] == []
+        game.set_player(potions=["BLOOD_POTION", "FIRE_POTION"], hp=40)
+        state = game.send({"cmd": "get_state"})
+        assert state["player"]["can_use_or_remove_potions"] is False
+        assert state["softlocked"] is True and state["legal_actions"] == []  # Stone locks the belt
+        assert game.act("discard_potion", potion_index=0)["code"] == "illegal_action"
+        # The same softlock with the belt unlocked (debug): only the potion actions are legal.
+        game.set_player(can_use_or_remove_potions=True)
+        state = game.send({"cmd": "get_state"})
+        assert state["softlocked"] is True
+        assert state["legal_actions"] == [
+            {"action": "use_potion", "args": {"potion_index": 0}},  # Blood Potion (AnyTime)
+            {"action": "discard_potion", "args": {"potion_index": 0}},
+            {"action": "discard_potion", "args": {"potion_index": 1}},
+        ], state["legal_actions"]  # Fire Potion is CombatOnly
+        assert game.act("choose_option", option_index=0)["code"] == "illegal_action"
+        assert game.act("use_potion", potion_index=1)["code"] == "illegal_action"
+        state = game.act("use_potion", potion_index=0)
+        assert state["decision"] == "event_choice" and state["softlocked"] is True
+        assert state["player"]["hp"] > 40
+        assert [a["action"] for a in state["legal_actions"]] == ["discard_potion"]
+        state = game.act("discard_potion", potion_index=0)
+        assert state["softlocked"] is True and state["legal_actions"] == []
+
     def test_force_leave_room_behind_the_flag(self, monkeypatch):
         from conftest import Game
         monkeypatch.setenv("STS2_SOFTLOCK_ESCAPE", "1")
