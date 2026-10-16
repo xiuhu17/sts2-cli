@@ -91,6 +91,8 @@ internal static class LegalActions
                 // Same clamping as DoSelectCards: a prompt can ask for more cards than it offers.
                 var min = Math.Min(Int(r, "min_select"), from.Count);
                 var max = Math.Min(Int(r, "max_select"), from.Count);
+                // Sizes with a gap (select_counts): nothing, or exactly max_select.
+                var counts = (r.GetValueOrDefault("select_counts") as IEnumerable<int>)?.ToList();
                 if (max == 1)
                 {
                     foreach (var i in from)
@@ -103,7 +105,9 @@ internal static class LegalActions
                     acts.Add(new Dictionary<string, object?>
                     {
                         ["action"] = "select_cards",
-                        ["choose"] = new Dictionary<string, object?> { ["from"] = from, ["min"] = Math.Min(min, max), ["max"] = max },
+                        ["choose"] = counts == null
+                            ? new Dictionary<string, object?> { ["from"] = from, ["min"] = Math.Min(min, max), ["max"] = max }
+                            : new Dictionary<string, object?> { ["from"] = from, ["min"] = Math.Min(min, max), ["max"] = max, ["counts"] = counts },
                     });
                 // skip_select is the screen's cancel / skip button (CardSelectorPrefs.Cancelable,
                 // a choose-a-card screen's Skip). Confirming nothing (min 0) is select_cards [].

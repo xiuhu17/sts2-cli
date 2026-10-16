@@ -1822,10 +1822,14 @@ public partial class RunSimulator
                 return Error($"Card index {v} given twice");
             indices.Add(v);
         }
-        var minSelect = Math.Min(_cardSelector.PendingMinSelect, optionCount);
-        var maxSelect = _cardSelector.PendingMaxSelect;
-        if (indices.Count < minSelect || indices.Count > maxSelect)
-            return Error($"Select between {minSelect} and {maxSelect} cards (got {indices.Count})");
+        // Only the sizes the game's screen can confirm (CardSelectRules): e.g. the deck
+        // enchant/upgrade screens' Confirm does nothing with no card selected.
+        var counts = _cardSelector.PendingCounts;
+        if (!counts.Contains(indices.Count))
+            return Error(indices.Count == 0
+                ? $"This screen can't be confirmed with nothing selected: choose {CardSelectRules.Describe(counts)} card(s)"
+                  + (_cardSelector.PendingContext?.Cancelable == true ? " (or leave with skip_select)" : "")
+                : $"Select {CardSelectRules.Describe(counts)} cards (got {indices.Count})");
 
         Log($"Card selection: indices [{string.Join(",", indices)}]");
         if (_backgroundTask == null && InTurnTransition(player))
@@ -2329,6 +2333,11 @@ public partial class RunSimulator
                 ["max_select"] = _cardSelector.PendingMaxSelect,
                 ["player"] = PlayerSummary(player),
             };
+            // Sizes with a gap (a no-manual-confirm grid with MinSelect 0: nothing, or exactly
+            // MaxSelect) are listed; otherwise min_select..max_select says it all.
+            var counts = _cardSelector.PendingCounts;
+            if (counts.Count > 1 && counts[^1] - counts[0] != counts.Count - 1)
+                selectState["select_counts"] = counts.ToList();
             AugmentCardSelect(selectState, player);
             return selectState;
         }
@@ -4424,37 +4433,23 @@ public partial class RunSimulator
     {
         try
         {
-            CardModel clone;
+            // The upgrade preview (NUpgradePreview / NDeckUpgradeSelectScreen) upgrades a clone
+            // of the card itself (CardScope.CloneCard): its [SavedProperty] state (Genetic
+            // Algorithm's CurrentBlock, ...), enchantment, affliction, cost changes and all.
+            // In a combat pile it is a Combat preview (the combat's cost and value hooks
+            // apply). The clone is not added to the run.
             var modded = card.Enchantment != null || card.Affliction != null || UpgradePreviewIsLive(card);
-            if (!modded)
+            CardModel clone;
+            if (card.IsMutable) clone = (CardModel)card.ClonePreservingMutability();
+            else
             {
-                // Shortcut for a card in its base state: the canonical card replayed to its level.
-                clone = ModelDb.GetById<CardModel>(card.Id).ToMutable();
-                for (int i = 0; i < card.CurrentUpgradeLevel; i++)
-                {
-                    clone.UpgradeInternal();
-                    clone.FinalizeUpgradeInternal();
-                }
-                // A base cost changed for good (not by upgrading): preview the card itself.
-                var none = MegaCrit.Sts2.Core.Entities.Cards.CostModifiers.None;
-                if (clone.EnergyCost?.GetWithModifiers(none) != card.EnergyCost?.GetWithModifiers(none)
-                    || clone.BaseStarCost != card.BaseStarCost)
-                    modded = true;
+                // A canonical card (an info lookup): a fresh instance replayed to its level.
+                clone = card.ToMutable();
+                for (int i = 0; i < card.CurrentUpgradeLevel; i++) { clone.UpgradeInternal(); clone.FinalizeUpgradeInternal(); }
             }
-            else clone = null!;
-            if (modded)
+            if (card.Pile?.IsCombatPile == true)
             {
-                // The upgrade preview (NUpgradePreview / NDeckUpgradeSelectScreen) upgrades a
-                // clone of the card itself: enchantment, temporary costs and all. In a combat pile
-                // it is a Combat preview (the combat's cost and value hooks apply). The clone is
-                // not added to the run.
-                clone = (CardModel)card.ClonePreservingMutability();
-                try
-                {
-                    if (card.Pile?.IsCombatPile == true)
-                        clone.UpgradePreviewType = CardUpgradePreviewType.Combat;
-                }
-                catch { }
+                try { clone.UpgradePreviewType = CardUpgradePreviewType.Combat; } catch { }
             }
             // Apply one more upgrade
             clone.UpgradeInternal();
@@ -4466,6 +4461,18 @@ public partial class RunSimulator
                 (modText, stats) = PreviewedCard(clone);
             else
                 try { foreach (var dv in clone.DynamicVars.Values) stats[dv.Name.ToLowerInvariant()] = (int)dv.BaseValue; } catch { }
+            if (stats.Count == 0 && card.IsMutable)
+            {
+                // A shop entry's card can have uninitialized DynamicVars (#68): read the values
+                // from a fresh instance at the same level, one upgrade on.
+                try
+                {
+                    var fresh = ModelDb.GetById<CardModel>(card.Id).ToMutable();
+                    for (int i = 0; i <= card.CurrentUpgradeLevel; i++) { fresh.UpgradeInternal(); fresh.FinalizeUpgradeInternal(); }
+                    foreach (var dv in fresh.DynamicVars.Values) stats[dv.Name.ToLowerInvariant()] = (int)dv.BaseValue;
+                }
+                catch { }
+            }
 
             // Compare keywords before/after upgrade
             var oldKws = card.Keywords?.Where(k => k != CardKeyword.None).Select(k => k.ToString()).ToHashSet() ?? new();
@@ -4970,6 +4977,8 @@ public partial class RunSimulator
         public List<CardModel>? PendingOptions { get; private set; }
         public int PendingMinSelect { get; private set; }
         public int PendingMaxSelect { get; private set; }
+        // Every selection size the screen can confirm (sorted; CardSelectRules).
+        public IReadOnlyList<int> PendingCounts { get; private set; } = Array.Empty<int>();
         public string PendingPrompt { get; private set; } = "";
         // What the game's selection screen says about this prompt (purpose, prompt text,
         // cancel button, ...), captured from CardSelectCmd by SelectPromptPatches.
@@ -4990,10 +4999,11 @@ public partial class RunSimulator
             // does (count <= MinSelect && !RequireManualConfirmation, one upgradable card in
             // hand, ...). Every call that reaches the selector is a screen a human sees, even
             // with a single card (choose-a-card, manual-confirm and cancelable screens).
-            // A choose-a-card screen without a skip button requires a pick even though the
-            // game asks the selector for 0-1 cards.
-            if (ctx != null && ctx.ForceMinSelect > minSelect)
-                minSelect = Math.Min(ctx.ForceMinSelect, maxSelect);
+            // The sizes the game's screen can confirm: a choose-a-card screen needs a click
+            // even though the game asks for 0-1 cards, a deck enchant/upgrade screen can't
+            // confirm nothing, ... (CardSelectRules).
+            var counts = CardSelectRules.AllowedCounts(ctx, optList.Count, minSelect, maxSelect);
+            if (counts.Count > 0) { minSelect = counts[0]; maxSelect = counts[^1]; }
             // A hand selection happens on the hand row: list the cards in the row's order.
             if (ctx?.Screen == "hand")
                 optList = HandOrder.Sort(optList);
@@ -5003,6 +5013,7 @@ public partial class RunSimulator
             PendingOptions = optList;
             PendingMinSelect = minSelect;
             PendingMaxSelect = maxSelect;
+            PendingCounts = counts;
             _pendingTcs = new TaskCompletionSource<IEnumerable<CardModel>>();
             RunSimulator.SignalFlow();
 

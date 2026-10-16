@@ -54,7 +54,9 @@ public partial class RunSimulator
         public string? Prompt;                // the localized prompt text the screen shows
         public bool Cancelable;               // the screen has a cancel / skip button
         public bool RequireConfirm;
-        public int ForceMinSelect;            // choose-a-card without skip: a pick is required
+        // The game's screen class (Nodes.Screens.CardSelection / NPlayerHand): decides which
+        // selection sizes its buttons can confirm (CardSelectRules.AllowedCounts).
+        public string ScreenClass = "";
         public AbstractModel? Source;         // the card/relic/power/potion that asked
         public AbstractModel? HandSource;     // hand selections: the source NPlayerHand waits on
         public EnchantmentModel? Enchantment; // enchant screens: what gets applied
@@ -100,12 +102,13 @@ public partial class RunSimulator
             return raw == ls.LocEntryKey ? null : LocLookup.Clean(raw);
         }
 
-        private static SelectContext FromPrefs(CardSelectorPrefs prefs, string purpose, string screen, AbstractModel? source)
+        private static SelectContext FromPrefs(CardSelectorPrefs prefs, string purpose, string screen, AbstractModel? source, string screenClass)
         {
             var ctx = new SelectContext
             {
                 Purpose = purpose,
                 Screen = screen,
+                ScreenClass = screenClass,
                 // Only the deck screens (NDeck*SelectScreen) have a close button; the hand,
                 // grid and combat-pile screens ignore CardSelectorPrefs.Cancelable.
                 Cancelable = prefs.Cancelable && screen == "deck",
@@ -132,18 +135,18 @@ public partial class RunSimulator
             try { return context?.LastInvolvedModel; } catch { return null; }
         }
 
-        public static void Upgrade(CardSelectorPrefs prefs) => Stage(FromPrefs(prefs, "upgrade", "deck", null), false);
+        public static void Upgrade(CardSelectorPrefs prefs) => Stage(FromPrefs(prefs, "upgrade", "deck", null, "NDeckUpgradeSelectScreen"), false);
 
         public static void Transform(CardSelectorPrefs prefs, Func<CardModel, CardTransformation>? cardToTransformation)
         {
-            var c = FromPrefs(prefs, "transform", "deck", null);
+            var c = FromPrefs(prefs, "transform", "deck", null, "NDeckTransformSelectScreen");
             c.Transform = cardToTransformation;
             Stage(c, false);
         }
 
         public static void Enchant(EnchantmentModel enchantment, int amount, CardSelectorPrefs prefs)
         {
-            var c = FromPrefs(prefs, "enchant", "deck", null);
+            var c = FromPrefs(prefs, "enchant", "deck", null, "NDeckEnchantSelectScreen");
             c.Enchantment = enchantment;
             c.EnchantAmount = amount;
             Stage(c, false);
@@ -151,13 +154,13 @@ public partial class RunSimulator
 
         public static void Removal(CardSelectorPrefs prefs)
         {
-            Stage(FromPrefs(prefs, "remove", "deck", null), false);
+            Stage(FromPrefs(prefs, "remove", "deck", null, "NDeckCardSelectScreen"), false);
             lock (Lock) _outer++;
         }
 
         public static void Discard(PlayerChoiceContext context, CardSelectorPrefs prefs, AbstractModel source)
         {
-            var c = FromPrefs(prefs, "discard", "hand", source ?? Involved(context));
+            var c = FromPrefs(prefs, "discard", "hand", source ?? Involved(context), "NPlayerHand");
             c.HandSource = source;
             Stage(c, false);
             lock (Lock) _outer++;
@@ -168,11 +171,11 @@ public partial class RunSimulator
             lock (Lock) if (_outer > 0) _outer--;
         }
 
-        public static void DeckGeneric(CardSelectorPrefs prefs) => Stage(FromPrefs(prefs, "choose", "deck", null), true);
+        public static void DeckGeneric(CardSelectorPrefs prefs) => Stage(FromPrefs(prefs, "choose", "deck", null, "NDeckCardSelectScreen"), true);
 
         public static void Hand(PlayerChoiceContext context, CardSelectorPrefs prefs, AbstractModel source)
         {
-            var c = FromPrefs(prefs, "choose", "hand", source ?? Involved(context));
+            var c = FromPrefs(prefs, "choose", "hand", source ?? Involved(context), "NPlayerHand");
             c.HandSource = source;
             Stage(c, true);
         }
@@ -184,6 +187,7 @@ public partial class RunSimulator
             {
                 Purpose = "upgrade",
                 Screen = "hand",
+                ScreenClass = "NPlayerHand.UpgradeSelect",
                 Prompt = Format(new LocString("gameplay_ui", "CHOOSE_CARD_UPGRADE_HEADER")),
                 Source = source ?? Involved(context),
                 HandSource = source,
@@ -194,14 +198,14 @@ public partial class RunSimulator
         {
             string screen;
             try { screen = pile.Type.ToString().ToLowerInvariant(); } catch { screen = "pile"; }
-            Stage(FromPrefs(prefs, "choose", screen, Involved(context)), false);
+            Stage(FromPrefs(prefs, "choose", screen, Involved(context), "NCombatPileCardSelectScreen"), false);
         }
 
         public static void SimpleGrid(PlayerChoiceContext context, CardSelectorPrefs prefs) =>
-            Stage(FromPrefs(prefs, "choose", "grid", Involved(context)), false);
+            Stage(FromPrefs(prefs, "choose", "grid", Involved(context), "NSimpleCardSelectScreen"), false);
 
         public static void GridForRewards(PlayerChoiceContext context, CardSelectorPrefs prefs) =>
-            Stage(FromPrefs(prefs, "choose", "reward_grid", Involved(context)), false);
+            Stage(FromPrefs(prefs, "choose", "reward_grid", Involved(context), "NSimpleCardSelectScreen"), false);
 
         public static void ChooseACard(PlayerChoiceContext context, IReadOnlyList<CardModel> cards, Player player, bool canSkip)
         {
@@ -220,7 +224,7 @@ public partial class RunSimulator
                 Cancelable = canSkip,
                 // A card is picked by clicking it; leaving without one is the Skip button
                 // (Cancelable), there is no confirm-with-nothing.
-                ForceMinSelect = 1,
+                ScreenClass = "NChooseACardSelectionScreen",
                 Source = Involved(context),
             }, false);
         }
@@ -263,6 +267,65 @@ public partial class RunSimulator
             new(typeof(SelectPromptPatches).GetMethod(name, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static));
     }
 
+
+    /// <summary>
+    /// Which selection sizes the game's screen can confirm, per screen class (decompiled
+    /// Nodes.Screens.CardSelection + NPlayerHand). n = cards offered, min/max = the prefs.
+    /// Sizes are clamped to n so a prompt asking for more cards than it offers can't
+    /// softlock the adapter.
+    /// </summary>
+    internal static class CardSelectRules
+    {
+        public static List<int> AllowedCounts(SelectContext? ctx, int n, int min, int max)
+        {
+            int hi = Math.Max(0, Math.Min(max, n));
+            int lo = Math.Max(0, Math.Min(min, hi));
+            IEnumerable<int> Range(int a, int b) => a > b ? Enumerable.Empty<int>() : Enumerable.Range(a, b - a + 1);
+            IEnumerable<int> counts = (ctx?.ScreenClass ?? "") switch
+            {
+                // OnCardClicked previews at Count == MaxSelect; the bottom Confirm (enabled when
+                // MinSelect != MaxSelect && Count >= MinSelect) opens the preview too, but the
+                // preview's ConfirmSelection is `if (_selectedCards.Count != 0)
+                // CheckIfSelectionComplete()` (Count in [MinSelect, MaxSelect]); single-select
+                // preview dereferences _selectedCards.First(). Close only when Cancelable.
+                "NDeckEnchantSelectScreen" => min == max ? new[] { hi } : Range(Math.Max(1, lo), hi),
+                // No bottom Confirm: the preview opens on the first click (MaxSelect 1) or at
+                // Count == MaxSelect; ConfirmSelection needs Count != 0 and
+                // CheckIfSelectionComplete Count >= MaxSelect (every caller asks for exactly N;
+                // fewer upgradable cards than N is auto-selected by FromDeckForUpgrade).
+                "NDeckUpgradeSelectScreen" => new[] { hi },
+                // Bottom Confirm enabled when MinSelect != MaxSelect && Count >= MinSelect (Claws:
+                // 0 cards is fine); otherwise the preview opens at Count == MaxSelect.
+                "NDeckTransformSelectScreen" or "NDeckCardSelectScreen" =>
+                    min == max ? new[] { hi } : Range(lo, hi),
+                // Confirm enabled at open iff MinSelect == 0; after a click only with
+                // RequireManualConfirmation && Count >= MinSelect. Without manual confirmation
+                // the screen completes itself at Count >= MaxSelect (clamped to the pile for
+                // the combat-pile screen).
+                "NSimpleCardSelectScreen" or "NCombatPileCardSelectScreen" =>
+                    ctx!.RequireConfirm ? Range(lo, hi)
+                        : (min == 0 ? new[] { 0, hi } : new[] { hi }),
+                // RefreshSelectModeConfirmButton: Count in [MinSelect, MaxSelect]; a pick beyond
+                // MaxSelect swaps out the last one, so Count never exceeds it.
+                "NPlayerHand" => Range(lo, hi),
+                // FromHandForUpgrade: prefs (header, 1); the upgrade preview's confirm needs one card.
+                "NPlayerHand.UpgradeSelect" => new[] { Math.Min(1, n) },
+                // A card is taken by clicking it; leaving without one is the Skip button.
+                "NChooseACardSelectionScreen" => new[] { Math.Min(1, n) },
+                _ => Range(lo, hi),
+            };
+            return counts.Distinct().OrderBy(c => c).ToList();
+        }
+
+        /// <summary>Sizes as text for errors: "1-3", "2", "0 or 3".</summary>
+        public static string Describe(IReadOnlyList<int> counts)
+        {
+            if (counts.Count == 0) return "none";
+            if (counts.Count == 1) return counts[0].ToString();
+            bool contiguous = counts[^1] - counts[0] == counts.Count - 1;
+            return contiguous ? $"{counts[0]}-{counts[^1]}" : string.Join(" or ", counts);
+        }
+    }
 
     private static string EventTitle(string entry)
     {

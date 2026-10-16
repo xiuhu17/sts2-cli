@@ -204,12 +204,13 @@ public partial class RunSimulator
 {
     // ─── after_upgrade preview cache ───
 
-    // GetUpgradedInfo clones the canonical card, replays its upgrades plus one, and formats the
-    // clone: for a card in its base state the result depends only on (language, card id,
-    // upgrade level, base energy / star cost, enchantment / affliction, the live card's keyword
-    // sequence). Every decision response lists the whole deck with it, so memoize. A card whose
-    // preview depends on its live state (combat-time cost changes, a combat pile's hooks)
-    // previews on a clone of itself and is never cached (UpgradePreviewIsLive).
+    // GetUpgradedInfo clones the card, upgrades the clone once more and formats it (as
+    // NUpgradePreview does). Outside a combat pile the result depends only on (language, card
+    // id, upgrade level, base energy / star cost, enchantment / affliction with their saved
+    // state, the card's [SavedProperty] values, its keyword sequence). Every decision response
+    // lists the whole deck with it, so memoize on that. A card whose preview depends on its
+    // live state (combat-time cost changes, a combat pile's hooks) is never cached
+    // (UpgradePreviewIsLive), nor is one whose saved state holds cards (no cheap exact key).
     // Callers only serialize the returned dictionary, so one shared instance is safe.
     private static readonly Dictionary<string, Dictionary<string, object?>> s_upgradeCache = new();
 
@@ -233,6 +234,19 @@ public partial class RunSimulator
         catch { return true; }
     }
 
+    /// <summary>
+    /// Append a model's [SavedProperty] values (SavedProperties.From, as the save file has
+    /// them). False when they hold cards, whose text form doesn't name their state.
+    /// </summary>
+    private static bool AppendSavedProps(System.Text.StringBuilder sb, MegaCrit.Sts2.Core.Models.AbstractModel model)
+    {
+        var props = MegaCrit.Sts2.Core.Saves.Runs.SavedProperties.From(model);
+        if (props == null) return true;
+        if (props.cards != null || props.cardArrays != null) return false;
+        sb.Append(props.ToString());
+        return true;
+    }
+
     private static Dictionary<string, object?>? CachedUpgradedInfo(CardModel card, Func<CardModel, Dictionary<string, object?>?> compute)
     {
         // Live previews depend on the whole card (and the combat): computed fresh every time.
@@ -248,6 +262,10 @@ public partial class RunSimulator
             // Enchanted / afflicted cards preview the upgrade on a clone of themselves.
             if (card.Enchantment != null) sb.Append("|e").Append(card.Enchantment.Id.Entry).Append(':').Append(card.Enchantment.Amount);
             if (card.Affliction != null) sb.Append("|a").Append(card.Affliction.Id.Entry).Append(':').Append(card.Affliction.Amount);
+            // Instance state the game saves with the card (Genetic Algorithm's CurrentBlock, ...).
+            if (!AppendSavedProps(sb.Append("|p"), card)) return compute(card);
+            if (card.Enchantment != null && !AppendSavedProps(sb.Append("|ep"), card.Enchantment)) return compute(card);
+            if (card.Affliction != null && !AppendSavedProps(sb.Append("|ap"), card.Affliction)) return compute(card);
             if (card.Keywords != null)
                 foreach (var k in card.Keywords)
                     if (k != MegaCrit.Sts2.Core.Entities.Cards.CardKeyword.None) sb.Append('|').Append((int)k);

@@ -173,22 +173,66 @@ class TestCardSelectPrefs:
         r = game.act("select_cards", indices="")
         assert r["type"] == "error"
 
-    def test_kifuda_confirms_with_nothing_selected(self, game):
-        """Kifuda.AfterObtained: CardSelectorPrefs(enchant, 0, 3), Cancelable false. The deck
-        enchant screen has no close button, but its confirm button is enabled with nothing
-        selected (MinSelect != MaxSelect, 0 >= MinSelect): select_cards with no index."""
+    def test_kifuda_requires_a_card(self, game):
+        """Kifuda.AfterObtained: CardSelectorPrefs(enchant, 0, 3), Cancelable false. The bottom
+        Confirm of NDeckEnchantSelectScreen opens the preview with nothing selected, but the
+        preview's ConfirmSelection is `if (_selectedCards.Count != 0) CheckIfSelectionComplete()`
+        and Close is disabled: the screen can only be left with 1-3 cards."""
         to_map(game, "kif1")
         game.set_player(deck=["STRIKE_IRONCLAD"] * 3 + ["DEFEND_IRONCLAD"] * 3)
         state = game.set_player(obtain_relic="KIFUDA")
         assert state["decision"] == "card_select" and state["purpose"] == "enchant"
-        assert state["min_select"] == 0 and state["max_select"] == 3 and state["cancelable"] is False
+        assert state["min_select"] == 1 and state["max_select"] == 3 and state["cancelable"] is False
         assert state["legal_actions"] == [{"action": "select_cards", "choose": {
-            "from": [c["index"] for c in state["cards"]], "min": 0, "max": 3}}], state["legal_actions"]
+            "from": [c["index"] for c in state["cards"]], "min": 1, "max": 3}}], state["legal_actions"]
+        for empty in ([], ""):
+            err = game.act("select_cards", indices=empty)
+            assert err["type"] == "error" and "nothing selected" in err["message"], err
         err = game.act("skip_select")
-        assert err["code"] == "illegal_action" and "select_cards" in err["message"]
-        state = game.act("select_cards", indices=[])  # [] and "" both mean "confirm, nothing chosen"
+        assert err["code"] == "illegal_action"
+        assert game.act("select_cards", indices="0,1,2,3")["type"] == "error"
+        state = game.act("select_cards", indices="4")
         assert state["decision"] == "map_select", state
-        assert not any(c.get("enchantment") for c in game.send({"cmd": "get_deck"})["cards"])
+        assert sum(1 for c in game.send({"cmd": "get_deck"})["cards"] if c.get("enchantment")) == 1
+
+    def test_gnarled_hammer_requires_a_card(self, game):
+        """GnarledHammer: the same NDeckEnchantSelectScreen with prefs (0, 3), not cancelable."""
+        to_map(game, "gnh1")
+        game.set_player(deck=["STRIKE_IRONCLAD"] * 3 + ["DEFEND_IRONCLAD"] * 3)
+        state = game.set_player(obtain_relic="GNARLED_HAMMER")
+        assert state["decision"] == "card_select" and state["purpose"] == "enchant"
+        assert state["min_select"] == 1 and state["cancelable"] is False
+        assert game.act("select_cards", indices="")["type"] == "error"
+        state = game.act("select_cards", indices="0")
+        assert state["decision"] == "map_select", state
+
+    def test_smith_upgrade_screen_never_confirms_nothing(self, game):
+        """NDeckUpgradeSelectScreen has no bottom Confirm: the preview opens at Count ==
+        MaxSelect and its ConfirmSelection needs Count != 0. Leaving is the Close button."""
+        to_map(game, "smith0")
+        game.set_player(deck=["STRIKE_IRONCLAD"] * 3 + ["DEFEND_IRONCLAD"] * 3)
+        state = game.enter_room("rest_site")
+        smith = next(o for o in state["options"] if o["option_id"] == "SMITH")
+        state = game.act("choose_option", option_index=smith["index"])
+        assert state["decision"] == "card_select" and state["purpose"] == "upgrade"
+        assert state["min_select"] == 1 and state["max_select"] == 1 and state["cancelable"] is True
+        assert not any(a.get("args", {}).get("indices") == "" for a in state["legal_actions"])
+        assert game.act("select_cards", indices="")["type"] == "error"
+        assert "skip_select" in actions(state)
+
+    def test_claws_transform_confirms_nothing(self, game):
+        """Claws: NDeckTransformSelectScreen, prefs (0, 6), not cancelable. Its ConfirmSelection
+        is `if (_selectedCards.Count >= _prefs.MinSelect)`: nothing selected is accepted."""
+        to_map(game, "claw0")
+        game.set_player(deck=["STRIKE_IRONCLAD"] * 3 + ["DEFEND_IRONCLAD"] * 3)
+        state = game.set_player(obtain_relic="CLAWS")
+        assert state["decision"] == "card_select" and state["purpose"] == "transform"
+        assert state["min_select"] == 0 and state["cancelable"] is False
+        choose = next(a["choose"] for a in state["legal_actions"] if a["action"] == "select_cards")
+        assert choose["min"] == 0
+        state = game.act("select_cards", indices="")
+        assert state["decision"] == "map_select", state
+        assert [c["name"] for c in game.send({"cmd": "get_deck"})["cards"]].count("Strike") == 3
 
     def test_kifuda_enchants_the_chosen_cards(self, game):
         to_map(game, "kif2")
@@ -244,6 +288,28 @@ class TestUpgradePreviewLiveCost:
         # The deck copy is unchanged (combat costs live on the combat card).
         deck_bash = next(c for c in game.send({"cmd": "get_deck", "upgrades": True})["cards"] if c["name"] == "Bash")
         assert deck_bash["after_upgrade"]["cost"] == 2
+
+
+class TestUpgradePreviewSavedState:
+    def test_genetic_algorithm_preview_keeps_grown_block(self, game):
+        """NUpgradePreview / NDeckUpgradeSelectScreen upgrade a clone of the card itself, so
+        [SavedProperty] state carries over: a played Genetic Algorithm's deck copy has block
+        1 + 3 = 4 and its upgraded preview must too (not the canonical card's 1)."""
+        to_map(game, "ga1")
+        game.set_player(deck=["GENETIC_ALGORITHM", "STRIKE_IRONCLAD", "STRIKE_IRONCLAD",
+                              "DEFEND_IRONCLAD", "DEFEND_IRONCLAD"])
+        deck = game.send({"cmd": "get_deck", "upgrades": True})["cards"]
+        ga = next(c for c in deck if c["id"] == "CARD.GENETIC_ALGORITHM")
+        assert ga["stats"]["block"] == 1 and ga["after_upgrade"]["stats"]["block"] == 1  # cached at 1
+        state = game.enter_room("combat", encounter="SHRINKER_BEETLE_WEAK")
+        state = game.act("play_card", card_index=next(c["index"] for c in state["hand"] if c["id"] == "CARD.GENETIC_ALGORITHM"))
+        assert state["type"] == "decision", state
+        deck = game.send({"cmd": "get_deck", "upgrades": True})["cards"]
+        ga = next(c for c in deck if c["id"] == "CARD.GENETIC_ALGORITHM")
+        assert ga["stats"]["block"] == 4, ga
+        assert ga["after_upgrade"]["stats"]["block"] == 4, ga["after_upgrade"]
+        assert ga["after_upgrade"]["stats"]["increase"] == 4  # the upgrade: Increase 3 -> 4
+        assert "4" in ga["after_upgrade"]["description"], ga["after_upgrade"]["description"]
 
 
 class TestRoomFlow:
