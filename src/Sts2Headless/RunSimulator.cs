@@ -359,7 +359,7 @@ public partial class RunSimulator
         {
             // Validate before tearing down the current run, so a bad request leaves it intact.
             if (!KnownCharacters.Contains(character.ToLowerInvariant()))
-                return Error($"Unknown character: {character}");
+                return Error($"Unknown character: {character} (Ironclad|Silent|Defect|Regent|Necrobinder)", "unknown_character");
             EnsureModelDbInitialized();
             var mode = (gameMode ?? (modifiers?.Count > 0 ? "custom" : "standard")).ToLowerInvariant() switch
             {
@@ -368,7 +368,7 @@ public partial class RunSimulator
                 "daily" => GameMode.Daily,
                 _ => null,
             };
-            if (mode == null) return Error($"Unknown game_mode '{gameMode}' (standard|custom|daily)");
+            if (mode == null) return Error($"Unknown game_mode '{gameMode}' (standard|custom|daily)", "bad_request");
             var modifierModels = new List<ModifierModel>();
             foreach (var name in modifiers ?? Array.Empty<string>())
             {
@@ -376,14 +376,14 @@ public partial class RunSimulator
                 if (m == null)
                     return Error(name.Trim().ToUpperInvariant().StartsWith("CHARACTER_CARDS")
                         ? $"Modifier '{name}' needs a character: CHARACTER_CARDS:<character>. Known: {string.Join(", ", KnownModifiers())}"
-                        : $"Unknown modifier '{name}'. Known: {string.Join(", ", KnownModifiers())}");
+                        : $"Unknown modifier '{name}'. Known: {string.Join(", ", KnownModifiers())}", "bad_request");
                 modifierModels.Add(m);
             }
             ProgressState? progress = null;
             if (profilePath != null)
             {
                 try { progress = LoadProgress(profilePath); }
-                catch (Exception ex) { return Error($"Cannot read profile '{profilePath}': {ex.Message}"); }
+                catch (Exception ex) { return Error($"Cannot read profile '{profilePath}': {ex.Message}", "io_error"); }
             }
             var unlocks = progress != null ? new UnlockState(progress) : UnlockState.all;
             if (ParityPatches.Failure != null) return Error(ParityPatches.Failure);
@@ -397,11 +397,13 @@ public partial class RunSimulator
 
             var player = CreatePlayer(character, unlocks);
             if (player == null)
-                return Error($"Unknown character: {character}");
+                return Error($"Unknown character: {character}", "unknown_character");
 
             // Same seed handling as the game's lobby: typed seeds are canonicalized, and the acts
             // are drawn from the seed ("act_selection" stream), so a seed reproduces the real game's run.
-            var seedStr = seed != null ? SeedHelper.CanonicalizeSeed(seed) : SeedHelper.GetRandomSeed();
+            // A blank seed box is no seed (NCustomRunScreen.OnSeedInputSubmitted: "" -> SetSeed(null)),
+            // and StartRunLobby then draws a random one; it is reported in context.seed.
+            var seedStr = !string.IsNullOrWhiteSpace(seed) ? SeedHelper.CanonicalizeSeed(seed) : SeedHelper.GetRandomSeed();
             Log($"Creating RunState with seed={seedStr}");
 
             _runState = RunState.CreateForNewRun(
@@ -682,7 +684,7 @@ public partial class RunSimulator
             if (profilePath != null)
             {
                 try { progress = LoadProgress(profilePath); }
-                catch (Exception ex) { return Error($"Cannot read profile '{profilePath}': {ex.Message}"); }
+                catch (Exception ex) { return Error($"Cannot read profile '{profilePath}': {ex.Message}", "io_error"); }
             }
 
             Log("Loading save file...");
@@ -1030,10 +1032,10 @@ public partial class RunSimulator
         try
         {
             if (_runState == null)
-                return Error("No active run to save");
+                return Error("No active run to save", "no_run");
 
             if (string.IsNullOrEmpty(outputPath))
-                return Error("No output path specified for quit save");
+                return Error("write_continue_save requires 'path' (the file to write)", "bad_request");
 
             var currentRoom = _runState.CurrentRoom;
             SerializableRun serializableRun;
@@ -1061,10 +1063,17 @@ public partial class RunSimulator
             var saveJson = SaveManager.ToJson(serializableRun);
             Log($"Serialized save: {saveJson.Length} chars");
 
-            var dir = System.IO.Path.GetDirectoryName(outputPath);
-            if (!string.IsNullOrEmpty(dir))
-                System.IO.Directory.CreateDirectory(dir);
-            System.IO.File.WriteAllText(outputPath, saveJson);
+            try
+            {
+                var dir = System.IO.Path.GetDirectoryName(outputPath);
+                if (!string.IsNullOrEmpty(dir))
+                    System.IO.Directory.CreateDirectory(dir);
+                System.IO.File.WriteAllText(outputPath, saveJson);
+            }
+            catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException)
+            {
+                return Error($"Cannot write save to '{outputPath}': {ex.GetType().Name}: {ex.Message}", "io_error");
+            }
             Log($"Save written to: {outputPath}");
 
             return new Dictionary<string, object?>
@@ -1769,7 +1778,7 @@ public partial class RunSimulator
         if (!_cardSelector.HasPending)
             return Error("No pending card selection");
         if (args == null || !args.ContainsKey("indices"))
-            return Error("select_cards requires 'indices' (comma-separated card indices)");
+            return Error("select_cards requires 'indices' (comma-separated card indices)", "bad_request");
 
         // Accept "0,2" or [0, 2] (Program flattens arrays to "0,2"). Invalid entries used to be
         // dropped silently, which could resolve the prompt with nothing selected.
@@ -1780,7 +1789,8 @@ public partial class RunSimulator
         foreach (var tok in tokens)
         {
             if (!int.TryParse(tok, out var v) || v < 0 || v >= optionCount)
-                return Error($"Invalid card index '{tok}' (valid: 0-{optionCount - 1})");
+                return Error($"Invalid card index '{tok}' (valid: 0-{optionCount - 1})",
+                    int.TryParse(tok, out _) ? "illegal_action" : "bad_request");
             if (indices.Contains(v))
                 return Error($"Card index {v} given twice");
             indices.Add(v);
@@ -5584,6 +5594,9 @@ public partial class RunSimulator
     private static Dictionary<string, object?> Error(string message) =>
         new() { ["type"] = "error", ["message"] = message };
 
+    private static Dictionary<string, object?> Error(string message, string code) =>
+        new() { ["type"] = "error", ["code"] = code, ["message"] = message };
+
     // Set when the engine can no longer advance the current run. Every later action gets
     // the same error until a new run is started or loaded.
     private string? _stuckReason;
@@ -5837,7 +5850,10 @@ public partial class RunSimulator
         if (_poisoned) return false;
         _stuckReason = null;
         if (_runState == null && !RunManager.Instance.IsInProgress)
+        {
+            ResetEvents();
             return true;
+        }
 
         Log("Resetting previous run");
         // Unblock the previous run's game flow and let it unwind completely. Each cancelled
@@ -5886,6 +5902,9 @@ public partial class RunSimulator
         _lastKnownHp = 0;
         _turnStarted.Reset();
         _combatEnded.Reset();
+        // Last: unwinding the old flow above still appends to its combat history and flashes
+        // relics; none of that belongs to the run about to start.
+        ResetEvents();
         return true;
     }
 

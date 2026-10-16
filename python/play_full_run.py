@@ -7,14 +7,14 @@ The bot decides through an explicit policy over the engine's legal_actions (pyth
 Rewards screens and treasure chests are decisions like any other.
 
 Usage:
-  python3 play_full_run.py <num_runs> [character] [--policy random|heuristic]
+  python3 play_full_run.py <num_runs> <character> [--policy random|heuristic]
 
 Arguments:
   num_runs    Positive integer: number of runs to play
-  character   One of: Ironclad, Silent, Defect, Regent, Necrobinder (default: Ironclad)
+  character   One of: Ironclad, Silent, Defect, Regent, Necrobinder (required)
 
 Examples:
-  python3 play_full_run.py 5
+  python3 play_full_run.py 5 Ironclad
   python3 play_full_run.py 3 Silent
 """
 
@@ -28,7 +28,7 @@ from policy import NoLegalAction, make_policy
 VALID_CHARACTERS = ["Ironclad", "Silent", "Defect", "Regent", "Necrobinder"]
 
 
-def play_run(seed: str, character: str = "Ironclad", verbose: bool = True, log: bool = True,
+def play_run(seed: str, character: str, verbose: bool = True, log: bool = True,
              engine: Engine = None, manual_rewards: bool = True, policy: str = "random"):
     """Play a complete run and return the result.
 
@@ -169,9 +169,8 @@ def main():
         epilog="Valid characters: " + ", ".join(VALID_CHARACTERS),
     )
     parser.add_argument("num_runs", type=int, help="Number of runs to play (must be positive)")
-    parser.add_argument("character", nargs="?", default="Ironclad",
-                        choices=VALID_CHARACTERS, metavar="character",
-                        help=f"Character to play as (default: Ironclad). Choices: {', '.join(VALID_CHARACTERS)}")
+    parser.add_argument("character", choices=VALID_CHARACTERS, metavar="character",
+                        help=f"Character to play as (required: the game has no default). Choices: {', '.join(VALID_CHARACTERS)}")
     parser.add_argument("--policy", default="random", choices=["random", "heuristic"],
                         help="Decision policy (python/policy.py): seeded weighted random (default) or heuristic")
     parser.add_argument("--fresh-process", action="store_true",

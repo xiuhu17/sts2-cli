@@ -396,6 +396,35 @@ public partial class RunSimulator
         "select_card_alternative",
     };
 
+    /// <summary>The arguments each verb takes (help's "actions" table). Any other argument is
+    /// rejected as illegal_action: it would be a choice the game has no control for.</summary>
+    internal static readonly Dictionary<string, string[]> VerbArgs = new()
+    {
+        ["select_map_node"] = new[] { "col", "row" },
+        ["play_card"] = new[] { "card_index", "target_index", "target_id" },
+        ["end_turn"] = Array.Empty<string>(),
+        ["choose_option"] = new[] { "option_index" },
+        ["select_card_reward"] = new[] { "card_index" },
+        ["skip_card_reward"] = Array.Empty<string>(),
+        ["select_card_alternative"] = new[] { "alternative_index" },
+        ["buy_card"] = new[] { "card_index" },
+        ["buy_relic"] = new[] { "relic_index" },
+        ["buy_potion"] = new[] { "potion_index" },
+        ["remove_card"] = Array.Empty<string>(),
+        ["select_bundle"] = new[] { "bundle_index" },
+        ["crystal_sphere_click"] = new[] { "x", "y", "tool" },
+        ["select_cards"] = new[] { "indices" },
+        ["skip_select"] = Array.Empty<string>(),
+        ["use_potion"] = new[] { "potion_index", "target_index", "target_id" },
+        ["discard_potion"] = new[] { "potion_index" },
+        ["leave_room"] = Array.Empty<string>(),
+        ["proceed"] = Array.Empty<string>(),
+        ["claim_reward"] = new[] { "reward_index" },
+        ["skip_rewards"] = Array.Empty<string>(),
+        ["select_treasure_relic"] = new[] { "relic_index" },
+        ["skip_treasure_relic"] = Array.Empty<string>(),
+    };
+
     private static readonly string[] IntArgs =
         { "card_index", "target_index", "potion_index", "option_index", "reward_index", "relic_index", "bundle_index", "alternative_index", "col", "row", "x", "y" };
 
@@ -504,8 +533,22 @@ public partial class RunSimulator
             var err = Error($"Unknown action '{action}'.{(s != null ? $" Did you mean '{s}'?" : "")} " +
                             $"Legal now: {(cur0 != null ? SummarizeLegal(LegalOf(cur0)) : "?")}");
             err["code"] = "unknown_action";
-            if (cur0 != null) err["decision"] = cur0.GetValueOrDefault("decision");
-            return err;
+            return WithDecision(err, cur0);
+        }
+
+        // Arguments the verb doesn't take are not silently ignored.
+        if (args != null && VerbArgs.TryGetValue(action, out var takes))
+        {
+            var extra = args.Keys.Where(k => !takes.Contains(k)).ToList();
+            if (extra.Count > 0)
+            {
+                var cur1 = _lastDecision ?? SafeCurrentDecision();
+                var why1 = $"{string.Join(", ", extra.Select(k => $"'{k}'"))} {(extra.Count == 1 ? "is not an argument" : "are not arguments")} of {action} " +
+                           $"(it takes {(takes.Length == 0 ? "none" : string.Join(", ", takes))})";
+                return cur1 != null && cur1.GetValueOrDefault("type") as string == "decision"
+                    ? IllegalAction(cur1, action, why1)
+                    : WithDecision(Error($"'{action}' is not allowed: {why1}", "illegal_action"), cur1);
+            }
         }
 
         // Argument types: indices are integers (numeric strings are accepted).
@@ -515,9 +558,8 @@ public partial class RunSimulator
             {
                 if (!args.TryGetValue(key, out var v) || v == null || v is int) continue;
                 if (v is string str && int.TryParse(str.Trim(), out var parsed)) { args[key] = parsed; continue; }
-                var bad = Error($"args.{key} must be an integer, got {(v is string ? $"\"{v}\"" : v.ToString())}");
-                bad["code"] = "bad_request";
-                return bad;
+                var bad = Error($"args.{key} must be an integer, got {(v is string ? $"\"{v}\"" : v is bool b ? (b ? "true" : "false") : v.ToString())}", "bad_request");
+                return WithDecision(bad, _lastDecision ?? SafeCurrentDecision());
             }
         }
 
@@ -551,6 +593,8 @@ public partial class RunSimulator
         var r = ExecuteAction(action, args);
         if (r.GetValueOrDefault("type") as string == "error")
         {
+            // The handler turned down a listed action (e.g. a selection's count): illegal here.
+            r.TryAdd("code", "illegal_action");
             // Errors say where the client is and what it can do.
             var now = SafeCurrentDecision();
             if (now != null && now.GetValueOrDefault("type") as string == "decision")
@@ -576,6 +620,45 @@ public partial class RunSimulator
             };
         }
         return r;
+    }
+
+    /// <summary>Add the decision name and its legal_actions to an error (when there is one).</summary>
+    private static Dictionary<string, object?> WithDecision(Dictionary<string, object?> err, Dictionary<string, object?>? cur)
+    {
+        if (cur == null || cur.GetValueOrDefault("type") as string != "decision") return err;
+        err.TryAdd("decision", cur.GetValueOrDefault("decision"));
+        err.TryAdd("legal_actions", LegalOf(cur));
+        return err;
+    }
+
+    private static readonly HashSet<string> TerminalCodes = new() { "engine_stuck", "restart_required", "engine_timeout", "debug_disabled" };
+
+    /// <summary>
+    /// Called by Program for every error reply: one shape for all of them. Adds a code when the
+    /// handler set none (no_run, illegal_action for actions, bad_request otherwise) and, while a
+    /// run is waiting on a decision, that decision and its legal_actions.
+    /// </summary>
+    public Dictionary<string, object?> CompleteError(string cmd, Dictionary<string, object?> r)
+    {
+        if (!r.ContainsKey("code") || r["code"] == null)
+        {
+            var msg = r.GetValueOrDefault("message") as string ?? "";
+            r["code"] = msg.StartsWith("No run in progress") || msg.StartsWith("No active run") ? "no_run"
+                : cmd == "action" ? "illegal_action" : "bad_request";
+        }
+        var code = r["code"] as string ?? "";
+        if (TerminalCodes.Contains(code) || r.ContainsKey("legal_actions") || r.ContainsKey("state")) return r;
+        if (_poisoned || _runState == null || _stuckReason != null) return r;
+        // A start/load that failed half-way has no consistent decision to show.
+        if (code == "exception" && cmd is "start_run" or "load_save") return r;
+        var cur = _lastDecision;
+        if (cur == null)
+        {
+            cur = SafeCurrentDecision();
+            if (cur != null && cur.GetValueOrDefault("type") as string == "decision")
+                _lastDecision = cur = Viewed(cur);
+        }
+        return WithDecision(r, cur);
     }
 
     private Dictionary<string, object?>? SafeCurrentDecision()
@@ -1211,7 +1294,7 @@ public partial class RunSimulator
         catch { }
     }
 
-    /// <summary>A new run starts with an empty log.</summary>
+    /// <summary>A new run starts with an empty log (called by ResetForNewRun).</summary>
     private void ResetEvents()
     {
         lock (_evLock)
@@ -1223,12 +1306,9 @@ public partial class RunSimulator
         _snapshot = null;
     }
 
-    public void BeforeCommand(string cmd)
-    {
-        EnsureEventHooks();
-        if (cmd is "start_run" or "load_save")
-            ResetEvents();
-    }
+    // The event log is cleared by ResetForNewRun, after the previous run's flow has unwound
+    // (and only once a start_run/load_save is valid, so a rejected one keeps the current log).
+    public void BeforeCommand(string cmd) => EnsureEventHooks();
 
     // ───────────────────────── help ─────────────────────────
 
@@ -1237,7 +1317,7 @@ public partial class RunSimulator
         ["type"] = "help",
         ["commands"] = new Dictionary<string, object?>
         {
-            ["start_run"] = "{cmd:start_run, character:Ironclad|Silent|Defect|Regent|Necrobinder, seed?, ascension?:0-10, lang?:en|zh, manual_rewards?:bool (ignored: rewards are always decisions), omit_deck?:bool, modifiers?:[..], game_mode?, profile?:path}",
+            ["start_run"] = "{cmd:start_run, character:Ironclad|Silent|Defect|Regent|Necrobinder (required), seed? (missing/blank = random, reported in context.seed), ascension?:0-10 (default 0), lang?:en|zh (default en), manual_rewards?:bool (ignored: rewards are always decisions), omit_deck?:bool, modifiers?:[..], game_mode?, profile?:path}",
             ["action"] = "{cmd:action, action:<verb>, args:{...}} - send one entry of legal_actions as-is",
             ["get_state"] = "re-send the current decision (no game change)",
             ["get_deck"] = "{cmd:get_deck, upgrades?:bool} the deck with full card text",
@@ -1273,6 +1353,6 @@ public partial class RunSimulator
             ["select_treasure_relic"] = "{relic_index}", ["skip_treasure_relic"] = "{}",
             ["crystal_sphere_click"] = "{x, y, tool?:big|small} from choose_cell (no tool = current_tool)",
         },
-        ["notes"] = "Every decision lists legal_actions; an action (verb and args) not listed is rejected with code illegal_action - nothing is chosen for you; only a missing target_index is filled in when a single entry matches. Aliases of the same button: finished event page leave_room|proceed = choose_option Proceed; rewards leave_room|skip_rewards = proceed; treasure proceed|leave_room = skip_treasure_relic; rest site/shop proceed = leave_room. 'events' lists what happened since the previous decision.",
+        ["notes"] = "Every decision lists legal_actions; an action (verb and args) not listed is rejected with code illegal_action - nothing is chosen for you; only a missing target_index is filled in when a single entry matches. An argument the verb doesn't take is illegal_action; a null argument counts as absent. Every error has a code (bad_request, unknown_command, unknown_action, illegal_action, unknown_character, no_run, io_error, ...) and, while a run waits on a decision, decision and legal_actions. Aliases of the same button: finished event page leave_room|proceed = choose_option Proceed; rewards leave_room|skip_rewards = proceed; treasure proceed|leave_room = skip_treasure_relic; rest site/shop proceed = leave_room. 'events' lists what happened since the previous decision.",
     };
 }

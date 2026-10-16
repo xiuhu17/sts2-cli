@@ -182,6 +182,21 @@ def test_quit_is_answered_promptly_after_ready():
         p.kill()
 
 
+def test_warmup_does_not_change_the_first_run():
+    """Warm-up (engine init + the save serializer, after ready) only moves work: a process's
+    first run is the same with and without it."""
+    def first(env):
+        p, send, _ = _spawn(env)
+        try:
+            r = send({"cmd": "start_run", "character": "Defect", "seed": "warmeq"})
+            r = send({"cmd": "action", "action": "choose_option", "args": {"option_index": 0}})
+            r["context"].pop("run_time_seconds", None)
+            return r
+        finally:
+            p.kill()
+    assert first({}) == first({"STS2_NO_WARMUP": "1"})
+
+
 def test_warmup_failure_is_reported_by_the_first_start_run():
     """Lazy init used to fail the first start_run; warm-up must not hide that error."""
     p, send, ready = _spawn({"STS2_DEBUG_COMMANDS": "1", "STS2_DEBUG_FAIL_WARMUP": "1"})

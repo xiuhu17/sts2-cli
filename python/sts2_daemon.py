@@ -979,6 +979,7 @@ HELP = """sts2 - play Slay the Spire 2 (headless) from the shell. One command pe
 
   sts2 start --character Ironclad|Silent|Defect|Regent|Necrobinder [--seed S] [--ascension 0-10]
              [--lang en|zh] [--profile PATH] [--modifiers A,B] [--game-mode custom]
+                             --character is required; no/blank seed = random; ascension 0 by default
   sts2 state                 the current decision, with numbered legal actions
   sts2 do N                  take legal action number N (from the last state shown)
   sts2 do "STEP; STEP; ..."  several steps; stops at the first error, and before any step once
@@ -1185,7 +1186,7 @@ class Daemon:
         for verb, cmd in self._HINTS:
             m = m.replace(f"use {verb}", f"use {cmd}").replace(f"'{verb}'", f"'{cmd}'")
         if r.get("code") == "no_run" or "No run in progress" in m:
-            m += " " + t("(sts2 start --character Ironclad)", "（sts2 start --character Ironclad）")
+            m += " " + t("(sts2 start --character Ironclad|Silent|Defect|Regent|Necrobinder)", "（sts2 start --character Ironclad|Silent|Defect|Regent|Necrobinder）")
         msg = f"error: {m}"
         if r.get("code") == "flow_failed" and isinstance(r.get("state"), dict):
             self._set_last(r["state"])
@@ -1202,14 +1203,15 @@ class Daemon:
 
     def cmd_help(self, args, as_json):
         if as_json:
-            r = self.send({"cmd": "help"})
-            return json.dumps(r, ensure_ascii=False, separators=(",", ":")), 0
+            # The engine's help reply, without starting an engine for it.
+            with open(os.path.join(HERE, "engine_help.json"), encoding="utf-8") as f:
+                return f.read(), 0
         return HELP, 0
 
     def cmd_start(self, args, as_json):
         import argparse
         p = argparse.ArgumentParser(prog="sts2 start", add_help=False)
-        p.add_argument("--character", "-c", default="Ironclad")
+        p.add_argument("--character", "-c")  # no default: the game has none
         p.add_argument("--seed", "-s")
         p.add_argument("--ascension", "-a", type=int, default=0)
         p.add_argument("--lang", default="en", choices=["en", "zh"])
@@ -1221,6 +1223,9 @@ class Daemon:
             o = p.parse_args(args)
         except SystemExit:
             return "usage: " + p.format_usage().replace("usage: ", ""), 1
+        if not o.character:
+            return ("error: sts2 start requires --character Ironclad|Silent|Defect|Regent|Necrobinder "
+                    "(the game has no default character)"), 1
         cmd = {"cmd": "start_run", "character": o.character, "ascension": o.ascension, "lang": o.lang,
                "omit_deck": True}
         if o.seed:
